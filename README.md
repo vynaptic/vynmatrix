@@ -53,6 +53,7 @@ This is the canonical documentation index.
 | Runtime incidents and recovery | [docs/RUNBOOK.md](docs/RUNBOOK.md) |
 | Current strategy authority and readiness | [docs/STRATEGY_READINESS.md](docs/STRATEGY_READINESS.md) |
 | Single-owner design decision | [docs/SINGLE_OWNER.md](docs/SINGLE_OWNER.md) |
+| Event-driven delivery and bounded pools design | [docs/superpowers/specs/2026-09-05-event-driven-delivery-bounded-pools-design.md](docs/superpowers/specs/2026-09-05-event-driven-delivery-bounded-pools-design.md) |
 | Deferred capacity work | [docs/SCALING.md](docs/SCALING.md) |
 | Pull-request review | [docs/REVIEWER_CHECKLIST.md](docs/REVIEWER_CHECKLIST.md) |
 | Script catalogue | [scripts/README.md](scripts/README.md) |
