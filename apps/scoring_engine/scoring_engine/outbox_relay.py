@@ -13,7 +13,6 @@ import httpx
 from sqlalchemy.exc import SQLAlchemyError
 
 from lib_application.outbox import OutboxBacklogSnapshot, OutboxRecord, backlog_age_seconds
-from lib_common.event_bus import EventPublisher, NoOpEventPublisher
 from lib_common.logging import get_logger
 from lib_common.metrics import counter, gauge
 from lib_common.retries import retry_async
@@ -42,6 +41,10 @@ _OUTBOX_PROGRESS_READY = gauge(
     "vm_outbox_progress_ready",
     "1 when the required outbox topics have no dead letter or stale event",
     ("topics",),
+)
+_NOTIFY_LISTENER_UP = gauge(
+    "vm_scoring_outbox_notify_listener_up",
+    "1 while the outbox_events LISTEN thread is alive, else 0",
 )
 _BACKLOG_STATUSES = ("pending", "in_progress", "failed", "dead_letter")
 
@@ -132,8 +135,6 @@ class OutboxRelayWorker:
         *,
         store: ScoreStore,
         exec_engine_url: str,
-        publisher: EventPublisher | None = None,
-        publish_topics: Iterable[str] | None = None,
         consumer_name: str = "scoring-outbox-relay",
         http_client: httpx.AsyncClient | None = None,
         notify_dsn: str | None = None,
@@ -142,8 +143,6 @@ class OutboxRelayWorker:
     ) -> None:
         self._store = store
         self._exec_engine_url = exec_engine_url.rstrip("/")
-        self._publisher = publisher or NoOpEventPublisher()
-        self._publish_topics = {topic for topic in publish_topics or [] if topic}
         self._consumer_name = consumer_name
         self._client = http_client or httpx.AsyncClient(timeout=10)
         self._notify_dsn = notify_dsn
@@ -262,6 +261,15 @@ class OutboxRelayWorker:
             )
         return processed
 
+    @staticmethod
+    def _set_notify_gauge(value: int) -> None:
+        if _NOTIFY_LISTENER_UP is not None:
+            _NOTIFY_LISTENER_UP.set(value)
+
+    def _refresh_notify_gauge(self) -> None:
+        alive = self._notify_thread is not None and self._notify_thread.is_alive()
+        self._set_notify_gauge(1 if alive else 0)
+
     def _start_notify_listener(
         self,
         notify_event: asyncio.Event,
@@ -269,6 +277,7 @@ class OutboxRelayWorker:
     ) -> None:
         """Start the PostgreSQL LISTEN thread when a DSN is configured."""
         if not self._notify_dsn:
+            self._set_notify_gauge(0)
             return
 
         def _on_notify(_channel: str, _payload: dict[str, Any]) -> None:
@@ -285,6 +294,7 @@ class OutboxRelayWorker:
             name=f"{self._consumer_name}-pg-listen",
         )
         self._notify_thread.start()
+        self._set_notify_gauge(1)
         logger.info(
             "outbox.listen_started",
             extra={"channel": self._notify_channel, "consumer": self._consumer_name},
@@ -297,6 +307,7 @@ class OutboxRelayWorker:
             self._notify_thread.join(timeout=2.0)
         self._notify_listener = None
         self._notify_thread = None
+        self._set_notify_gauge(0)
 
     def _update_backlog_gauge(self, topics: list[str]) -> None:
         """Refresh backlog metrics without risking relay availability."""
@@ -328,6 +339,7 @@ class OutboxRelayWorker:
         try:
             while not stop_event.is_set():
                 self._update_backlog_gauge(topic_list)
+                self._refresh_notify_gauge()
                 try:
                     processed = await self.drain_once(
                         topics=topic_list,
@@ -364,22 +376,11 @@ class OutboxRelayWorker:
 
     async def _deliver(self, record: OutboxRecord) -> dict[str, Any]:
         if record.topic in {"execution.commands", "execution.rebalance.commands"}:
-            metadata = await self._deliver_execution_command(record)
-            if record.topic in self._publish_topics:
-                metadata["event_bus"] = self._publisher.publish(
-                    topic=record.topic,
-                    event_key=record.event_key,
-                    payload=record.payload,
-                )
-            return metadata
-
-        return dict(
-            self._publisher.publish(
-                topic=record.topic,
-                event_key=record.event_key,
-                payload=record.payload,
-            )
-        )
+            return await self._deliver_execution_command(record)
+        # The observational topics were retired with their producers; a stray
+        # row must not loop through retries, so classify it permanent.
+        msg = f"Outbox topic {record.topic!r} has no consumer"
+        raise OutboxDeliveryError(msg, failure_class="permanent")
 
     async def _deliver_execution_command(self, record: OutboxRecord) -> dict[str, Any]:
         async def _post_command() -> httpx.Response:

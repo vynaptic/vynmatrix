@@ -27,7 +27,6 @@ from lib_common.config_validation import (
     load_scoring_engine_config,
 )
 from lib_common.env_utils import parse_int_env
-from lib_common.event_bus import EventPublisher, NoOpEventPublisher
 from lib_common.health import add_health_endpoints
 from lib_common.logging import get_logger, setup_logging
 from lib_common.metrics import gauge
@@ -458,6 +457,7 @@ def _make_lifespan(
     *,
     relay_config: ScoringRelayConfig,
     exec_engine_api_key: str | None,
+    notify_dsn: str | None,
 ) -> object:
     """Create lifespan context manager for FastAPI with proper cleanup."""
 
@@ -479,6 +479,7 @@ def _make_lifespan(
                 exec_url,
                 relay_config=relay_config,
                 exec_engine_api_key=exec_engine_api_key,
+                notify_dsn=notify_dsn,
             )
 
         # Store references in app state
@@ -496,25 +497,19 @@ def _make_lifespan(
     return lifespan
 
 
-def _build_event_publisher() -> EventPublisher:
-    """Return the local publisher used by the DigitalOcean deployment."""
-    return NoOpEventPublisher()
-
-
 async def _run_relay_worker(
     store: ScoreStore,
     exec_url: str,
     *,
     relay_config: ScoringRelayConfig,
     exec_engine_api_key: str | None,
+    notify_dsn: str | None,
 ) -> None:
-    publisher = _build_event_publisher()
     worker = OutboxRelayWorker(
         store=store,
         exec_engine_url=exec_url,
-        publisher=publisher,
-        publish_topics=relay_config.publish_topics,
         api_key=exec_engine_api_key,
+        notify_dsn=notify_dsn,
     )
     try:
         await worker.run_forever(
@@ -533,14 +528,13 @@ def _start_inline_relay(
     *,
     relay_config: ScoringRelayConfig,
     exec_engine_api_key: str | None,
+    notify_dsn: str | None,
 ) -> OutboxRelayWorker:
-    publisher = _build_event_publisher()
     _runtime.relay_worker = OutboxRelayWorker(
         store=store,
         exec_engine_url=exec_url,
-        publisher=publisher,
-        publish_topics=relay_config.publish_topics,
         api_key=exec_engine_api_key,
+        notify_dsn=notify_dsn,
     )
     _runtime.relay_task = asyncio.create_task(
         _runtime.relay_worker.run_forever(
@@ -572,6 +566,9 @@ def main() -> None:
     engine = build_engine(config)
     exec_url = config.execution_engine_url
     exec_engine_api_key = os.getenv("EXEC_ENGINE_API_KEY") or os.getenv("API_KEY")
+    # The relay listens as the scoring login on the existing outbox_events
+    # trigger; LISTEN needs no extra privilege. Polling stays as recovery.
+    notify_dsn = db_url if config.runtime.relay.notify_enabled else None
 
     # Canonical session factory — applies environment-aware pool sizing and
     # ``pool_pre_ping`` semantics in one place.
@@ -609,6 +606,7 @@ def main() -> None:
                 exec_url,
                 relay_config=config.runtime.relay,
                 exec_engine_api_key=exec_engine_api_key,
+                notify_dsn=notify_dsn,
             )
         )
         return
@@ -619,6 +617,7 @@ def main() -> None:
         exec_url,
         relay_config=config.runtime.relay,
         exec_engine_api_key=exec_engine_api_key,
+        notify_dsn=notify_dsn,
     )
 
     app = create_app(
