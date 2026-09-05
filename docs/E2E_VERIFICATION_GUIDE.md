@@ -150,6 +150,7 @@ successful feedback heartbeat. Capture the current values of:
 - vm_indicator_signal_backlog_oldest_seconds
 - vm_indicator_strategy_lag_seconds
 - vm_outbox_oldest_undelivered_age_seconds
+- vm_scoring_outbox_notify_listener_up
 - vm_database_pool_checked_out and vm_database_pool_overflow
 - execution_pending_orders_total and execution_paper_order_processing_lag_seconds
 - execution_reconciliation_initial_complete and

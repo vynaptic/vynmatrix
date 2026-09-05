@@ -142,9 +142,10 @@ Remove the producers and the publisher plumbing together:
 
 Required preservation step: before the result event is removed, the inbound command's
 `event_id` (today `user_strategy_config["_causation_event_id"]`) is written into the
-`execution_logs.execution_details` JSON under `causation_event_id`, and the paper
-lifecycle writes the same key with the canonical signal's `external_signal_id`. This
-keeps the command-to-result trace without a schema change.
+`execution_logs.execution_details` JSON under `causation_event_id`; the paper
+lifecycle writes no `execution_logs` row, so its trace remains the canonical ledger
+lineage from `orders` through `order_intents.canonical_signal_id`. This keeps the
+command-to-result trace without a schema change.
 
 Follow-on removals in the same change: the four topics leave `ScoringRelayConfig.topics`
 and `publish_topics` defaults, `SCORING_OUTBOX_TOPICS` in `.env.example`, and the
@@ -189,16 +190,18 @@ Unit and component tests, SQLite where the outbox store already runs on SQLite:
   unchanged; the scoring spec carries the notify flag.
 - Retirement: producers no longer enqueue; the data migration is idempotent and leaves
   published rows untouched; `execution_logs.execution_details` carries
-  `causation_event_id` on both fill paths.
+  `causation_event_id` on the immediate path; lifecycle fills are traced through the
+  ledger.
 
 One new opt-in PostgreSQL integration module, patterned on
 [test_postgres_notify_integration.py](../../../apps/indicator_runner/tests/test_postgres_notify_integration.py)
-and using the recorded June 2026 Coinbase fixture and copies of the
-`PipelineExerciser` fixture strategy under distinct strategy ids:
+and using the recorded June 2026 Coinbase fixture, runs twenty `SignalWorker`
+instances in one test process, each with its own engine, delivery loop and LISTEN
+connection, against a probe strategy:
 
-1. Twenty `signal_worker` processes start against an isolated database and a stub
-   scoring HTTP server. `pg_stat_activity` for `vm_indicator_login` never exceeds 3 per
-   worker plus 2 for the supervisor.
+1. Twenty workers start against an isolated database and a stub scoring HTTP server.
+   `pg_stat_activity` for the test database never exceeds its pre-start baseline by
+   more than 3 per worker.
 2. One committed batch of bars followed by one `NOTIFY` produces one journaled
    transition per worker; every `signals.submit` row is published; the test records
    the distribution of `published_at - created_at`.
@@ -206,8 +209,9 @@ and using the recorded June 2026 Coinbase fixture and copies of the
    signal at the stub, and per-partition order is preserved.
 4. Stopping the stub for longer than the idle interval grows the backlog; restarting
    it drains the backlog through the recovery pass without a NOTIFY.
-5. `SIGTERM` during a drain exits zero, leaves no row `in_progress` past its lease, and
-   disposes the engine after the loop has stopped.
+5. Stopping every worker during a drain returns within the stop timeout, leaves no
+   row `in_progress` past its lease, and disposes the engine after the loop has
+   stopped.
 
 Manual acceptance on the isolated paper stack: rebuild the image, recreate both
 runtime groups, and read `vm_outbox_oldest_undelivered_age_seconds`,

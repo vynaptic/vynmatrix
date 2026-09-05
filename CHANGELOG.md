@@ -21,6 +21,15 @@ Git history.
 
 ### Changed
 
+- Strategy signal delivery runs on a dedicated loop outside the bar-processing
+  lock, woken by each committed transition, and the scoring outbox relay wakes on
+  the existing `outbox_events` notification (`SCORING_OUTBOX_NOTIFY_ENABLED`).
+- Strategy worker subprocesses use a fixed two-connection pool with no overflow;
+  `SIGNAL_RELAY_IDLE_INTERVAL_SEC` sets the delivery loop's recovery cadence.
+- Retired the consumer-less outbox topics `signals.ingested`, `signals.scored`,
+  `execution.results` and `feedback.ready` with their producers; migration `0105`
+  marks any undelivered rows published. `execution_logs.execution_details` now
+  carries `causation_event_id`. `EVENT_BUS_PUBLISH_TOPICS` is removed.
 - Consolidated repository documentation around one owner per topic: shared
   setup, architecture, configuration, database lifecycle, deployment, evidence,
   operations, and strategy readiness now link to one another instead of
