@@ -220,13 +220,6 @@ def test_configured_external_account_identity_is_accepted_exactly() -> None:
             "broker-reported account identity",
         ),
         (_observation(8_000.0), "changed between"),
-        (
-            _observation(
-                9_000.0,
-                observed_at=datetime.now(tz=UTC) + timedelta(minutes=1),
-            ),
-            "future-dated",
-        ),
     ],
 )
 def test_current_equity_observation_mismatch_fails_closed(
@@ -241,6 +234,24 @@ def test_current_equity_observation_mismatch_fails_closed(
             account_id=1,
             current_equity=9_000.0,
             equity_observation=observation,
+        )
+
+
+def test_current_equity_observation_future_dated_fails_closed() -> None:
+    sf = _session_factory()
+    evaluated_at = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+
+    with pytest.raises(RiskBaselineUnavailableError, match="future-dated"):
+        resolve_risk_baseline(
+            sf,
+            user_id="user-1",
+            account_id=1,
+            current_equity=9_000.0,
+            equity_observation=_observation(
+                9_000.0,
+                observed_at=evaluated_at + timedelta(seconds=1),
+            ),
+            now=evaluated_at,
         )
 
 
