@@ -437,6 +437,9 @@ class IndicatorWorkerConfig(_FrozenConfig):
     min_bar_coverage: float = Field(default=0.95, ge=0.0, le=1.0)
     catchup_batch_size: int = Field(default=5000, ge=1, le=100000)
     catchup_floor_seconds: int = Field(default=30, ge=1, le=3600)
+    # Idle recovery pass cadence of the signal delivery loop; wakes after
+    # commits make ordinary delivery independent of this value.
+    signal_relay_idle_interval_seconds: int = Field(default=5, ge=1, le=60)
     panel_runtime: IndicatorPanelRuntimeConfig | None = None
 
     @field_validator("run_mode", mode="before")
@@ -617,19 +620,12 @@ class ScoringRelayConfig(_FrozenConfig):
     """Transactional-outbox relay polling and topic controls."""
 
     inline: bool = False
+    # Wake the claim loop on the existing outbox_events notification; polling
+    # on poll_interval_seconds remains the recovery path either way.
+    notify_enabled: bool = True
     topics: tuple[str, ...] = (
         "execution.commands",
         "execution.rebalance.commands",
-        "signals.ingested",
-        "signals.scored",
-        "execution.results",
-        "feedback.ready",
-    )
-    publish_topics: tuple[str, ...] = (
-        "signals.ingested",
-        "signals.scored",
-        "execution.results",
-        "feedback.ready",
     )
     poll_interval_seconds: float = Field(default=2.0, gt=0.0)
     batch_size: int = Field(default=100, ge=1)
@@ -811,6 +807,14 @@ def load_indicator_worker_config() -> IndicatorWorkerConfig:
             default=30,
             min_value=1,
             max_value=3600,
+            logger=logger,
+            strict=True,
+        ),
+        signal_relay_idle_interval_seconds=parse_int_env(
+            "SIGNAL_RELAY_IDLE_INTERVAL_SEC",
+            default=5,
+            min_value=1,
+            max_value=60,
             logger=logger,
             strict=True,
         ),
@@ -1243,27 +1247,18 @@ def load_scoring_engine_config() -> ScoringEngineConfig:
                     logger=logger,
                     strict=True,
                 ),
+                notify_enabled=parse_bool_env(
+                    "SCORING_OUTBOX_NOTIFY_ENABLED",
+                    default=True,
+                    logger=logger,
+                    strict=True,
+                ),
                 topics=tuple(
                     parse_list_env(
                         "SCORING_OUTBOX_TOPICS",
                         default=[
                             "execution.commands",
                             "execution.rebalance.commands",
-                            "signals.ingested",
-                            "signals.scored",
-                            "execution.results",
-                            "feedback.ready",
-                        ],
-                    )
-                ),
-                publish_topics=tuple(
-                    parse_list_env(
-                        "EVENT_BUS_PUBLISH_TOPICS",
-                        default=[
-                            "signals.ingested",
-                            "signals.scored",
-                            "execution.results",
-                            "feedback.ready",
                         ],
                     )
                 ),
