@@ -54,6 +54,7 @@ _SCORING = frozenset(
         "SCORING_OUTBOX_BATCH_SIZE",
         "SCORING_OUTBOX_LEASE_SEC",
         "SCORING_OUTBOX_MAX_AGE_SECONDS",
+        "SCORING_OUTBOX_NOTIFY_ENABLED",
         "SCORING_CROSS_STRATEGY_ENSEMBLE",
         "SCORING_SIBLING_FRESHNESS_SECONDS",
         "SCORING_MAX_SIBLINGS",
@@ -109,6 +110,7 @@ _INDICATOR = frozenset(
         "INDICATOR_PAPER_PROMOTION_MANIFEST",
         "INDICATOR_MIN_BAR_COVERAGE",
         "SIGNAL_CATCHUP_BATCH_SIZE",
+        "SIGNAL_RELAY_IDLE_INTERVAL_SEC",
         "INDICATOR_MAX_SIGNAL_BACKLOG_AGE_SECONDS",
         "INDICATOR_MAX_STRATEGY_LAG_SECONDS",
         "INDICATOR_PANEL_DATA_USE_SCOPE",
@@ -446,6 +448,13 @@ def build_processes(group: str, env: Mapping[str, str]) -> list[ProcessSpec]:
                 "INDICATOR_ALLOW_DEV_DISCOVERY": "false",
                 "HEALTH_CHECK_PORT": "8080",
                 "PROMETHEUS_MULTIPROC_DIR": "/tmp/vynmatrix-prometheus/indicator",
+                # Every strategy grandchild inherits this environment. A worker
+                # has exactly two pool users (processing thread and delivery
+                # loop) and one raw LISTEN connection, so bound it explicitly
+                # instead of inheriting the 3+2 default of the API children.
+                "DB_POOL_SIZE": "2",
+                "DB_MAX_OVERFLOW": "0",
+                "DB_POOL_CONNECTION_BUDGET": "2",
             }
         )
         specs.append(
