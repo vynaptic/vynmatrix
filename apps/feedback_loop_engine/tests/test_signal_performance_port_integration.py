@@ -190,7 +190,6 @@ def _engine(repo: ISignalPerformanceRepository) -> FeedbackLoopEngine:
     eng._engine = None  # type: ignore[assignment]
     eng.wrong_threshold = 3
     eng.default_horizon = EvaluationHorizon.D1
-    eng._outbox_store = None
     eng._symbol_cache = {42: "BTC-USD"}
     eng._signal_performance_repo = repo  # type: ignore[attr-defined]
     return eng

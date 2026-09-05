@@ -813,16 +813,28 @@ def _run_and_assert_feedback(
             for row in mode_performance
         )
 
-        feedback_events = session.scalars(
-            select(app_models.OutboxEvent).where(
-                app_models.OutboxEvent.topic == "feedback.ready",
-                app_models.OutboxEvent.ordering_key.in_(strategy_ids),
+        performance_rows = session.scalars(
+            select(app_models.SignalPerformance).where(
+                app_models.SignalPerformance.strategy_id.in_(strategy_ids),
             )
         ).all()
-        assert len(feedback_events) == len(_STRATEGIES) * 2
-        assert sum(bool(row.payload["needs_optimization"]) for row in feedback_events) == len(
-            _STRATEGIES
-        )
+        assert len(performance_rows) == len(_STRATEGIES) * 2
+        assert sum(bool(row.needs_optimization) for row in performance_rows) == len(_STRATEGIES)
+        retired_rows = session.scalars(
+            select(app_models.OutboxEvent).where(
+                app_models.OutboxEvent.topic.in_(
+                    ["feedback.ready", "execution.results", "signals.ingested", "signals.scored"]
+                ),
+            )
+        ).all()
+        assert retired_rows == []
+        execution_rows = session.scalars(
+            select(app_models.ExecutionLog).where(
+                app_models.ExecutionLog.strategy_id.in_(strategy_ids),
+            )
+        ).all()
+        assert execution_rows
+        assert all("causation_event_id" in row.execution_details for row in execution_rows)
 
 
 @pytest.mark.integration

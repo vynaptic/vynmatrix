@@ -4,13 +4,12 @@ Compares predicted direction against actual price movement after
 a configurable time horizon to determine if prediction was correct.
 
 The feedback loop currently measures signal quality only. It does not
-consume ``execution.results`` and therefore does not model slippage,
-fill quality, or broker latency.
+read the execution ledger and therefore does not model slippage, fill
+quality, or broker latency.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -181,15 +180,9 @@ class SignalEvaluator:
         needs_optimization: bool = False,
         run_id: str | None = None,
         did_execute: bool | None = None,
-        on_persisted: Callable[[int, Session], None] | None = None,
         meta: dict[str, Any] | None = None,
     ) -> tuple[int, bool]:
         """Persist signal evaluation to database.
-
-        When ``on_persisted`` is supplied it is invoked with (perf_id, session)
-        after the SignalPerformance row is flushed but BEFORE commit, so a
-        caller can co-commit a transactional-outbox event in the same
-        transaction (the row and its downstream event are all-or-nothing).
 
         Args:
             evaluation: The signal evaluation result
@@ -271,8 +264,6 @@ class SignalEvaluator:
                     raise RuntimeError(msg)
                 perf_id_result = int(existing_perf_id)
 
-            if inserted and on_persisted is not None:
-                on_persisted(perf_id_result, session)
             session.commit()
             return perf_id_result, inserted
 
