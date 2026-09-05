@@ -590,9 +590,8 @@ def _build_harness(
     failures: list[tuple[BaseException, str]] = []
     relay_calls: list[None] = []
 
-    def relay_once() -> tuple[int, int]:
+    def wake_delivery() -> None:
         relay_calls.append(None)
-        return (0, 0)
 
     runtime = SynchronizedPanelRuntime(
         strategy=strategy,
@@ -601,7 +600,7 @@ def _build_harness(
         signal_buffer=signal_buffer,
         runtime_store=store,
         processing_lock=threading.RLock(),
-        relay_once=relay_once,
+        wake_delivery=wake_delivery,
         mark_transition_failure=lambda exc, key: failures.append((exc, key)),
         clock=clock or (lambda: _CLOCK),
     )

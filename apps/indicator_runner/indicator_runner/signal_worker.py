@@ -41,6 +41,7 @@ from indicator_runner.runtime_journal import (
     StrategyRuntimeStore,
 )
 from indicator_runner.runtime_params import StrategyRuntimeParams
+from indicator_runner.signal_delivery import SignalDeliveryLoop
 from lib_application.db.session import (
     create_engine_for_env,
     dispose_engine,
@@ -77,6 +78,9 @@ logger = get_logger(__name__)
 
 SessionFactory = Callable[[], Any]
 HISTORICAL_REBUILD_EXIT_CODE = 75
+# One HTTP attempt budget (10s timeout) plus retry slack; the loop is joined
+# for at most this long before the engine is disposed.
+_DELIVERY_STOP_TIMEOUT_SECONDS = 15.0
 _BARS_PROCESSED_METRIC = "vm_indicator_bars_processed_total"
 _SIGNALS_EMITTED_METRIC = "vm_indicator_signals_emitted_total"
 
@@ -157,6 +161,7 @@ class SignalWorker:
         signal_buffer: BufferedSignalEmitter,
         runtime_store: StrategyRuntimeStore,
         signal_relay: DurableSignalRelay,
+        delivery_loop: SignalDeliveryLoop | None = None,
     ) -> None:
         self._strategy = strategy
         self._session_factory = session_factory
@@ -176,6 +181,11 @@ class SignalWorker:
         self._signal_buffer = signal_buffer
         self._runtime_store = runtime_store
         self._signal_relay = signal_relay
+        # A supervised process injects the loop; unit tests and offline tooling
+        # leave it None and deliver inline through relay_once().
+        self._delivery = delivery_loop
+        if self._delivery is not None:
+            self._delivery.bind_failure_handler(self._mark_delivery_failure)
         self._uncommitted_decisions: list[StrategyBarDecision] = []
         if catchup_batch_size < 1:
             msg = "catchup_batch_size must be positive"
@@ -206,7 +216,7 @@ class SignalWorker:
                 signal_buffer=signal_buffer,
                 runtime_store=runtime_store,
                 processing_lock=self._processing_lock,
-                relay_once=self.relay_once,
+                wake_delivery=self.deliver_after_commit,
                 mark_transition_failure=self._mark_panel_transition_failure,
                 clock=self._clock,
             )
@@ -257,10 +267,13 @@ class SignalWorker:
                 self._strategy._is_initialized = True
             self._bootstrap()
 
-        # Recover every committed, undelivered signal before accepting a newer
-        # market bar. The outbox claim commits before HTTP, so no strategy or
-        # watermark lock is held across the network call.
-        self.relay_once()
+        # Hand every committed, undelivered signal to delivery before accepting
+        # a newer market bar. With an injected loop this only wakes the thread;
+        # the outbox claim commits before HTTP either way, so no strategy or
+        # watermark lock is ever held across the network call.
+        if self._delivery is not None:
+            self._delivery.start()
+        self.deliver_after_commit()
 
         # Start LISTEN thread
         if self._dsn and self._panel_runtime is None:
@@ -274,12 +287,14 @@ class SignalWorker:
         )
 
     def stop(self) -> None:
-        """Stop the worker gracefully."""
+        """Stop the worker gracefully: listener first, then delivery, before engine disposal."""
         self._stop_event.set()
         if self._listener is not None:
             self._listener.stop()
         if self._listener_thread and self._listener_thread.is_alive():
             self._listener_thread.join(timeout=5.0)
+        if self._delivery is not None:
+            self._delivery.stop(timeout=_DELIVERY_STOP_TIMEOUT_SECONDS)
         logger.info("Signal worker stopped", worker_id=self._worker_id)
 
     @property
@@ -305,6 +320,34 @@ class SignalWorker:
     def relay_once(self) -> tuple[int, int]:
         """Deliver one bounded durable signal batch."""
         return self._signal_relay.run_once()
+
+    def deliver_after_commit(self) -> None:
+        """Hand committed signals to delivery without holding the processing lock.
+
+        Outside a supervised process no loop is injected and delivery runs
+        inline, exactly as before this method existed.
+        """
+        if self._delivery is not None:
+            self._delivery.wake()
+            return
+        self.relay_once()
+
+    @property
+    def delivery_alive(self) -> bool:
+        """False once an injected delivery loop has stopped or died."""
+        return self._delivery is None or self._delivery.alive
+
+    @property
+    def delivery_idle_interval_seconds(self) -> float:
+        """Main-loop wait between recovery checks."""
+        if self._delivery is None:
+            return 1.0
+        return self._delivery.idle_interval_seconds
+
+    def _mark_delivery_failure(self, exc: BaseException) -> None:
+        if self._terminal_error is None:
+            self._terminal_error = exc
+        self._failure_event.set()
 
     def submit_panel(self, panel_input: object) -> bool:
         """Submit one complete input to an explicitly panel-capable strategy."""
@@ -856,7 +899,7 @@ class SignalWorker:
         self._signal_buffer.clear()
         self._uncommitted_decisions.clear()
         self._watermark.remember(advanced)
-        self.relay_once()
+        self.deliver_after_commit()
 
     def _mark_state_transition_failure(
         self,
@@ -1294,6 +1337,11 @@ def _build_worker(
         strategy_id=strategy_id,
         ordering_key=runtime_identity.ordering_key,
     )
+    delivery_loop = SignalDeliveryLoop(
+        run_once=signal_relay.run_once,
+        worker_id=resolved_worker_id,
+        idle_interval_seconds=float(startup.signal_relay_idle_interval_seconds),
+    )
 
     worker = SignalWorker(
         strategy=strategy,
@@ -1313,6 +1361,7 @@ def _build_worker(
         signal_buffer=signal_buffer,
         runtime_store=runtime_store,
         signal_relay=signal_relay,
+        delivery_loop=delivery_loop,
     )
     return worker, engine
 
@@ -1354,6 +1403,7 @@ def main(argv: list[str] | None = None) -> int:
         with get_session_factory(engine=db_engine)() as session:
             require_deployment_owner_id(session)
         worker.start()
+        idle_seconds = worker.delivery_idle_interval_seconds
         last_catchup = time.monotonic()
         while not stop_event.is_set():
             if worker.failed:
@@ -1381,9 +1431,12 @@ def main(argv: list[str] | None = None) -> int:
                 logger.error("Signal worker listener thread stopped unexpectedly")
                 exit_code = 1
                 break
-            if stop_event.wait(1.0):
+            if not stop_event.is_set() and not worker.delivery_alive:
+                logger.error("Signal worker delivery loop stopped unexpectedly")
+                exit_code = 1
                 break
-            worker.relay_once()
+            if stop_event.wait(idle_seconds):
+                break
             if time.monotonic() - last_catchup >= catchup_floor_sec:
                 worker.catchup_all()
                 last_catchup = time.monotonic()
