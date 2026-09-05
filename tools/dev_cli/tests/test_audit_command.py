@@ -457,7 +457,7 @@ def test_baseline_constants_are_documented() -> None:
     assert audit_module.TEST_FILE_MAX_LOC == 2_500
     assert audit_module.TOOLS_FILE_MAX_LOC == 1_800
     assert audit_module.MODELS_FILE_MAX_LOC == 600
-    assert audit_module.BARE_EXCEPT_BASELINE == 43
+    assert audit_module.BARE_EXCEPT_BASELINE == 42
 
 
 def test_broad_except_scanner_counts_alias_and_tuple_handlers(

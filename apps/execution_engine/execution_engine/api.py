@@ -325,8 +325,8 @@ def create_app(  # noqa: PLR0915
             user_strategy_config["_execution_policy_snapshot"] = cmd.execution_policy.model_dump(
                 mode="json"
             )
-            # Carry the inbound command's event_id so the emitted ExecutionResultEvent
-            # records it as its causation_id (command → result tracing link).
+            # Carry the inbound command's event_id so execution_logs.execution_details
+            # records it as causation_event_id (command -> result tracing link).
             user_strategy_config["_causation_event_id"] = cmd.event_id
             trace_ctx = build_trace_context(
                 run_id=sig.run_id,

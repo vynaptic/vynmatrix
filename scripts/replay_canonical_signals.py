@@ -42,7 +42,6 @@ from lib_application.db.session import (  # noqa: E402
     get_session_factory,
     tenant_scope,
 )
-from lib_application.outbox import OutboxStore  # noqa: E402
 from lib_application.services.deployment_owner import require_deployment_owner_id  # noqa: E402
 from lib_application.services.instrument_resolution import resolve_instrument  # noqa: E402
 from lib_common.internal_events import BrokerRouteSnapshot  # noqa: E402
@@ -214,7 +213,6 @@ async def _run_with_factory(
         execution_metrics_store=ExecutionMetricsStore(session_factory=session_factory),
         execution_position_store=ExecutionPositionStore(session_factory=session_factory),
         risk_breach_store=RiskBreachStore(session_factory=session_factory),
-        outbox_store=OutboxStore(session_factory),
         canonical_execution_store=canonical_execution_store,
         default_mode="paper",
         allow_live=False,

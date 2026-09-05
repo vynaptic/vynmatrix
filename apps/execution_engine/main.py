@@ -36,7 +36,6 @@ from lib_application.db.session import (
     dispose_engine,
     get_session_factory,
 )
-from lib_application.outbox import OutboxStore
 from lib_common.alerting import AlertSink, build_sinks_from_env
 from lib_common.config_validation import (
     ExecutionEngineConfig,
@@ -68,12 +67,10 @@ def _create_engine(
     db_url = config.database.url if config.database is not None else None
 
     session_factory = None
-    outbox_store = None
     db_engine: Engine | None = None
     if db_url:
         db_engine = create_engine_for_env(db_url=db_url)
         session_factory = get_session_factory(engine=db_engine)
-        outbox_store = OutboxStore(session_factory)
     log_store = ExecutionLogStore(session_factory=session_factory) if session_factory else None
     metrics_store = (
         ExecutionMetricsStore(session_factory=session_factory) if session_factory else None
@@ -111,7 +108,6 @@ def _create_engine(
             execution_metrics_store=metrics_store,
             execution_position_store=position_store,
             risk_breach_store=risk_breach_store,
-            outbox_store=outbox_store,
             canonical_execution_store=canonical_execution_store,
             default_mode=config.mode.value,
             allow_live=config.allow_live,

@@ -474,8 +474,7 @@ async def _assert_partial_fill_duplicate_bar_and_restart_are_durable() -> None:
         assert pending.pending_projection_exec_id is None
         assert len(fills) == 1
         assert fills[0].source_price_id == 9001
-        outbox = session.query(OutboxEvent).one()
-        assert outbox.payload["orders_filled"] == 1
+        assert session.query(OutboxEvent).count() == 0
         metrics = session.query(ExecutionMetric).all()
         assert len(metrics) == 1
         assert metrics[0].metric_id == f"paper-fill-exec:{fills[0].exec_id}"
@@ -519,7 +518,7 @@ async def _assert_partial_fill_duplicate_bar_and_restart_are_durable() -> None:
         assert pending.cumulative_filled_quantity == Decimal("1.00000000")
         assert pending.pending_projection_exec_id is None
         assert len(fills) == 2
-        assert session.query(OutboxEvent).count() == 2
+        assert session.query(OutboxEvent).count() == 0
         metrics = (
             session.query(ExecutionMetric)
             .order_by(ExecutionMetric.created_at, ExecutionMetric.metric_id)

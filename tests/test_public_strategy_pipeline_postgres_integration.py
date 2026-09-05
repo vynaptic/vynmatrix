@@ -37,7 +37,6 @@ from lib_application.db.session import (
     dispose_engine,
     get_session_factory,
 )
-from lib_application.outbox import OutboxStore
 from lib_application.services.price_ingestion_service import PriceIngestionService
 from lib_common.config_validation import (
     DatabaseConfig,
@@ -364,7 +363,6 @@ def _normal_execution_engine(session_factory: Any) -> ExecutionEngine:
         execution_metrics_store=ExecutionMetricsStore(session_factory=session_factory),
         execution_position_store=ExecutionPositionStore(session_factory=session_factory),
         risk_breach_store=RiskBreachStore(session_factory=session_factory),
-        outbox_store=OutboxStore(session_factory),
         canonical_execution_store=CanonicalExecutionStore(session_factory=session_factory),
         default_mode="paper",
         allow_live=False,

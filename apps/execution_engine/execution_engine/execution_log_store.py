@@ -47,16 +47,8 @@ class ExecutionLogStore:
         details: dict[str, Any],
         error_message: str | None = None,
         run_id: str | None = None,
-        outbox_store: Any | None = None,
-        event_message: dict[str, Any] | None = None,
     ) -> str:
-        """Persist an execution_logs row.
-
-        When ``outbox_store`` and ``event_message`` are supplied, the row and the
-        outbox event are committed in ONE transaction (transactional outbox), so
-        a crash can never persist the execution record without its downstream
-        result event (or vice-versa). Otherwise the row is written standalone.
-        """
+        """Persist an execution_logs row."""
         account_id = _require_positive_account_id(account_id)
         _ensure_strategy_exists(self._session_factory, strategy_id=strategy_id)
         log = ExecutionLog(
@@ -73,15 +65,8 @@ class ExecutionLogStore:
             run_id=run_id,
             created_at=datetime.now(tz=UTC),
         )
-        if outbox_store is None or event_message is None:
-            result = self._repo.log_execution(log)
-            return str(result) if result else ""
-
-        with self._session_factory() as session:
-            log_id = self._repo.log_execution_on_session(session, log)
-            outbox_store.enqueue_on_session(session, **event_message)
-            session.commit()
-            return log_id
+        result = self._repo.log_execution(log)
+        return str(result) if result else ""
 
     def count_daily_trades(
         self,
