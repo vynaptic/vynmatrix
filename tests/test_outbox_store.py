@@ -19,13 +19,13 @@ def test_outbox_enqueue_is_idempotent_by_event_key() -> None:
     store, session_local = _store()
 
     first_id = store.enqueue(
-        topic="signals.scored",
+        topic="execution.commands",
         event_type="ScoredSignal",
         payload={"signal_id": "sig-1"},
         event_key="score:sig-1",
     )
     second_id = store.enqueue(
-        topic="signals.scored",
+        topic="execution.commands",
         event_type="ScoredSignal",
         payload={"signal_id": "sig-1"},
         event_key="score:sig-1",
@@ -163,7 +163,7 @@ def test_backlog_counts_excludes_published_and_filters_by_topic() -> None:
             ("k2", "execution.commands", "failed"),
             ("k3", "execution.commands", "dead_letter"),
             ("k4", "execution.commands", "published"),  # excluded (delivered)
-            ("k5", "signals.scored", "pending"),  # other topic
+            ("k5", "execution.rebalance.commands", "pending"),  # other topic
         ],
     )
 
@@ -178,8 +178,8 @@ def test_backlog_counts_all_topics_when_unfiltered() -> None:
         session_local,
         [
             ("k1", "execution.commands", "pending"),
-            ("k2", "signals.scored", "pending"),
-            ("k3", "signals.scored", "published"),  # excluded
+            ("k2", "execution.rebalance.commands", "pending"),
+            ("k3", "execution.rebalance.commands", "published"),  # excluded
         ],
     )
 
@@ -187,12 +187,12 @@ def test_backlog_counts_all_topics_when_unfiltered() -> None:
     assert counts == {"pending": 2}
 
     publish_id = store.enqueue(
-        topic="execution.results",
+        topic="signals.submit",
         event_type="ExecutionResult",
         payload={"signal_id": "sig-3"},
         event_key="result:sig-3",
     )
-    claimed = store.claim_batch(topics=["execution.results"], consumer="relay", limit=10)
+    claimed = store.claim_batch(topics=["signals.submit"], consumer="relay", limit=10)
     assert [record.event_id for record in claimed] == [publish_id]
 
     store.mark_published(
@@ -242,7 +242,7 @@ def test_outbox_enqueue_recovers_from_event_key_integrity_race(monkeypatch) -> N
     monkeypatch.setattr(session_local.class_, "commit", _commit)
 
     event_id = store.enqueue(
-        topic="signals.scored",
+        topic="execution.commands",
         event_type="ScoredSignal",
         payload={"signal_id": "sig-race"},
         event_key="score:sig-race",
