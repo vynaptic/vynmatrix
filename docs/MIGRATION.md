@@ -60,6 +60,22 @@ year-long Coinbase FX-backfill regressions addressed in the current source.
 This was a functional pipeline exercise, not strategy-promotion or live-trading
 evidence.
 
+The event-driven delivery change (2026-09-06, `feat/event-driven-delivery-bounded-pools`)
+was accepted on the same isolated stack: `vmdev db bootstrap` applied
+`0105_retire_observational_topics` and recreated both groups on the rebuilt image; the
+supervisor's `/metrics/scoring` reported `vm_scoring_outbox_relay_up 1`,
+`vm_scoring_outbox_notify_listener_up 1`, a zero outbox backlog and
+`vm_outbox_progress_ready 1`; `vm_indicator_login` held 4 connections against its
+configured allowance of 5 for one strategy plus its supervisor; every row of the four
+retired topics was already published, so the migration changed no rows; no errors were
+logged. The twenty-worker PostgreSQL acceptance module measured commit-to-receipt delivery
+latency of about 0.22 to 0.25 s median and 0.31 s maximum. During the preceding soak the
+live canary journaled 72 bar decisions and emitted one natural `ETH-USDC` entry, which the
+durable relay published 88 ms after enqueue and scoring persisted with exact `1m` price
+provenance; no execution decision followed because binding authority had been revoked.
+`vmdev test all` passed 3,653 tests with 122 skips and `vmdev audit --strict` passed with
+the broad-exception baseline lowered from 43 to 42.
+
 ## Current design references
 
 The follow-up added migrations 0099 through 0104 for owner designation, safe
