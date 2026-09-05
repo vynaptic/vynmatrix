@@ -1,0 +1,2 @@
+# Required only by the db-migrate one-shot bundled in scoring-engine.
+alembic==1.18.5

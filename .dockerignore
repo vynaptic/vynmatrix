@@ -1,0 +1,51 @@
+# Build artifacts & caches — KEEP build/wheels (Dockerfiles COPY from it)
+build/venvs/
+build/docker/
+**/__pycache__/
+*.egg-info/
+# Setuptools writes these beside source packages while building wheels and app
+# venvs.  Service Dockerfiles copy app/strategy trees directly, so exclude the
+# nested generated state explicitly while retaining root build/wheels below.
+apps/**/build/
+apps/**/dist/
+apps/**/*.egg-info/
+libs/**/build/
+libs/**/dist/
+libs/**/*.egg-info/
+strategies/**/build/
+strategies/**/dist/
+strategies/**/*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+
+# VCS & tooling
+.git/
+.github/
+.githooks/
+.agents/
+.claude/
+.codex/
+graphify-out/
+
+# Local envs & secrets
+.venv/
+.venv-dev/
+.env
+.env.*
+
+# Bulk data & local outputs (mounted/generated at runtime)
+Data/
+reports/
+storage/
+.artifacts/
+lean/
+*.log
+
+# Repo-level tests & docs (not needed in runtime images)
+/tests/
+apps/**/tests/
+apps/**/test_*.py
+docs/
+*.md

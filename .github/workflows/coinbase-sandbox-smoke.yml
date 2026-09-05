@@ -1,0 +1,56 @@
+name: Coinbase Sandbox Smoke
+
+on:
+  # Reusable gate for manually requested image publication. It may also be run
+  # directly with workflow_dispatch after sandbox credentials are configured.
+  workflow_call:
+    inputs:
+      require_credentials:
+        description: Fail instead of skipping when sandbox credentials are unavailable
+        required: false
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      require_credentials:
+        description: Fail instead of skipping when sandbox credentials are unavailable
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  sandbox-smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install execution engine test dependencies
+        run: |
+          # Install the local libs editable in dependency order so pip never
+          # tries to resolve a sibling lib from PyPI. lib_application requires
+          # lib-data + lib-strategy, so lib_data must be installed first.
+          python -m pip install --constraint docker/constraints.txt -e libs/python/lib_common
+          python -m pip install --constraint docker/constraints.txt -e libs/python/lib_data
+          python -m pip install --constraint docker/constraints.txt -e libs/python/lib_strategy
+          python -m pip install --constraint docker/constraints.txt -e libs/python/lib_application
+          python -m pip install --constraint docker/constraints.txt -e libs/python/lib_infrastructure
+          python -m pip install --constraint docker/constraints.txt -e apps/execution_engine
+          python -m pip install --constraint docker/constraints.txt pytest
+
+      - name: Run Coinbase sandbox integration tests
+        env:
+          COINBASE_SANDBOX_API_KEY: ${{ secrets.COINBASE_SANDBOX_API_KEY }}
+          COINBASE_SANDBOX_API_SECRET: ${{ secrets.COINBASE_SANDBOX_API_SECRET }}
+          COINBASE_SANDBOX_REQUIRED: ${{ inputs.require_credentials }}
+        run: |
+          pytest apps/execution_engine/tests/test_coinbase_sandbox_integration.py -m integration -q

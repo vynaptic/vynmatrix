@@ -1,0 +1,45 @@
+{
+  "strategy_id": "swing_high_low_pmo_v1",
+  "description": "Swing High/Low + PMO momentum strategy for crypto trading",
+  "schema_version": "2",
+  "strategy_version": "1.1.0",
+  "enabled": true,
+  "environments": [
+    "dev"
+  ],
+  "runner_kind": "signal_worker",
+  "trade_direction_mode": "long_only",
+  "parameters": {
+    "universe": "BTCUSDC,ETHUSDC,SOLUSDC",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_only",
+    "pmo_first_length": "35",
+    "pmo_second_length": "20",
+    "pmo_signal_length": "10",
+    "ema_period": "50",
+    "swing_length": "5",
+    "risk_reward_ratio": "1.5",
+    "max_swing_age_bars": "20",
+    "max_stop_distance_pct": "0.10",
+    "trading_start_hour": "7",
+    "trading_end_hour": "23",
+    "trading_timezone": "UTC"
+  },
+  "market_data": {
+    "source": "coinbase_live",
+    "timeframe": "1m",
+    "consolidation_minutes": 15,
+    "bootstrap_bars": 500
+  },
+  "deployment": {
+    "paper_candidate": {
+      "canonical_instrument": "BTC-USDC",
+      "broker_code": "local-paper"
+    }
+  },
+  "metadata": {
+    "decision": "E2E_PIPELINE_CANARY_ONLY",
+    "readiness": "READY_FOR_BACKTEST",
+    "role": "E2E pipeline-verification canary ONLY (owner decision 2026-07-29): top-3 crypto (BTC/ETH/SOL vs USDC, Coinbase, long-only), permanently excluded from paper promotion and live trading. Basis: 2026-07-27 3-year harness backtest (2023-08..2026-07, real Coinbase 15m, next-open fills) found NO EDGE - gross of costs +4.6%/+8.5%/+4.6% per symbol over the full window; net at 10 bps/side -38..-41% each, all years negative (local pre-certification harness; the formal vmdev strategy validation campaign remains the only promotion gate). Use this strategy exclusively to verify market-data -> signal -> scoring -> outbox -> paper execution -> P&L -> feedback whenever the pipeline changes."
+  }
+}

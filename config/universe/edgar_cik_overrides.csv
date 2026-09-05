@@ -1,0 +1,3 @@
+ticker,cik,expected_name_contains,notes
+TWTR,1418091,TWITTER,deregistered after Musk acquisition close (2022-10); absent from company_tickers.json
+ATVI,718877,ACTIVISION,deregistered after Microsoft acquisition close (2023-10); absent from company_tickers.json

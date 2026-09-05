@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+
+# Keep the quality gate active alongside pre-push under core.hooksPath.
+# Activate the development environment before committing; missing tools fail closed.
+exec python -m pre_commit run --hook-stage pre-commit

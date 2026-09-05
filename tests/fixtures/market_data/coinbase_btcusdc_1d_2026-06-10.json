@@ -1,0 +1,17 @@
+{
+  "requested_product": "BTC-USDC",
+  "canonical_book": "BTC-USD",
+  "granularity": "ONE_DAY",
+  "source": "coinbase_advanced_trade_public",
+  "retrieved_on": "2026-07-21",
+  "request_url": "https://api.coinbase.com/api/v3/brokerage/market/products/BTC-USDC/candles?start=1781049600&end=1781136000&granularity=ONE_DAY&limit=10",
+  "timestamp_semantics": "period_start",
+  "bar": {
+    "start": 1781049600,
+    "open": 61685.81,
+    "high": 62809.04,
+    "low": 60708.92,
+    "close": 61449.46,
+    "volume": 9040.95804487
+  }
+}

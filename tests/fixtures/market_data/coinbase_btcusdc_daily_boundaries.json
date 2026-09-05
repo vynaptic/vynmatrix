@@ -1,0 +1,36 @@
+{
+  "fixture_scope": "arithmetic_boundary_unit_input",
+  "market_evidence": false,
+  "provenance_status": "capture_endpoint_and_retrieval_time_not_recorded",
+  "provider": "coinbase_advanced_trade",
+  "requested_product": "BTC-USDC",
+  "canonical_product": "BTC-USD",
+  "timeframe": "1d",
+  "source": "coinbase_validation_v1",
+  "bars": [
+    {
+      "ts": 1577750400,
+      "open": 7218.01,
+      "high": 7298.67,
+      "low": 7111.00,
+      "close": 7165.72,
+      "volume": 6755.96883486
+    },
+    {
+      "ts": 1577836800,
+      "open": 7165.72,
+      "high": 7238.14,
+      "low": 7136.05,
+      "close": 7174.33,
+      "volume": 3350.63004888
+    },
+    {
+      "ts": 1767139200,
+      "open": 88397.24,
+      "high": 89100.00,
+      "low": 87082.64,
+      "close": 87497.94,
+      "volume": 7261.18123917
+    }
+  ]
+}

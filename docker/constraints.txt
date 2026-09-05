@@ -1,0 +1,71 @@
+# Resolved dependency lock for the DigitalOcean services and strategy-validation
+# environment. Optional provider extras are locked in their own activation work;
+# they do not belong in this production closure. Every runtime profile is checked
+# against these exact pins by ``vmdev audit``.
+#
+# Regenerate by merging normalized ``pip freeze`` output from every rebuilt
+# service image and the validation venv; exclude local platform distributions,
+# optional provider extras, and pip/setuptools bootstrap tools.
+PyYAML==6.0.3
+SQLAlchemy==2.0.51
+Mako==1.3.10
+MarkupSafe==3.0.3
+alembic==1.18.5
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.14.0
+attrs==26.1.0
+certifi==2026.6.17
+cffi==2.0.0
+click==8.4.1
+cryptography==49.0.0
+exchange_calendars==4.13.2
+fastapi==0.140.0
+greenlet==3.5.2
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.18
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+korean_lunar_calendar==0.4.0
+markdown-it-py==4.2.0
+mdurl==0.1.2
+numpy==2.4.6
+packaging==26.2
+pandas==3.0.3
+prometheus_client==0.25.0
+psutil==7.2.2
+psycopg2-binary==2.9.12
+pycparser==3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+Pygments==2.20.0
+pyluach==2.3.0
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+referencing==0.37.0
+rich==15.0.0
+rpds-py==2026.6.3
+six==1.17.0
+sniffio==1.3.1
+starlette==1.3.1
+toolz==1.1.0
+typing_extensions==4.16.0
+typing-inspection==0.4.2
+tzdata==2026.3
+uvicorn==0.51.0
+uvloop==0.22.1
+
+# Reproducible build, test, lint, and type-check toolchain used by CI/vmdev.
+build==1.3.0
+coverage==7.11.2
+mypy==1.18.2
+pre-commit==4.3.0
+pytest==9.0.0
+pytest-cov==7.0.0
+ruff==0.14.4
+types-PyYAML==6.0.12.20260724
+setuptools==80.9.0
+wheel==0.45.1

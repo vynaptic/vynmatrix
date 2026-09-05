@@ -1,0 +1,51 @@
+# Dev database-only stack for the vynmatrix platform.
+# Usage: docker compose -f docker-compose.yml up -d
+#
+# The postgres service EXTENDS the canonical definition in
+# docker-compose.stack.yml — the platform stack file is the single source of
+# truth for the database service; this file only adds the local-development
+# pgAdmin tool. (The stack's bounded json-file logging is redeclared here
+# because YAML anchors do not cross files via `extends`.)
+
+# Isolate resources from other checkouts; override with COMPOSE_PROJECT_NAME or -p.
+name: vynmatrix
+
+services:
+  postgres:
+    extends:
+      file: docker-compose.stack.yml
+      service: postgres
+    logging:
+      driver: json-file
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+        max-file: ${DOCKER_LOG_MAX_FILES:-3}
+
+  # pgAdmin for database management (optional, for development)
+  # WARNING: pgAdmin is for LOCAL DEVELOPMENT ONLY. Never enable in staging/prod.
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    profiles:
+      - admin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:?Set PGADMIN_EMAIL in .env}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?Set PGADMIN_PASSWORD in .env}
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    networks:
+      - vm
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+networks:
+  vm:
+    driver: bridge
+
+volumes:
+  postgres-data:
+    driver: local
+  pgadmin-data:
+    driver: local

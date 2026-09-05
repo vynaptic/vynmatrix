@@ -1,0 +1,21 @@
+# Shared third-party closure required by every production service wheel.
+# The local platform wheels are installed without dependency resolution in each
+# service-specific builder stage; ``pip check`` then proves this base plus that
+# service's extras satisfy their metadata. Keeping the genuinely shared closure
+# here gives all five images one reusable layer without making provider-specific
+# integrations or unused analytics libraries mandatory.
+fastapi==0.140.0
+# uvicorn with only the perf extras production uses: uvloop + httptools.
+# [standard] also drags watchfiles (--reload dev mode) and websockets,
+# neither of which any production code touches.
+uvicorn==0.51.0
+uvloop==0.22.1
+httptools==0.8.0
+httpx==0.28.1
+sqlalchemy==2.0.51
+psycopg2-binary==2.9.12
+pydantic==2.13.4
+PyYAML==6.0.3
+python-dotenv==1.2.2
+prometheus-client==0.25.0
+cryptography==49.0.0

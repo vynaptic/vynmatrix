@@ -1,0 +1,40 @@
+{
+  "strategy_id": "registered_campaign_v1",
+  "strategy_version": "1.0.0",
+  "description": "Non-deployable fixture for validation-campaign contract tests",
+  "schema_version": "2",
+  "runner_kind": "signal_worker",
+  "enabled": false,
+  "environments": [],
+  "trade_direction_mode": "long_only",
+  "parameters": {
+    "universe": "BTCUSDC",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_only",
+    "lookback_period": "30",
+    "confidence": "0.70",
+    "max_symbols": "4"
+  },
+  "market_data": {
+    "source": "coinbase_live",
+    "timeframe": "1m",
+    "consolidation_minutes": 1440,
+    "bootstrap_bars": 90
+  },
+  "execution": {
+    "mode": "disabled",
+    "require_explicit_scoring_inputs": true
+  },
+  "runtime": {
+    "mode": "disabled"
+  },
+  "feedback_loop": {
+    "evaluation_horizon": "1d"
+  },
+  "metadata": {
+    "category": "test-fixture",
+    "decision": "NOT_DEPLOYABLE",
+    "readiness": "TEST_CONTRACT_ONLY",
+    "source_strategy": null
+  }
+}

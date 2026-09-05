@@ -1,0 +1,184 @@
+global:
+  python_version: 3.11.13
+  build_dir: ./build
+  wheels_dir: ./build/wheels
+  venvs_dir: ./build/venvs
+  docker_dir: ./build/docker
+libs:
+  build_type: wheel
+  components:
+  - name: lib_common
+    path: libs/python/lib_common
+    version: 0.1.0
+    dependencies: []
+    owner_team: platform
+  - name: lib_data
+    path: libs/python/lib_data
+    version: 0.1.0
+    dependencies:
+    - lib_common
+    owner_team: platform
+  - name: lib_indicators
+    path: libs/python/lib_indicators
+    version: 0.1.0
+    dependencies:
+    - lib_common
+    owner_team: quant
+  - name: lib_strategy
+    path: libs/python/lib_strategy
+    version: 0.2.0
+    dependencies:
+    - lib_common
+    - lib_data
+    owner_team: platform
+  - name: lib_application
+    path: libs/python/lib_application
+    version: 0.1.0
+    dependencies:
+    - lib_common
+    - lib_data
+    - lib_strategy
+    owner_team: platform
+  - name: lib_infrastructure
+    path: libs/python/lib_infrastructure
+    version: 0.1.0
+    dependencies:
+    - lib_common
+    - lib_data
+    - lib_strategy
+    - lib_application
+    owner_team: platform
+strategies:
+  build_type: venv_docker
+  base_dependencies:
+  - lib_common
+  - lib_data
+  - lib_strategy
+  groups:
+  - name: indicator
+    path: strategies/indicator
+    version: 0.1.0
+    wheel_distribution: vynmatrix_indicator
+    verify_import: SwingHighLowPMO.core
+    verify_strategy_payload: true
+    dependencies:
+    - lib_indicators
+    owner_team: quant
+    docker: false
+strategy_validation:
+  venv_name: strategy-validation
+  applications:
+  - market_data_ingestor
+  external_requirements:
+  - pandas==3.0.3
+  - exchange_calendars==4.13.2
+  libraries:
+  - lib_common
+  - lib_data
+  - lib_indicators
+  - lib_strategy
+  - lib_application
+  - lib_infrastructure
+  strategy_group: indicator
+  tool_path: tools/dev_cli
+apps:
+  build_type: venv_docker
+  components:
+  - name: indicator_runner
+    path: apps/indicator_runner
+    version: 0.1.0
+    description: Indicator strategy runner (signal_worker / PureSignalStrategy cores)
+    strategy_groups:
+    - indicator
+    dependencies:
+    - lib_common
+    - lib_data
+    - lib_strategy
+    - lib_indicators
+    - lib_application
+    - lib_infrastructure
+    owner_team: platform
+    docker: true
+  - name: execution_engine
+    path: apps/execution_engine
+    version: 0.1.0
+    description: Signal execution engine with broker adapters
+    dependencies:
+    - lib_common
+    - lib_data
+    - lib_strategy
+    - lib_application
+    - lib_infrastructure
+    owner_team: platform
+    docker: true
+  - name: scoring_engine
+    path: apps/scoring_engine
+    version: 0.1.0
+    description: Scoring engine that aggregates signals into scores and evaluates
+      user bindings
+    dependencies:
+    - lib_common
+    - lib_data
+    - lib_strategy
+    - lib_application
+    - lib_infrastructure
+    owner_team: platform
+    docker: true
+  - name: feedback_loop_engine
+    path: apps/feedback_loop_engine
+    version: 0.1.0
+    description: Signal evaluation, consecutive wrong tracking, and optimization suggestions
+    dependencies:
+    - lib_common
+    - lib_data
+    - lib_strategy
+    - lib_application
+    - lib_infrastructure
+    owner_team: platform
+    docker: true
+  - name: market_data_ingestor
+    path: apps/market_data_ingestor
+    version: 0.1.0
+    description: Provider-neutral official candle ingestion with exact provenance
+      and Postgres NOTIFY for downstream consumers
+    dependencies:
+    - lib_common
+    - lib_data
+    - lib_indicators
+    - lib_strategy
+    - lib_application
+    - lib_infrastructure
+    strategy_groups:
+    - indicator
+    owner_team: platform
+    docker: true
+  - name: backend
+    path: apps/backend
+    version: 0.1.0
+    description: Tenant config API (strategy-binding CRUD + broker-account onboarding);
+      runs as the non-superuser vm_backend role so Postgres RLS is the multi-tenant backstop.
+      No standalone image — ships inside the scoring-engine image (DOCR Basic 5-repo
+      cap, see config/containers.yaml) and runs as its own container via command override.
+    dependencies:
+    - lib_common
+    - lib_strategy
+    - lib_application
+    - lib_infrastructure
+    owner_team: platform
+    docker: false
+teams:
+  platform:
+  - lib_common
+  - lib_data
+  - lib_strategy
+  - lib_application
+  - lib_infrastructure
+  - indicator_runner
+  - execution_engine
+  - scoring_engine
+  - feedback_loop_engine
+  - market_data_ingestor
+  - backend
+  quant:
+  - lib_indicators
+  - indicator

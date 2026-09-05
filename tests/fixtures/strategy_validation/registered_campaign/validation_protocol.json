@@ -1,0 +1,946 @@
+{
+  "schema_version": "1.0",
+  "protocol_id": "registered_campaign_2020_2025_v1",
+  "status": "frozen_pre_outcome_protocol_2026_07_21",
+  "fixture_provenance": {
+    "derived_from": "generic_validation_unit_contract",
+    "purpose": "exercise shared campaign orchestration without strategy-performance claims",
+    "production_authority": false,
+    "strategy_performance_evidence": false,
+    "provider_fixture_integrity_evidence": true
+  },
+  "strategy": {
+    "strategy_id": "registered_campaign_v1",
+    "strategy_version": "1.0.0",
+    "core_class": "RegisteredCampaignCore",
+    "core_path": "tests/fixtures/strategy_validation/registered_campaign/core.py",
+    "runtime_config_path": "tests/fixtures/strategy_validation/registered_campaign/config.json",
+    "require_explicit_scoring_inputs": true
+  },
+  "correctness_attestation": {
+    "required": true,
+    "schema_id": "vynmatrix.strategy-correctness-contract",
+    "schema_version": 1,
+    "attestation_schema_id": "vynmatrix.strategy-correctness-attestation",
+    "attestation_schema_version": 1,
+    "subject": {
+      "strategy_id": "registered_campaign_v1",
+      "strategy_version": "1.0.0"
+    },
+    "files": [
+      {
+        "id": "fixture.real_provider_slice",
+        "class": "fixture",
+        "content_classification": "non_sensitive_fixture",
+        "location": "tests/fixtures/market_data/coinbase_btcusdc_1m_integration_2026-06-10.json",
+        "sha256": "23083a31a795c6aba679b21adeb3271a9f9598b33b3830c1b2bd938fa7d123ec",
+        "byte_count": 3149,
+        "path_scope": "repository_relative"
+      },
+      {
+        "id": "package.reference",
+        "class": "package_source",
+        "content_classification": "non_sensitive_source",
+        "location": "libs/python/lib_strategy/lib_strategy/signals/normalization.py",
+        "sha256": "de018edf5c0757823935ba187f5aef9a31a2b661e94e31377f0328f40844494e",
+        "byte_count": 3112,
+        "path_scope": "repository_relative"
+      },
+      {
+        "id": "strategy.current_config",
+        "class": "strategy_source",
+        "content_classification": "non_sensitive_source",
+        "location": "tests/fixtures/strategy_validation/registered_campaign/config.json",
+        "sha256": "42915d3b33b22d1c93a45f783bb2d6f6122d4ba93aed4c470d567abaab2e02f1",
+        "byte_count": 979,
+        "path_scope": "repository_relative"
+      },
+      {
+        "id": "strategy.current_core",
+        "class": "strategy_source",
+        "content_classification": "non_sensitive_source",
+        "location": "tests/fixtures/strategy_validation/registered_campaign/core.py",
+        "sha256": "51f2a2a93a99b0c2ff813417ed26f66b209de7c430a9b27905c21a499a37ac01",
+        "byte_count": 737,
+        "path_scope": "repository_relative"
+      }
+    ],
+    "findings": [
+      {
+        "id": "E1.source_identity",
+        "authority": "Registered unit contract.",
+        "current_behavior": "Fixture source identity is registered.",
+        "authoritative_behavior": "Only bound source bytes are admitted.",
+        "severity": "high",
+        "status": "resolved",
+        "finding_class": "evidence_integrity",
+        "remediation": "Update the frozen unit contract before changing source.",
+        "evidence_file_ids": [
+          "strategy.current_config",
+          "strategy.current_core"
+        ]
+      }
+    ],
+    "reviewer": {
+      "identity": "controlled-generic-campaign-fixture",
+      "role": "Automated contract-fixture review; not model validation.",
+      "independent": false,
+      "reviewed_at_utc": "2026-07-22T09:00:00Z"
+    },
+    "exact_attestation": {
+      "status": "frozen_pre_outcome_source_reverification",
+      "attestation_sha256": "6b2993bfd403e492dac874c46b722da4297d502c450af4dac99c57b18296fd04",
+      "summary": {
+        "file_count": 4,
+        "finding_count": 1,
+        "strategy_semantic_finding_count": 0,
+        "evidence_integrity_finding_count": 1,
+        "remediation_required_finding_ids": [],
+        "accepted_deviation_finding_ids": [],
+        "resolved_evidence_integrity_finding_ids": [
+          "E1.source_identity"
+        ],
+        "unresolved_evidence_integrity_finding_count": 0
+      }
+    }
+  },
+  "evidence_boundary": {
+    "selection_contaminated_through": "2026-06-01T00:00:00Z",
+    "upstream_selection": {
+      "catalogue_campaign_runs": 4,
+      "authoritative_ledger_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "ledger_required_before_manifest_freeze": true,
+      "resume_uses_embedded_manifest_ledger": true
+    }
+  },
+  "data": {
+    "provider": "coinbase_advanced_trade",
+    "base_url": "https://api.coinbase.com",
+    "candle_endpoint_kind": "public_advanced_trade",
+    "source": "coinbase_validation_v1",
+    "timeframe": "1d",
+    "warmup_start": "2019-10-01T00:00:00Z",
+    "source_candle_evaluation_start": "2020-01-01T00:00:00Z",
+    "source_candle_evaluation_end_exclusive": "2026-01-01T00:00:00Z",
+    "evaluation_start": "2020-01-02T00:00:00Z",
+    "evaluation_end_exclusive": "2026-01-02T00:00:00Z",
+    "evaluation_boundary_basis": "normalized_completed_bar_close_timestamp",
+    "source_to_decision_transform": "one_day_period_start_plus_one_day_close",
+    "provider_granularity": "ONE_DAY",
+    "strategy_resolution": "1d_utc",
+    "minimum_daily_coverage": 1.0,
+    "product_metadata_observed_at_utc": "2026-07-21T19:39:38Z",
+    "primary_products": [
+      {
+        "requested_product": "BTC-USDC",
+        "provider_product_id": "BTC-USDC",
+        "expected_canonical_book": "BTC-USD",
+        "provider_alias": "BTC-USD",
+        "provider_alias_to": [],
+        "base_currency": "BTC",
+        "settlement_quote": "USDC",
+        "quote_display_symbol": "USD",
+        "product_type": "SPOT",
+        "status": "online",
+        "is_disabled": false,
+        "trading_disabled": false,
+        "price_increment": "0.01",
+        "base_increment": "0.00000001",
+        "quote_increment": "0.01",
+        "dataset_rows": 2284,
+        "expected_dataset_rows": 2284,
+        "dataset_sha256": "52481a6e411ac6281fa7bff451195f1091ee645498fd020408e04eaf2852e9c9"
+      },
+      {
+        "requested_product": "ETH-USDC",
+        "provider_product_id": "ETH-USDC",
+        "expected_canonical_book": "ETH-USD",
+        "provider_alias": "ETH-USD",
+        "provider_alias_to": [],
+        "base_currency": "ETH",
+        "settlement_quote": "USDC",
+        "quote_display_symbol": "USD",
+        "product_type": "SPOT",
+        "status": "online",
+        "is_disabled": false,
+        "trading_disabled": false,
+        "price_increment": "0.01",
+        "base_increment": "0.00000001",
+        "quote_increment": "0.01",
+        "dataset_rows": 2284,
+        "expected_dataset_rows": 2284,
+        "dataset_sha256": "89dc501518a3d20d29ed5395f7832000b428790af1895b91229a4b448d752069"
+      }
+    ],
+    "minute_parity": {
+      "required": true,
+      "artifact_schema_id": "vynmatrix.coinbase-daily-parity-attestation",
+      "artifact_schema_version": 1,
+      "base_url": "https://api.coinbase.com",
+      "public_candle_endpoint": "/api/v3/brokerage/market/products/{product_id}/candles",
+      "minute_request_chunk_bars": 300,
+      "provider_limit": 350,
+      "incomplete_chunk_refetches_required": 2,
+      "production_consolidation_minutes": 1440,
+      "minimum_constituent_coverage": 0.95,
+      "sample_policy": "pre_registered_stratified_year_and_regime_windows",
+      "stamp_transform": "provider_start_plus_one_day_equals_period_close",
+      "ohlc_tolerance": "product_tick",
+      "volume_tolerance": {
+        "absolute_base_units": 1e-08,
+        "relative_fraction": 1e-06
+      },
+      "strategy_field_dependency": {
+        "price_and_timestamp_fields": "blocking",
+        "uses_volume": false
+      },
+      "exact_attestation": {
+        "status": "frozen_real_public_candle_attestation",
+        "attestation_sha256": "5a6bbfb0d88fcef553372f3b81d1c4e9ad2e612eecc4751fdbacf7f3feec65e5",
+        "source_input_sha256": "ad350794d97913b991ef40b486b749dabf06aa4ef7b6c3f51b5dc0231da1713f",
+        "consolidation_source_sha256": "9bbdfd372aa78e9cb8705b152d18ff25058f1a931a6b7f6dca0e2c0f83e5d820",
+        "measured_at_utc": "2026-07-21T23:35:06.205539Z",
+        "summary": {
+          "minute_candles_expected": 69120,
+          "minute_candles_observed": 69092,
+          "minimum_daily_constituent_coverage_observed": 0.9875,
+          "sampled_daily_bars": 48,
+          "exact_price_and_timestamp_matches": 48,
+          "full_ohlcv_matches": 46,
+          "volume_only_mismatches": 2,
+          "blocking_mismatches": 0,
+          "status": "provider_cross_granularity_volume_exception",
+          "campaign_disposition": "eligible_for_volume_independent_price_rules"
+        }
+      },
+      "observed_reconciliation": {
+        "status": "provider_cross_granularity_volume_exception",
+        "sampled_daily_bars": 48,
+        "exact_price_and_timestamp_matches": 48,
+        "full_ohlcv_matches": 46,
+        "volume_only_mismatches": 2
+      },
+      "calendar_strata": [
+        {
+          "id": "2020_h1",
+          "start": "2020-01-15T00:00:00Z",
+          "end_exclusive": "2020-01-17T00:00:00Z"
+        },
+        {
+          "id": "2020_h2",
+          "start": "2020-07-15T00:00:00Z",
+          "end_exclusive": "2020-07-17T00:00:00Z"
+        },
+        {
+          "id": "2021_h1",
+          "start": "2021-01-15T00:00:00Z",
+          "end_exclusive": "2021-01-17T00:00:00Z"
+        },
+        {
+          "id": "2021_h2",
+          "start": "2021-07-15T00:00:00Z",
+          "end_exclusive": "2021-07-17T00:00:00Z"
+        },
+        {
+          "id": "2022_h1",
+          "start": "2022-01-15T00:00:00Z",
+          "end_exclusive": "2022-01-17T00:00:00Z"
+        },
+        {
+          "id": "2022_h2",
+          "start": "2022-07-15T00:00:00Z",
+          "end_exclusive": "2022-07-17T00:00:00Z"
+        },
+        {
+          "id": "2023_h1",
+          "start": "2023-01-15T00:00:00Z",
+          "end_exclusive": "2023-01-17T00:00:00Z"
+        },
+        {
+          "id": "2023_h2",
+          "start": "2023-07-15T00:00:00Z",
+          "end_exclusive": "2023-07-17T00:00:00Z"
+        },
+        {
+          "id": "2024_h1",
+          "start": "2024-01-15T00:00:00Z",
+          "end_exclusive": "2024-01-17T00:00:00Z"
+        },
+        {
+          "id": "2024_h2",
+          "start": "2024-07-15T00:00:00Z",
+          "end_exclusive": "2024-07-17T00:00:00Z"
+        },
+        {
+          "id": "2025_h1",
+          "start": "2025-01-15T00:00:00Z",
+          "end_exclusive": "2025-01-17T00:00:00Z"
+        },
+        {
+          "id": "2025_h2",
+          "start": "2025-07-15T00:00:00Z",
+          "end_exclusive": "2025-07-17T00:00:00Z"
+        }
+      ],
+      "regime_assignment": "post_acquisition_daily_volatility_quartile_without_strategy_outputs"
+    }
+  },
+  "habitat": {
+    "asset_class": "crypto_spot"
+  },
+  "execution_policy": {
+    "policy_version": "next_open_bracket_v2",
+    "model_close": "next_open",
+    "terminal_position": "mark_and_report_without_silent_liquidation"
+  },
+  "validation_design": {
+    "historical_evidence_role": "selection_contaminated_research_only",
+    "primary_decision_basis": "pooled_purged_oos_for_ranking_rejection_and_redesign_diagnosis_only",
+    "production_parameter_semantics": "one_fixed_registered_arm_per_frozen_strategy_version",
+    "adaptive_fold_selector_is_not_a_deployable_strategy": true,
+    "shipped_version_shadow_freeze_arm": "BASELINE",
+    "non_baseline_winner_disposition": "REDESIGN_as_new_version_and_new_manifest_before_any_prospective_clock",
+    "initial_purge_calendar_days": 60,
+    "embargo_bars": 30,
+    "calendar_purge_interval": "[test_start_minus_60_calendar_days,test_start)",
+    "embargo_semantics": "exclude_final_30_otherwise_eligible_training_bars_immediately_before_calendar_purge",
+    "bootstrap_semantics": "purged_and_embargoed_bars_may_be_used_only_as_non_trading_indicator_preroll",
+    "stateful_training_input_topology": "contiguous_prefix_no_interior_market_bar_deletion",
+    "fold_boundaries": "exact_half_open_timestamps_never_inferred_from_bar_counts",
+    "fold_boundary_position": "flat_after_indicator_bootstrap_before_first_oos_bar"
+  },
+  "portfolio_assumptions": {
+    "initial_capital_usd": 100000.0,
+    "primary_fixed_exposure_pct": 0.1,
+    "portfolio_asset_weights": {
+      "BTC-USDC": 0.5,
+      "ETH-USDC": 0.5
+    }
+  },
+  "baseline_parameters": {
+    "lookback_period": 30
+  },
+  "signal_rule_arms": [
+    {
+      "id": "BASELINE",
+      "overrides": {}
+    },
+    {
+      "id": "NEIGHBOR",
+      "overrides": {
+        "lookback_period": 20
+      }
+    },
+    {
+      "id": "DIAGNOSTIC",
+      "overrides": {
+        "lookback_period": 40
+      }
+    }
+  ],
+  "semantic_diagnostic_arms": [],
+  "cost_measurement": {
+    "status": "frozen_hash_attested_live_measurement_2026_07_21",
+    "schema_id": "vynmatrix.coinbase-execution-cost-measurement",
+    "schema_version": 1,
+    "provider": "coinbase_advanced_trade",
+    "book_endpoint": "/api/v3/brokerage/product_book",
+    "fee_endpoint": "/api/v3/brokerage/transaction_summary?product_type=SPOT",
+    "market_fills_use_taker_fee": true,
+    "sampling": {
+      "samples_required_per_product": 20,
+      "missing_sample_policy": "fail_complete_measurement",
+      "depth_limit_levels_per_side": 100,
+      "maximum_snapshot_age_seconds": 120.0,
+      "maximum_inter_sample_gap_seconds": 10.0,
+      "maximum_provider_clock_skew_seconds": 5.0
+    },
+    "depth_walk": {
+      "expected_quote_notional": "10000",
+      "stressed_quote_notional": "100000",
+      "side_aggregation": "maximum_of_buy_and_sell_depth_impact",
+      "expected_aggregation": {
+        "quantile": 0.5,
+        "method": "nearest_rank_ceiling"
+      },
+      "stressed_aggregation": {
+        "quantile": 0.95,
+        "method": "nearest_rank_ceiling"
+      }
+    },
+    "exact_attestation": {
+      "measurement_sha256": "4b4083b09d01ece1a575ce307cadea389a8ccfb47a04f1d51588a019b274ad45",
+      "raw_snapshot_sha256": "1a34ddc783201e6ce777b13318e01884dbabcdcd4770c72a6ec7044e914b0c9d",
+      "measured_at_utc": "2026-07-21T23:11:57.855936Z",
+      "first_provider_timestamp": "2026-07-21T23:11:29.179492Z",
+      "last_provider_timestamp": "2026-07-21T23:11:57.703354Z"
+    },
+    "exact_fee_summary": {
+      "maker_fee_bps": "60.000",
+      "taker_fee_bps": "120.000"
+    },
+    "historical_order_books_available": false,
+    "historical_application": "current_measured_applied_backward_with_sensitivity"
+  },
+  "cost_scenarios": {
+    "gross": {
+      "status": "frozen_structural_zero_cost_reference",
+      "commission_bps": "0",
+      "slippage_bps": "0",
+      "fill_delay_bars": 0,
+      "products": {
+        "BTC-USDC": {
+          "half_spread_bps": "0",
+          "impact_bps": "0"
+        },
+        "ETH-USDC": {
+          "half_spread_bps": "0",
+          "impact_bps": "0"
+        }
+      }
+    },
+    "optimistic": {
+      "status": "frozen_current_measured",
+      "commission_bps": "120.000",
+      "slippage_bps": "0",
+      "fill_delay_bars": 0,
+      "products": {
+        "BTC-USDC": {
+          "half_spread_bps": "0.0007548379261069528347825089258",
+          "impact_bps": "0"
+        },
+        "ETH-USDC": {
+          "half_spread_bps": "0.02608248847806071481667922973",
+          "impact_bps": "0"
+        }
+      }
+    },
+    "expected": {
+      "status": "frozen_current_measured",
+      "commission_bps": "120.000",
+      "slippage_bps": "0",
+      "fill_delay_bars": 0,
+      "products": {
+        "BTC-USDC": {
+          "half_spread_bps": "0.0007548379261069528347825089258",
+          "impact_bps": "0.2537825126643375931123774911"
+        },
+        "ETH-USDC": {
+          "half_spread_bps": "0.02608248847806071481667922973",
+          "impact_bps": "0.3802420851418214445003767703"
+        }
+      }
+    },
+    "expected_latency_1bar": {
+      "status": "frozen_isolated_latency_diagnostic",
+      "commission_bps": "120.000",
+      "slippage_bps": "0",
+      "fill_delay_bars": 1,
+      "products": {
+        "BTC-USDC": {
+          "half_spread_bps": "0.0007548379261069528347825089258",
+          "impact_bps": "0.2537825126643375931123774911"
+        },
+        "ETH-USDC": {
+          "half_spread_bps": "0.02608248847806071481667922973",
+          "impact_bps": "0.3802420851418214445003767703"
+        }
+      }
+    },
+    "stressed": {
+      "status": "frozen_measured_depth_plus_fee_sensitivity",
+      "commission_bps": "180.0000",
+      "commission_sensitivity_multiple": 1.5,
+      "slippage_bps": "0",
+      "fill_delay_bars": 1,
+      "products": {
+        "BTC-USDC": {
+          "half_spread_bps": "0.0007549407284709966493465648272",
+          "impact_bps": "1.996613523301948495189462001"
+        },
+        "ETH-USDC": {
+          "half_spread_bps": "0.2608595845028538038544612206",
+          "impact_bps": "2.026180577072133720080966625"
+        }
+      }
+    }
+  },
+  "benchmarks": [
+    "cash",
+    "buy_and_hold",
+    "training_calibrated_volatility_targeted_buy_and_hold",
+    "sma_30_long_cash",
+    "momentum_90d_long_cash"
+  ],
+  "benchmark_definitions": {
+    "portfolio_aggregation": {
+      "asset_weights": {
+        "BTC-USDC": 0.5,
+        "ETH-USDC": 0.5
+      },
+      "daily_return_rule": "arithmetic_mean_of_exact_timestamp_aligned_asset_net_returns",
+      "full_panel_terminal_treatment": "mark_to_market_without_counting_a_closed_trade",
+      "oos_fold_terminal_treatment": "last_oos_close_mark_plus_stressed_hypothetical_liquidation_cost_before_fold_pooling",
+      "missing_or_unaligned_asset_observation": "trial_failure"
+    },
+    "cash": {
+      "decision_rule": "remain_flat",
+      "execution": "zero_return_no_orders",
+      "cost_scenarios": [
+        "gross",
+        "optimistic",
+        "expected",
+        "expected_latency_1bar",
+        "stressed"
+      ]
+    },
+    "buy_and_hold": {
+      "decision_rule": "emit_long_on_first_completed_evaluation_bar",
+      "exposure_pct": 0.1,
+      "terminal_treatment": "mark_to_market_without_counting_a_closed_trade"
+    },
+    "training_calibrated_volatility_targeted_buy_and_hold": {
+      "decision_rule": "emit_long_on_first_completed_evaluation_bar",
+      "calibration_lookback_calendar_days": 365,
+      "minimum_calibration_returns": 60,
+      "annualization_factor": 365.0,
+      "target_annualized_volatility": 0.05,
+      "minimum_exposure_pct": 0.01,
+      "maximum_exposure_pct": 0.1,
+      "leverage_allowed": false,
+      "terminal_treatment": "mark_to_market_without_counting_a_closed_trade"
+    },
+    "sma_30_long_cash": {
+      "decision_rule": "target_long_when_completed_close_strictly_above_sma30_else_cash",
+      "warmup_bars": 30,
+      "exposure_pct": 0.1
+    },
+    "momentum_90d_long_cash": {
+      "decision_rule": "target_long_when_completed_close_strictly_above_close_90_bars_ago_else_cash",
+      "warmup_bars": 91,
+      "exposure_pct": 0.1
+    }
+  },
+  "folds": [
+    {
+      "train_end_exclusive": "2022-01-02T00:00:00Z",
+      "test_start": "2022-01-02T00:00:00Z",
+      "test_end_exclusive": "2023-01-02T00:00:00Z",
+      "oos_year": 2022
+    },
+    {
+      "train_end_exclusive": "2023-01-02T00:00:00Z",
+      "test_start": "2023-01-02T00:00:00Z",
+      "test_end_exclusive": "2024-01-02T00:00:00Z",
+      "oos_year": 2023
+    },
+    {
+      "train_end_exclusive": "2024-01-02T00:00:00Z",
+      "test_start": "2024-01-02T00:00:00Z",
+      "test_end_exclusive": "2025-01-02T00:00:00Z",
+      "oos_year": 2024
+    },
+    {
+      "train_end_exclusive": "2025-01-02T00:00:00Z",
+      "test_start": "2025-01-02T00:00:00Z",
+      "test_end_exclusive": "2026-01-02T00:00:00Z",
+      "oos_year": 2025
+    }
+  ],
+  "selection": {
+    "training_terminal_cost_scenario": "stressed",
+    "selected_arm_tie_tolerance": 1e-12,
+    "primary_trial_family": {
+      "arm_id": "TRAINING_SELECTED",
+      "family": "training_selected_pooled_oos",
+      "candidate_arm_ids": [
+        "BASELINE",
+        "NEIGHBOR"
+      ],
+      "diagnostic_arm_ids_excluded_from_selection": [
+        "DIAGNOSTIC"
+      ],
+      "cost_scenario": "expected",
+      "selection_scope": "equal_weighted_primary_assets",
+      "selector": "anchored_exact_calendar_v1",
+      "training_objective": "annualized_sharpe_of_equal_weighted_daily_net_returns",
+      "tie_break": "baseline_first_then_registered_arm_order",
+      "oos_parameter_source": "training_data_only",
+      "direct_candidate_oos_role": "retrospective_diagnostic",
+      "selection_terminal_treatment": {
+        "policy": "last_eligible_training_close_mark_plus_stressed_hypothetical_liquidation_cost",
+        "counts_as_closed_trade": false,
+        "must_be_reported_separately": true,
+        "unregistered_or_unreconciled_terminal_exposure": "trial_failure"
+      },
+      "oos_fold_terminal_treatment": {
+        "policy": "last_oos_close_mark_plus_stressed_hypothetical_liquidation_cost_before_fold_pooling",
+        "raw_report_remains_open": true,
+        "counts_as_closed_trade": false,
+        "must_be_reported_separately": true,
+        "unadjusted_terminal_exposure": "primary_trial_failure"
+      }
+    }
+  },
+  "multiple_testing": {
+    "catalogue_campaign_runs_observed": 4,
+    "registered_signal_rule_arms": 3,
+    "registered_executable_semantic_arms": 0,
+    "registered_economically_compared_arms": 3,
+    "zero_activity_current_arm_sharpe": {
+      "metric_callable": "dev_cli.validation.backtest.metrics.sharpe_ratio",
+      "complete_aligned_zero_return_zero_variance_annualized_sharpe": 0.0,
+      "missing_corrupt_or_misaligned": "BLOCKED_INSUFFICIENT_EVIDENCE",
+      "baseline_zero_activity_disposition_gate": "separate_RETIRE_gate"
+    },
+    "upstream_selection_ledger_contract": {
+      "schema_version": "1.0",
+      "source_filename": "unit_contract_no_market_evidence.csv",
+      "expected_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "required_columns": [
+        "python_file",
+        "class_name",
+        "symbol",
+        "timeframe",
+        "family",
+        "prior_score",
+        "was_in_shortlist",
+        "readiness",
+        "status",
+        "error_type",
+        "error",
+        "bars",
+        "total_return_pct",
+        "annualized_pct",
+        "sharpe_daily_ann",
+        "max_drawdown_pct",
+        "sqn",
+        "trades_closed",
+        "win_rate_pct",
+        "pnl_net",
+        "runtime_sec",
+        "y2020",
+        "y2021",
+        "y2022",
+        "y2023",
+        "y2024",
+        "y2025",
+        "y2026"
+      ],
+      "identity_fields": [
+        "python_file",
+        "class_name",
+        "symbol",
+        "timeframe"
+      ],
+      "status_field": "status",
+      "expected_status_counts": {
+        "ok": 2,
+        "error": 1,
+        "timeout": 1
+      },
+      "sharpe_field": "sharpe_daily_ann",
+      "expected_row_count": 4,
+      "expected_finite_sharpe_count": 2,
+      "finite_sharpe_inclusion_policy": "all_nonblank_finite_sharpe_values",
+      "non_ok_sharpe_must_be_blank": true,
+      "sample_standard_deviation_ddof": 1,
+      "summary_decimal_places": 15,
+      "expected_finite_sharpe_sample_std": "1.414213562373095",
+      "resume_source": "embedded_manifest_only"
+    },
+    "deflated_sharpe_combination": {
+      "upstream_attempted_trial_count": 4,
+      "current_registered_signal_rule_arm_count": 3,
+      "current_registered_executable_semantic_arm_count": 0,
+      "current_economically_compared_arm_count": 3,
+      "effective_trial_count": 7,
+      "missing_current_arm_value": "BLOCKED_INSUFFICIENT_EVIDENCE_never_drop_or_impute",
+      "historical_selection_contaminated": true
+    }
+  },
+  "inference": {
+    "annualization_factor": 365.0,
+    "confidence_level": 0.95,
+    "block_bootstrap_samples": 10000,
+    "block_bootstrap_seed": 20260721,
+    "daily_return_block_size_bars": 30,
+    "effective_sample_size_max_lag_bars": 60
+  },
+  "robustness": {
+    "disposition_source_arm_id": "BASELINE",
+    "adaptive_selector_diagnostic_arm_id": "TRAINING_SELECTED",
+    "year_groups": [
+      2020,
+      2021,
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "regime_assignment": {
+      "calibration_id": "registered_training_only_close_regime_v1",
+      "role": "retrospective_descriptive_only",
+      "volatility_lookback_bars": 30,
+      "volatility_measure": "lagged_30_bar_close_to_close_realized_volatility",
+      "oos_volatility_thresholds": "per_asset_quartiles_fitted_on_each_folds_purged_training_returns_only",
+      "trend_measure": "lagged_90_bar_close_return",
+      "trend_lookback_bars": 90,
+      "trend_buckets": "positive_nonpositive",
+      "missing_history_bucket": "unclassified"
+    },
+    "maximum_absolute_positive_contribution_share": 0.75,
+    "absolute_risk_budget": {
+      "maximum_expected_pooled_drawdown_pct": 5.0,
+      "maximum_expected_recovery_duration_days": 730.0,
+      "maximum_expected_daily_es95_pct": 1.0,
+      "maximum_stressed_pooled_drawdown_pct": 7.5,
+      "maximum_closed_or_terminal_contribution_loss_pct": 2.0
+    },
+    "neighbor_support": {
+      "candidate_set": "registered_one_factor_numeric_neighbors_and_filter_ablations_only",
+      "minimum_positive_pooled_neighbors": 1,
+      "minimum_positive_oos_folds_for_selected_arm": 3,
+      "minimum_positive_candidate_fold_cells_total": 4,
+      "minimum_training_selected_folds_supporting_baseline": 3
+    },
+    "cost_tolerance": {
+      "primary": "expected",
+      "stressed_edge_reversal_limit_fraction": 1.0
+    },
+    "pbo": {
+      "role": "retrospective_diagnostic_only",
+      "candidate_set": "all_registered_signal_rule_arms",
+      "registered_candidate_order": [
+        "BASELINE",
+        "NEIGHBOR",
+        "DIAGNOSTIC"
+      ],
+      "groups": "six_exact_calendar_year_expected_cost_daily_return_blocks"
+    }
+  },
+  "conditional_sizing_trials": {
+    "registration": "all sizing arms are registered before results and use only the registered baseline signal ledger",
+    "signal_source_arm_id": "BASELINE",
+    "execution_gate": "run_only_if_primary_raw_signal_historical_disposition_gates_remain_eligible",
+    "arms": [
+      {
+        "id": "SIZE_CURRENT_BINDING_FIXED_EQUITY_1PCT",
+        "fixed_pct": 0.01,
+        "maximum_notional_pct": 0.05
+      },
+      {
+        "id": "SIZE_INITIAL_STOP_RISK_1PCT",
+        "risk_per_trade": 0.01,
+        "maximum_notional_pct": 0.05
+      },
+      {
+        "id": "SIZE_TRAINING_VOL_TARGET_5PCT",
+        "target_annualized_volatility": 0.05,
+        "calibration_lookback_calendar_days": 365,
+        "minimum_calibration_returns": 60,
+        "minimum_notional_pct": 0.01,
+        "maximum_notional_pct": 0.05,
+        "leverage_allowed": false
+      }
+    ],
+    "minimum_order_notional_usd": 1.0,
+    "pre_broker_quantity_rounding": "price_tiered_decimals",
+    "precision_source": "frozen_coinbase_product_metadata",
+    "research_only_parallel_sizer_prohibited": true
+  },
+  "power": {
+    "cadence_source_arm_id": "BASELINE",
+    "familywise_alpha": 0.05,
+    "familywise_error_allocation": 0.5,
+    "minimum_power": 0.8,
+    "monte_carlo_confidence": 0.95,
+    "minimum_consecutive_powered_durations": 2,
+    "prospective_strategy_family_trials": 7,
+    "minimum_standardized_effect_primary": 0.2,
+    "minimum_standardized_effect_sensitivities": [
+      0.1,
+      0.2,
+      0.3
+    ],
+    "input_uncertainty_confidence": 0.95,
+    "input_uncertainty_bootstrap_samples": 10000,
+    "input_uncertainty_bootstrap_seed": 20260721,
+    "input_uncertainty_trade_block_size": 2,
+    "independence_lower_quantile": 0.05,
+    "economic_period_date_transform": "normalized_close_timestamp_minus_one_calendar_day",
+    "duration_step_years": 0.25,
+    "maximum_duration_years": 5.0,
+    "simulations": 10000,
+    "seed": 20260721
+  },
+  "allowed_dispositions": [
+    "RETIRE",
+    "REDESIGN",
+    "FREEZE_FOR_PROSPECTIVE_SHADOW"
+  ],
+  "historical_disposition_policy": {
+    "policy_id": "registered_campaign_historical_disposition_v1",
+    "baseline_arm_id": "BASELINE",
+    "baseline_ledger_check_id": "robustness-ledger",
+    "required_evidence": [
+      {
+        "check_id": "trial-ledger",
+        "kind": "trial",
+        "required_source_ids": [
+          "trial_registry"
+        ],
+        "allows_verified_empty": false
+      },
+      {
+        "check_id": "market-source-ledger",
+        "kind": "source",
+        "required_source_ids": [
+          "frozen_market_data_datasets",
+          "data_parity_attestation",
+          "execution_cost_measurement"
+        ],
+        "allows_verified_empty": false
+      },
+      {
+        "check_id": "recursive-hash-reconciliation",
+        "kind": "hash_reconciliation",
+        "required_source_ids": [
+          "recursive_result_hash_reconciliation"
+        ],
+        "allows_verified_empty": false
+      },
+      {
+        "check_id": "robustness-ledger",
+        "kind": "robustness",
+        "required_source_ids": [
+          "robustness_concentration_inference"
+        ],
+        "allows_verified_empty": true
+      },
+      {
+        "check_id": "deflated-sharpe-ledger",
+        "kind": "deflated_sharpe",
+        "required_source_ids": [
+          "deflated_sharpe_diagnostics"
+        ],
+        "allows_verified_empty": false
+      },
+      {
+        "check_id": "power-ledger",
+        "kind": "power",
+        "required_source_ids": [
+          "prospective_power_primary_effect"
+        ],
+        "allows_verified_empty": false
+      },
+      {
+        "check_id": "scoring-ledger",
+        "kind": "scoring",
+        "required_source_ids": [
+          "scoring_binding_ledger_pooled"
+        ],
+        "allows_verified_empty": false
+      },
+      {
+        "check_id": "correctness-attestation",
+        "kind": "correctness",
+        "required_source_ids": [
+          "correctness_attestation"
+        ],
+        "allows_verified_empty": false
+      }
+    ],
+    "baseline_quantitative_gate_ids": [
+      "pooled_expected_cost_oos_return_positive",
+      "median_oos_fold_return_positive",
+      "all_assets_positive",
+      "contribution_ex_best_closed_trade_positive",
+      "contribution_ex_best_calendar_year_positive",
+      "contribution_share_requirement_met",
+      "neighbor_support_requirements_met",
+      "cost_tolerance_requirements_met",
+      "benchmark_pareto_not_dominated",
+      "training_selector_supports_baseline",
+      "expected_pooled_max_drawdown_within_limit",
+      "expected_pooled_recovery_duration_within_limit",
+      "expected_daily_es95_within_limit",
+      "stressed_pooled_max_drawdown_within_limit",
+      "worst_closed_or_terminal_contribution_loss_within_limit"
+    ],
+    "baseline_economic_gate_ids": [
+      "pooled_expected_cost_oos_return_positive",
+      "median_oos_fold_return_positive",
+      "all_assets_positive",
+      "contribution_ex_best_closed_trade_positive",
+      "contribution_ex_best_calendar_year_positive",
+      "contribution_share_requirement_met",
+      "neighbor_support_requirements_met",
+      "cost_tolerance_requirements_met",
+      "benchmark_pareto_not_dominated",
+      "training_selector_supports_baseline"
+    ],
+    "prospective_primary_effect_id": "POWER_EFFECT_0p2",
+    "maximum_prospective_duration_years": 5.0,
+    "registered_redesign_candidate_ids": [
+      "NEIGHBOR"
+    ],
+    "redesign_quantitative_gate_ids": [
+      "pooled_expected_cost_oos_return_positive",
+      "all_registered_assets_positive",
+      "minimum_positive_expected_cost_oos_folds_met",
+      "contribution_ex_best_closed_trade_positive",
+      "contribution_ex_best_calendar_year_positive",
+      "contribution_share_requirement_met",
+      "cost_tolerance_requirements_met",
+      "benchmark_pareto_not_dominated",
+      "expected_pooled_max_drawdown_within_limit",
+      "expected_pooled_recovery_duration_within_limit",
+      "expected_daily_es95_within_limit",
+      "stressed_pooled_max_drawdown_within_limit",
+      "worst_closed_or_terminal_contribution_loss_within_limit",
+      "single_registered_economically_defensible_change_confirmed"
+    ],
+    "registered_semantic_candidate_ids": [],
+    "correctable_semantic_candidate_ids": []
+  },
+  "pipeline_evidence_layers": {
+    "join_key": "canonical_external_signal_id"
+  },
+  "historical_disposition_gates": {
+    "benchmark_comparator": {
+      "comparator_id": "registered_10pct_capital_allocation_return_drawdown_sortino_pareto_v1",
+      "registered_benchmark_order": [
+        "cash",
+        "buy_and_hold",
+        "training_calibrated_volatility_targeted_buy_and_hold",
+        "sma_30_long_cash",
+        "momentum_90d_long_cash"
+      ]
+    },
+    "redesign_candidate_gate": {
+      "derived_evidence_trial": {
+        "arm_id": "REGISTERED_REDESIGN_CANDIDATES",
+        "trial_family": "derived_diagnostic",
+        "runner_kind": "registered_redesign_candidate_inference",
+        "fold_id": "pooled-oos",
+        "cost_scenario": "expected",
+        "evidence_role": "retrospective_registered_redesign_candidate_diagnostic"
+      },
+      "candidate_set": [
+        "NEIGHBOR"
+      ]
+    },
+    "semantic_redesign_gate": {
+      "high_severity_trigger_candidate_set": [],
+      "carried_remediation_candidate_set": []
+    }
+  },
+  "promotion": {
+    "automatic_parameter_deployment": false,
+    "historical_results_can_enable_paper": false,
+    "historical_results_can_enable_live": false,
+    "independent_validation_required": true,
+    "human_approval_required": true
+  }
+}

@@ -1,0 +1,7 @@
+# Market-data runtime profile beyond the shared production service base
+# (exact constraint-matching pins, enforced by the vmdev audit
+# runtime-dependency-contract rule). Owns the lib-data[sessions] closure:
+# scheduled-market session math + vendor calendar clients need pandas and
+# exchange_calendars; no other service image ships them.
+pandas==3.0.3
+exchange_calendars==4.13.2

@@ -1,0 +1,292 @@
+name: CI
+
+# Single required-check gate for pull requests (and the merge queue, when enabled).
+# Mark ONLY the "ci-gate" job as a required status check in the branch ruleset.
+# Path filtering lives INSIDE jobs (dorny/paths-filter) so unrelated PRs SKIP the
+# heavy jobs without the "required check never runs" hang — ci-gate always runs
+# and asserts that every needed job either succeeded or was correctly skipped.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    # dorny/paths-filter reads the changed-file list through the REST API on
+    # pull_request events (push and merge_group use git and need only contents).
+    # The workflow-level grant is contents:read, so without pull-requests:read
+    # here the job fails with "Resource not accessible by integration" on every
+    # PR, and because ci-gate treats changes as always-required, the single
+    # required check fails too while every filtered job reports "skipping".
+    # Scoped to this job so nothing else gains the extra permission.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      postgres_integration: ${{ steps.filter.outputs.postgres_integration }}
+      schema_drift: ${{ steps.filter.outputs.schema_drift }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
+        id: filter
+        with:
+          filters: |
+            python:
+              - 'apps/**'
+              - 'strategies/**'
+              - 'libs/python/**'
+              - 'tests/**'
+              - 'tools/**'
+              - 'scripts/**'
+              - 'config/**'
+              - 'pyproject.toml'
+              - '.pre-commit-config.yaml'
+              # docker/** + .github/** so the vmdev audit gate (incl.
+              # docker-python-base-drift) runs on Dockerfile/workflow changes too —
+              # the former standalone audit.yml ran unconditionally; without these a
+              # docker-only PR (e.g. a python base bump) would skip python-ci and
+              # escape the gate.
+              - 'docker/**'
+              - '.github/**'
+            postgres_integration:
+              - 'apps/**'
+              - 'strategies/indicator/**'
+              - 'libs/python/**'
+              - 'tests/**'
+              - 'tools/dev_cli/**'
+              - 'scripts/db/alembic/**'
+              - 'scripts/db/alembic.ini'
+              - 'docker/seed/**'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yml'
+            schema_drift:
+              - 'libs/python/lib_application/lib_application/db/**'
+              - 'scripts/db/alembic/**'
+              - 'scripts/db/alembic.ini'
+              - 'scripts/db/check_schema_drift.py'
+              - '.github/workflows/ci.yml'
+
+  pre-commit-security:
+    name: security + syntax (pre-commit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install pre-commit
+        run: >-
+          python -m pip install
+          --constraint docker/constraints.txt
+          pre-commit
+      - name: Detect private keys and invalid Python syntax
+        run: |
+          pre-commit run detect-private-key --all-files
+          pre-commit run check-ast --all-files
+
+  python-ci:
+    name: python (audit + lint + types + tests)
+    needs: changes
+    if: ${{ needs.changes.outputs.python == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install \
+            --constraint docker/constraints.txt \
+            --requirement docker/requirements-svc-base.txt \
+            --requirement docker/requirements-scoring.txt \
+            --requirement docker/requirements-indicator-runner.txt \
+            --requirement docker/requirements-market-data.txt \
+            --editable tools/dev_cli \
+            pytest pytest-cov pre-commit mypy ruff types-PyYAML
+      - name: Architecture audit (vmdev audit)
+        run: vmdev audit
+      # Lint + type-check via the SAME pinned pre-commit hooks the team runs
+      # locally (ruff 0.14.4, mypy 1.18.2, identical excludes + stubs), so CI is
+      # consistent with pre-commit BY CONSTRUCTION — no version drift, no
+      # whole-repo lint surprises (unpinned ruff/mypy previously flagged latent
+      # UP042/PLW0108 + empty-dir mypy args that pre-commit never sees). Folds in
+      # the former type-check.yml and runs on PRs and direct pushes to main.
+      - name: Lint + type-check (pinned pre-commit hooks)
+        run: |
+          pre-commit run ruff --all-files --show-diff-on-failure
+          pre-commit run ruff-format --all-files
+          pre-commit run mypy --all-files
+      - name: Type-check scoring and feedback applications
+        run: |
+          python -m mypy \
+            --ignore-missing-imports \
+            --no-warn-unused-ignores \
+            apps/scoring_engine/scoring_engine \
+            apps/feedback_loop_engine/feedback_loop_engine
+      - name: Tests + coverage gate
+        run: |
+          pytest \
+            --cov --cov-report=term --cov-fail-under=35 \
+            -m "not integration" \
+            --ignore=apps/scoring_engine/tests/test_api_postgres_integration.py
+
+  postgres-integration:
+    name: integration tests (postgres)
+    needs: changes
+    if: ${{ needs.changes.outputs.postgres_integration == 'true' }}
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: trader
+          POSTGRES_PASSWORD: vm_trading_secure_2024
+          POSTGRES_DB: vm_trading
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/vm_trading
+      FEEDBACK_DATABASE_URL: postgresql://vm_feedback_login:vm_feedback_ci@localhost:5432/vm_trading
+      PYTHONPATH: >-
+        libs/python/lib_common:libs/python/lib_strategy:libs/python/lib_indicators:libs/python/lib_data:libs/python/lib_application:libs/python/lib_infrastructure:tools/dev_cli:apps/execution_engine:apps/scoring_engine:apps/feedback_loop_engine:apps/indicator_runner:apps/market_data_ingestor:strategies/indicator
+      SCORING_SCHEMA_AUTOCREATE: 'false'
+      VM_BACKEND_DB_PASSWORD: vm_backend_ci
+      VM_SCORING_DB_PASSWORD: vm_scoring_ci
+      VM_EXECUTION_DB_PASSWORD: vm_execution_ci
+      VM_FEEDBACK_DB_PASSWORD: vm_feedback_ci
+      VM_MARKET_DATA_DB_PASSWORD: vm_market_data_ci
+      VM_INDICATOR_DB_PASSWORD: vm_indicator_ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install \
+            --constraint docker/constraints.txt \
+            --requirement docker/requirements-svc-base.txt \
+            --requirement docker/requirements-scoring.txt \
+            --requirement docker/requirements-indicator-runner.txt \
+            pytest
+      - name: Build schema from Alembic head
+        run: alembic -c scripts/db/alembic.ini upgrade head
+      - name: Provision least-privilege runtime logins
+        env:
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGUSER: trader
+          PGPASSWORD: vm_trading_secure_2024
+          PGDATABASE: vm_trading
+        run: sh docker/provision-runtime-roles.sh
+      - name: Run PostgreSQL integration tests
+        run: >-
+          pytest -v -m integration
+          apps/feedback_loop_engine/tests/test_feedback_concurrency_postgres_integration.py
+          apps/scoring_engine/tests/test_api_postgres_integration.py
+          apps/indicator_runner/tests/test_postgres_notify_integration.py
+          tests/test_public_strategy_pipeline_postgres_integration.py
+          tests/test_service_roles_postgres_integration.py
+
+  schema-drift:
+    name: model <-> migration drift
+    needs: changes
+    if: ${{ needs.changes.outputs.schema_drift == 'true' }}
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: trader
+          POSTGRES_PASSWORD: vm_trading_secure_2024
+          POSTGRES_DB: vm_trading
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install \
+            --constraint docker/constraints.txt \
+            --requirement docker/requirements-svc-base.txt \
+            --requirement docker/requirements-scoring.txt
+      - name: Check schema drift (must be zero)
+        env:
+          DRIFT_PG_ADMIN_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/postgres
+        run: python scripts/db/check_schema_drift.py
+
+  ci-gate:
+    name: ci-gate
+    needs:
+      - changes
+      - pre-commit-security
+      - python-ci
+      - postgres-integration
+      - schema-drift
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require needed jobs to succeed or be skipped
+        run: |
+          changes='${{ needs.changes.result }}'
+          security='${{ needs.pre-commit-security.result }}'
+          py='${{ needs.python-ci.result }}'
+          integration='${{ needs.postgres-integration.result }}'
+          drift='${{ needs.schema-drift.result }}'
+          py_required='${{ needs.changes.outputs.python }}'
+          integration_required='${{ needs.changes.outputs.postgres_integration }}'
+          drift_required='${{ needs.changes.outputs.schema_drift }}'
+          echo "changes=$changes  security=$security  python-ci=$py"
+          echo "postgres-integration=$integration  schema-drift=$drift"
+          for r in "$changes" "$security"; do
+            if [ "$r" != "success" ]; then
+              echo "::error::An always-required job did not pass: $r"
+              exit 1
+            fi
+          done
+          require_path_job() {
+            name="$1"
+            result="$2"
+            required="$3"
+            if [ "$required" = "true" ] && [ "$result" != "success" ]; then
+              echo "::error::$name was required but did not pass: $result"
+              exit 1
+            fi
+            if [ "$required" != "true" ] && [ "$result" != "skipped" ]; then
+              echo "::error::$name was not required but did not skip: $result"
+              exit 1
+            fi
+          }
+          require_path_job "python-ci" "$py" "$py_required"
+          require_path_job "postgres-integration" "$integration" "$integration_required"
+          require_path_job "schema-drift" "$drift" "$drift_required"
+          echo "All required jobs passed (or were correctly skipped)."

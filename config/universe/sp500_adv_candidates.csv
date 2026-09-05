@@ -1,0 +1,65 @@
+ticker,company,rationale,in_sp500
+AAPL,Apple,persistent top-5 dollar ADV entire window,full_window
+MSFT,Microsoft,persistent top-10 dollar ADV,full_window
+AMZN,Amazon,persistent top-10 dollar ADV,full_window
+GOOGL,Alphabet Class A,persistent top-15 dollar ADV,full_window
+GOOG,Alphabet Class C,persistent top-15 dollar ADV,full_window
+META,Meta Platforms,persistent top-10 dollar ADV,full_window
+NVDA,NVIDIA,top-3 dollar ADV from 2023; top-15 before,full_window
+TSLA,Tesla,top-3 dollar ADV from 2020,partial
+AMD,Advanced Micro Devices,persistent top-15 dollar ADV,full_window
+NFLX,Netflix,episodic top-10 (2020-2022),full_window
+AVGO,Broadcom,top-10 dollar ADV 2024-2026 (AI complex),full_window
+INTC,Intel,episodic top-15 (2020-2021 and 2024 selloff),full_window
+MU,Micron,episodic top-15 (AI memory cycle),full_window
+QCOM,Qualcomm,episodic top-15,full_window
+ORCL,Oracle,episodic top-15 (2025 AI rally),full_window
+CRM,Salesforce,episodic top-15,full_window
+ADBE,Adobe,episodic top-15,full_window
+COST,Costco,episodic top-15 (2024-2026),full_window
+WMT,Walmart,episodic top-15 (2024-2026),full_window
+LLY,Eli Lilly,top-10 dollar ADV 2023-2026 (GLP-1),full_window
+UNH,UnitedHealth,episodic top-15 (2024-2025 selloffs),full_window
+JPM,JPMorgan,borderline top-15 financials leader,full_window
+BAC,Bank of America,episodic top-15 (2020 and 2023 bank stress),full_window
+C,Citigroup,episodic (2020),full_window
+GS,Goldman Sachs,borderline,full_window
+XOM,Exxon Mobil,top-10 in 2022 energy year,full_window
+CVX,Chevron,episodic top-15 (2022),full_window
+OXY,Occidental,episodic top-15 (2022 Buffett period),full_window
+BA,Boeing,top-10 dollar ADV in 2020 (COVID),full_window
+CAT,Caterpillar,borderline,full_window
+DIS,Disney,episodic top-15 (2020-2021),full_window
+V,Visa,borderline top-15,full_window
+MA,Mastercard,borderline,full_window
+PYPL,PayPal,episodic top-15 (2020-2021),full_window
+PFE,Pfizer,episodic top-15 (2021 vaccine),full_window
+CSCO,Cisco,borderline,full_window
+HD,Home Depot,borderline,full_window
+F,Ford,episodic top-15 (2021-2022 retail flows),full_window
+GM,General Motors,episodic (2020-2021),full_window
+GE,General Electric,episodic (2020 retail flows),full_window
+TWTR,Twitter,episodic top-15 (2022 acquisition arb),partial
+ATVI,Activision Blizzard,episodic (2022-2023 acquisition arb),partial
+MRNA,Moderna,top-10 dollar ADV 2021 (vaccine),partial
+ABNB,Airbnb,borderline (2023-2024),partial
+UBER,Uber,borderline top-15 (2024),partial
+SMCI,Super Micro Computer,top-10 dollar ADV 2024 (AI),partial
+CRWD,CrowdStrike,episodic (2024 outage; AI complex),partial
+PLTR,Palantir,top-5 dollar ADV 2024-2026,partial
+DELL,Dell Technologies,episodic top-15 (2024 AI servers),partial
+COIN,Coinbase,top-15 dollar ADV 2024-2026 (crypto beta),partial
+XYZ,Block,episodic (2020-2021 as SQ; below top-10 medians),partial
+HOOD,Robinhood,top-10 dollar ADV 2025-2026,partial
+APP,AppLovin,top-15 dollar ADV 2024-2026,partial
+ZM,Zoom Video,top-10 dollar ADV 2020; never an S&P 500 member,never
+GME,GameStop,extreme episodic ADV 2021; never a member,never
+AMC,AMC Entertainment,extreme episodic ADV 2021; never a member,never
+BABA,Alibaba ADR,large ADV; foreign issuer - ineligible,never
+NIO,NIO ADR,episodic ADV 2020-2021; foreign issuer - ineligible,never
+MSTR,Strategy (MicroStrategy),top-10 dollar ADV 2024-2026; considered and NOT added (Sep-2025 rebalance passed it over),never
+ARM,Arm Holdings ADR,high ADV 2024-2026; UK domicile - ineligible,never
+SNOW,Snowflake,episodic ADV 2020-2021; not a member during window (verify if ever added),never
+SHOP,Shopify,episodic ADV; foreign (Canada) - ineligible,never
+RIVN,Rivian,episodic ADV 2021-2022; not a member during window,never
+MRVL,Marvell Technology,episodic AI-cycle ADV 2024-2026; membership start date unverified - excluded until verified; margin diagnostic will flag if it would have ranked,verify_pending

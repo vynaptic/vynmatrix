@@ -1,0 +1,191 @@
+# Optional, manually invoked image build and publication workflow.
+#
+# The default run builds images without publishing. To publish, configure
+# vars.DO_REGISTRY_NAME and secrets.DIGITALOCEAN_ACCESS_TOKEN, select a strict
+# SemVer tag vX.Y.Z on the current main tip, and explicitly set publish=true.
+# Publication requires a dated changelog entry, successful ci-gate, and Coinbase
+# sandbox credentials. Images receive immutable X.Y.Z and sha-<commit> tags.
+# This workflow does not deploy services or assume a separate infrastructure repo.
+name: Build and Optionally Publish Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish images to the configured DigitalOcean registry
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DO_REGISTRY_NAME: ${{ vars.DO_REGISTRY_NAME }}
+  DOCR_ENDPOINT: registry.digitalocean.com
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Validate publishing configuration
+        if: inputs.publish
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DO_REGISTRY_NAME}" || -z "${DIGITALOCEAN_ACCESS_TOKEN}" ]]; then
+            echo "::error::Publishing requires DO_REGISTRY_NAME and DIGITALOCEAN_ACCESS_TOKEN."
+            exit 1
+          fi
+          if [[ ! "${DO_REGISTRY_NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+            echo "::error::DO_REGISTRY_NAME must be a registry name, without a hostname or path."
+            exit 1
+          fi
+      - name: Require tagged main commit with successful full CI
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != refs/tags/* ]]; then
+            echo "::error::Select a SemVer tag when publishing images."
+            exit 1
+          fi
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Release tag must be strict SemVer vX.Y.Z."
+            exit 1
+          fi
+          release_version="${GITHUB_REF_NAME#v}"
+          escaped_version="${release_version//./\\.}"
+          if ! grep -Eq "^## \\[${escaped_version}\\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md must contain a dated [${release_version}] release section."
+            exit 1
+          fi
+          tagged_sha="$(git rev-parse "${GITHUB_REF}^{commit}")"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          if [[ "${tagged_sha}" != "${main_sha}" ]]; then
+            echo "::error::Release tag must point to the current origin/main tip."
+            exit 1
+          fi
+          conclusions="$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/commits/${tagged_sha}/check-runs?per_page=100" \
+              --jq '.check_runs[] | select(.name == "ci-gate" and .app.slug == "github-actions") | .conclusion'
+          )"
+          if ! grep -qx "success" <<< "${conclusions}"; then
+            echo "::error::Tagged commit ${tagged_sha} has no successful ci-gate check."
+            exit 1
+          fi
+  sandbox-smoke:
+    needs: validate
+    uses: ./.github/workflows/coinbase-sandbox-smoke.yml
+    with:
+      require_credentials: ${{ inputs.publish }}
+    secrets: inherit
+
+  build-and-push:
+    needs: [validate, sandbox-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install vmdev CLI dependencies
+        run: >-
+          python -m pip install
+          --constraint docker/constraints.txt
+          --editable tools/dev_cli
+          build
+
+      - name: Derive image tags
+        id: meta
+        env:
+          PUBLISH_IMAGES: ${{ inputs.publish }}
+        run: |
+          commit_sha="$(git rev-parse HEAD)"
+          if [[ "${PUBLISH_IMAGES}" == "true" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"          # v1.1.0 -> 1.1.0
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+            echo "build_tag=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+            echo "build_tag=manual-${commit_sha::12}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha_tag=sha-${commit_sha::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Build wheels
+        run: |
+          vmdev build libs
+          vmdev build strategies
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      # Manual buildx invocations need the Actions cache service URL/token
+      # exported into subsequent run steps. The helper recommended by Docker's
+      # gha-cache documentation is pinned to an immutable commit.
+      - name: Expose GitHub Actions cache runtime
+        uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487
+
+      - name: Build images from config/containers.yaml
+        run: >-
+          vmdev build docker --from-config
+          --cache-backend gha
+          --tag "${{ steps.meta.outputs.build_tag }}"
+
+      # Publication remains opt-in, including when the selected ref is a tag.
+      - name: Skip push (build validation only)
+        if: steps.meta.outputs.is_release != 'true'
+        run: echo "Image build succeeded; publication was not requested."
+
+      - name: Authenticate to DigitalOcean Container Registry
+        if: steps.meta.outputs.is_release == 'true'
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          version: 1.164.0
+
+      - name: Log in to DOCR
+        if: steps.meta.outputs.is_release == 'true'
+        run: doctl registry login --expiry-seconds 1200
+
+      - name: Tag and push images to DOCR
+        if: steps.meta.outputs.is_release == 'true'
+        run: |
+          set -euo pipefail
+          base="${DOCR_ENDPOINT}/${DO_REGISTRY_NAME}"
+          version="${{ steps.meta.outputs.version }}"
+          sha_tag="${{ steps.meta.outputs.sha_tag }}"
+          # Locally-built images are named vynmatrix/<svc>:<build_tag>.
+          images=$(docker images --format '{{.Repository}}:{{.Tag}}' \
+            | grep "^vynmatrix/" | grep ":${{ steps.meta.outputs.build_tag }}$")
+          for img in $images; do
+            svc="${img#vynmatrix/}"; svc="${svc%%:*}"   # scoring-engine, ...
+            for t in "${version}" "${sha_tag}"; do
+              target="${base}/${svc}:${t}"
+              echo "Pushing ${img} -> ${target}"
+              docker tag "${img}" "${target}"
+              docker push "${target}"
+            done
+          done
+          echo "Release ${version} images are in DOCR (${base})."
+          echo "Deployment requires a separate operator-authorized procedure."

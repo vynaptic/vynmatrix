@@ -1,0 +1,3 @@
+# Additional dependencies for indicator strategies
+# Base dependencies (lib_common, lib_data, lib_strategy) are added automatically
+# lib_indicators is added from config dependencies

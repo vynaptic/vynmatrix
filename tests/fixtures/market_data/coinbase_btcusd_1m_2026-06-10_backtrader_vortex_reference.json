@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "implementation": "backtrader",
+    "version": "1.9.78.123",
+    "python_version": "3.11",
+    "capture_mode": "Cerebro default runonce/preload with PandasData and stdstats disabled",
+    "package_python_source_count": 171,
+    "package_python_source_sha256": "4f3a25ffce8333f1a4ab3882eaeaf5f0de628214a5ed6070e32e1adcb53b9d0c",
+    "package_source_hash_contract": "SHA-256 over each sorted backtrader-relative *.py path, NUL, file bytes, NUL",
+    "indicator_source_sha256": {
+      "backtrader/indicators/contrib/vortex.py": "bbf42e4610a1a0563f8de00b7baa0c50de8b14db8879656980ade6b1915d588e",
+      "backtrader/indicators/sma.py": "5574cd37ad6ce9a198d8b68adc5521181c41cb1529f4cac9918870c9f7592cf0",
+      "backtrader/indicators/atr.py": "d1ea713b73a84d8daa7b819bb55701112c4532f7f331709e4a72c9f0f3bf7171"
+    }
+  },
+  "input": {
+    "path": "tests/fixtures/market_data/coinbase_btcusd_1m_2026-06-10.json",
+    "sha256": "3e7a30264168dac798ff65af963a5952c1dcaceda71ff7a8acbeb91d948adfee",
+    "source": "coinbase_exchange_public",
+    "product": "BTC-USD",
+    "granularity_seconds": 60,
+    "bar_count": 1501
+  },
+  "parameters": {
+    "vortex_period": 30,
+    "sma_period": 30,
+    "atr_period": 7
+  },
+  "output_contract": {
+    "first_common_ready_bar_index": 30,
+    "last_bar_index": 1500,
+    "common_output_count": 1471,
+    "row_fields": [
+      "bar_index",
+      "vortex_vi_plus",
+      "vortex_vi_minus",
+      "sma",
+      "atr"
+    ],
+    "float_encoding": "Python float.hex()",
+    "serialization": "json.dumps(value, allow_nan=False, separators=(',', ':')).encode('utf-8')"
+  },
+  "full_output_sha256": "8643c7d57da81e8dca82accfe77796fcd91e46c9d9521e48b5d741c0eb4256fa",
+  "series_sha256": {
+    "vortex_vi_plus": "4ac3ed68253f2e0255d739fe1a8a0f9ee83627e204b84932d66750ce2052cf6b",
+    "vortex_vi_minus": "f0fc5d2ff1d5ef429dd5df7fe7f589656d3acc919cce24b445397c0e3f6148c3",
+    "sma": "7d4882a02967dc835b3fe245c89f4a6272ca06f3e42bce0d394064d4eb06f8d5",
+    "atr": "5bfabb83b94f417e2cc2cb1c3fcd18df225c8667c48775db95738a133b009395"
+  },
+  "checkpoints": [
+    [30, 1.0610117241546722, 0.9245818870306096, 61759.69933333333, 48.37143344508661],
+    [31, 1.0606953660344605, 0.932440169472118, 61763.09933333333, 47.855514381503106],
+    [60, 1.016384945431505, 0.9396771004309757, 61616.73033333333, 63.42845563446504],
+    [127, 0.9874110463806758, 1.0280451205629717, 61677.08233333333, 49.25360320492033],
+    [255, 0.9755256907837591, 1.0311456100716312, 61477.15666666666, 35.127301369252166],
+    [511, 0.9426150199681815, 1.060605863826756, 61555.36266666667, 46.811736143274615],
+    [767, 1.1723386526396582, 0.8223239059533649, 61398.88, 96.90467041557284],
+    [1023, 1.0190717334041193, 0.9763257305045634, 62143.99, 69.20635475565274],
+    [1279, 0.8724648819435494, 1.1000140289239768, 61618.63133333333, 61.572642267830716],
+    [1500, 0.9682562700254154, 1.027786984863555, 61787.43833333333, 42.95704509789551]
+  ]
+}

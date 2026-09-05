@@ -1,0 +1,41 @@
+{
+  "strategy_id": "pipeline_exerciser_v1",
+  "description": "Deterministic pipeline exerciser (test harness, no alpha claim). Replays a pre-registered LONG/CLOSE schedule against the frozen real-candle fixture so integration tests can assert pipeline mechanics.",
+  "schema_version": "2",
+  "strategy_version": "1.0.0",
+  "enabled": false,
+  "environments": [],
+  "runner_kind": "signal_worker",
+  "trade_direction_mode": "long_only",
+  "parameters": {
+    "universe": "BTCUSD",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_only",
+    "take_profit_pct": "0.004",
+    "stop_loss_pct": "0.006",
+    "signal_ttl_seconds": "60",
+    "confidence": "0.7",
+    "schedule": [
+      [
+        "2026-06-10T01:12:00+00:00",
+        "2026-06-10T01:22:00+00:00"
+      ],
+      [
+        "2026-06-10T01:27:00+00:00",
+        "2026-06-10T01:30:00+00:00"
+      ]
+    ],
+    "ema_period": "50"
+  },
+  "market_data": {
+    "source": "coinbase_exchange_public",
+    "timeframe": "1m",
+    "consolidation_minutes": 0,
+    "bootstrap_bars": 500
+  },
+  "metadata": {
+    "decision": "TEST_HARNESS_ONLY",
+    "readiness": "NOT_A_STRATEGY",
+    "role": "tests/fixtures pipeline exerciser; never deployable, never in STRATEGY_LIST"
+  }
+}

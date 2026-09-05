@@ -1,0 +1,31 @@
+{
+  "strategy_id": "equity_basket_exerciser_v1",
+  "description": "Deterministic equal-weight equity basket exerciser (test harness, no alpha claim). Feeds the equity portfolio simulator a multi-symbol equal-weight-at-entry core so rule-level tests can assert simulator mechanics (fills, rotation closes, corporate actions, costs).",
+  "schema_version": "2",
+  "strategy_version": "1.0.0",
+  "enabled": false,
+  "environments": [],
+  "runner_kind": "signal_worker",
+  "trade_direction_mode": "long_only",
+  "parameters": {
+    "universe": [
+      "AAPL",
+      "NVDA"
+    ],
+    "asset_class": "equity",
+    "trade_direction_mode": "long_only",
+    "basket_size": "25",
+    "reentry_gap_sessions": "30"
+  },
+  "market_data": {
+    "source": "eodhd",
+    "timeframe": "1d",
+    "consolidation_minutes": 0,
+    "bootstrap_bars": 10
+  },
+  "metadata": {
+    "decision": "TEST_HARNESS_ONLY",
+    "readiness": "NOT_A_STRATEGY",
+    "role": "tests/fixtures equity portfolio-simulator exerciser; never deployable, never in STRATEGY_LIST. Adopted from the retired LiquidityLeadersBasket core (2026-08-13) to retain simulator coverage after the strategy was discarded."
+  }
+}

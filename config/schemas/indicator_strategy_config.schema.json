@@ -1,0 +1,308 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "indicator_strategy_config.schema.json",
+  "title": "Indicator Strategy Configuration",
+  "description": "Schema for DB-fed PureSignalStrategy indicator configs and research/promotion governance metadata.",
+  "type": "object",
+  "definitions": {
+    "assetClass": {
+      "type": "string",
+      "enum": [
+        "crypto",
+        "equity",
+        "etf",
+        "index",
+        "futures",
+        "options",
+        "fx",
+        "commodities"
+      ],
+      "description": "Canonical platform asset class. Cash index instruments are reference-only; executable futures and options remain concrete derivative instruments."
+    }
+  },
+  "required": [
+    "strategy_id",
+    "strategy_version",
+    "schema_version",
+    "enabled",
+    "environments",
+    "runner_kind",
+    "trade_direction_mode",
+    "parameters",
+    "market_data",
+    "metadata"
+  ],
+  "properties": {
+    "strategy_id": {
+      "type": "string",
+      "description": "Unique identifier for the strategy",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+    },
+    "strategy_version": {
+      "type": "string",
+      "description": "Semantic version for the strategy config",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the strategy should run"
+    },
+    "environments": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "dev",
+          "staging",
+          "production"
+        ]
+      },
+      "description": "Explicit allowlist of deployment environments in which the strategy may run."
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description"
+    },
+    "parameters": {
+      "type": "object",
+      "description": "Strategy-specific parameters (string values allowed)",
+      "required": [
+        "universe",
+        "asset_class",
+        "trade_direction_mode"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "strategy_id"
+            ]
+          },
+          {
+            "required": [
+              "strategy_version"
+            ]
+          }
+        ]
+      },
+      "properties": {
+        "universe": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          ]
+        },
+        "asset_class": {
+          "$ref": "#/definitions/assetClass"
+        },
+        "trade_direction_mode": {
+          "type": "string",
+          "enum": [
+            "long_only",
+            "long_short"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "execution": {
+      "type": "object",
+      "description": "Downstream signal-execution preferences",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "signal",
+            "signal_only"
+          ],
+          "default": "signal",
+          "description": "Strategies emit signals; broker execution is always downstream"
+        },
+        "require_explicit_scoring_inputs": {
+          "type": "boolean",
+          "default": false,
+          "description": "Promotion-policy declaration. Enforcement is per user through an exact active UserStrategyConfig; this source flag does not itself authorize or block execution."
+        }
+      },
+      "additionalProperties": true
+    },
+    "runtime": {
+      "type": "object",
+      "description": "Runtime mode for strategy execution lifecycle",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "backtest",
+            "paper",
+            "live"
+          ],
+          "default": "backtest",
+          "description": "backtest = historical run, paper = simulated live, live = real trading"
+        }
+      },
+      "additionalProperties": true
+    },
+    "signal_api": {
+      "type": "object",
+      "description": "Signal API configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "feedback_loop": {
+      "type": "object",
+      "description": "Signal evaluation-horizon contract. Feedback scheduling and optimization thresholds are configured by the feedback service, not per strategy.",
+      "properties": {
+        "evaluation_horizon": {
+          "type": "string",
+          "default": "1d"
+        }
+      },
+      "additionalProperties": true
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Catalogue decision, readiness, and supporting governance metadata",
+      "required": [
+        "decision",
+        "readiness"
+      ],
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": [
+            "KEEP_HIGH_PRIORITY",
+            "IMPROVE_THEN_VALIDATE",
+            "BENCHMARK_OR_COMPONENT_ONLY",
+            "E2E_PIPELINE_CANARY_ONLY",
+            "DISCARD_DUPLICATE",
+            "DISCARD_WEAK_PREMISE",
+            "DISCARD_IMPLEMENTATION_RISK",
+            "INSUFFICIENT_EVIDENCE"
+          ]
+        },
+        "readiness": {
+          "type": "string",
+          "enum": [
+            "STATIC_REVIEW_ONLY",
+            "READY_FOR_BACKTEST",
+            "READY_FOR_WALK_FORWARD",
+            "READY_FOR_PAPER_TRADING",
+            "LIVE_CANDIDATE",
+            "NOT_SUITABLE"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version for forward compatibility",
+      "const": "2"
+    },
+    "runner_kind": {
+      "type": "string",
+      "enum": [
+        "signal_worker"
+      ],
+      "default": "signal_worker",
+      "description": "signal_worker = DB-fed pure-core (core.py) runtime fed from the prices table via LISTEN/NOTIFY. The only supported indicator runtime (LEAN was retired)."
+    },
+    "trade_direction_mode": {
+      "type": "string",
+      "enum": [
+        "long_only",
+        "long_short"
+      ],
+      "default": "long_only",
+      "description": "Allowed trade directions"
+    },
+    "market_data": {
+      "type": "object",
+      "description": "Market data feed configuration for signal_worker mode",
+      "required": [
+        "source",
+        "timeframe",
+        "consolidation_minutes",
+        "bootstrap_bars"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "default": "coinbase_live",
+          "description": "Price data source"
+        },
+        "timeframe": {
+          "type": "string",
+          "default": "1m",
+          "description": "Base bar timeframe"
+        },
+        "consolidation_minutes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 15,
+          "description": "Bar consolidation period (0 = no consolidation)"
+        },
+        "bootstrap_bars": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 500,
+          "description": "Number of historical bars to fetch at startup for warmup"
+        }
+      },
+      "additionalProperties": true
+    },
+    "deployment": {
+      "type": "object",
+      "description": "Deployment topology hints",
+      "properties": {
+        "bundle": {
+          "type": "string",
+          "description": "Container bundle name for grouping strategies"
+        },
+        "paper_candidate": {
+          "type": "object",
+          "description": "Exact candidate route checked by the external paper-promotion evidence manifest. This declaration grants no authority by itself.",
+          "required": [
+            "canonical_instrument",
+            "broker_code"
+          ],
+          "properties": {
+            "canonical_instrument": {
+              "type": "string",
+              "minLength": 1
+            },
+            "broker_code": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

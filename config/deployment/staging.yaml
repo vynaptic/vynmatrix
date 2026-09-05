@@ -1,0 +1,14 @@
+# Provider-neutral strategy-runner config. Operators supply runtime
+# credentials and service URLs through environment variables.
+environment: staging
+
+endpoints:
+  signal_api_url: "http://scoring-engine:8001"
+
+# Worker restart-policy flag (see production.yaml). NOT the real-money switch.
+live_mode: true
+
+secrets:
+  source: "env_vars"
+  names:
+    - "api_key"

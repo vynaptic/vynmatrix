@@ -1,0 +1,53 @@
+# Git attributes for the vynmatrix platform repository
+# Ensures consistent line endings across platforms
+
+# Default behavior: LF line endings on checkout
+* text=auto eol=lf
+
+# Shell scripts: LF (Unix/macOS/Linux)
+*.sh text eol=lf
+
+# PowerShell scripts: CRLF (Windows)
+*.ps1 text eol=crlf
+
+# Python files: LF
+*.py text eol=lf
+
+# Configuration files: LF
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+
+# Markdown: LF
+*.md text eol=lf
+
+# Docker files: LF
+Dockerfile text eol=lf
+*.dockerfile text eol=lf
+docker-compose*.yml text eol=lf
+
+# Makefiles: LF
+Makefile text eol=lf
+*.mk text eol=lf
+
+# Binary files: no conversion
+*.whl binary
+*.pyc binary
+*.pyo binary
+*.db binary
+*.sqlite binary
+*.pkl binary
+*.pickle binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.bz2 binary

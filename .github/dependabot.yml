@@ -1,0 +1,49 @@
+# Dependabot — automated dependency update PRs.
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates
+version: 2
+updates:
+  # GitHub Actions used by the workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      github-actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 5
+
+  # Python packages — per-component requirements.txt / setup.py / pyproject.toml.
+  # `directories` globs cover every component manifest in the monorepo.
+  - package-ecosystem: "pip"
+    directories:
+      - "/"
+      - "/apps/*"
+      - "/libs/python/*"
+      - "/strategies/*"
+      - "/tools/*"
+      - "/docker"
+    schedule:
+      interval: "monthly"
+    groups:
+      python-minor-patch:
+        update-types: ["minor", "patch"]
+    open-pull-requests-limit: 10
+
+  # Container base images in the Dockerfiles
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    ignore:
+      # The Python base image is pinned to match config/build.yaml
+      # (global.python_version: 3.11.x) and is enforced by the
+      # `docker-python-base-drift` audit gate. A base-image major/minor bump
+      # (e.g. the recurring 3.11->3.14 PR, already merged+reverted as #1 and
+      # #6) breaks that gate and skips the wheel re-lock. Bump Python
+      # deliberately, alongside build.yaml + rebuilt/locked wheels — never via
+      # an automated base-image bump.
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"

@@ -1,0 +1,54 @@
+# Deployable image inventory (single source of truth for the fleet).
+#
+# Each service image shares svc-base and the library wheels while retaining an
+# independent release and scaling lifecycle. Registry credentials, retention,
+# remote namespaces, and deployment topology are operator configuration.
+services:
+- name: scoring-engine
+  app: scoring_engine
+  image: vynmatrix/scoring-engine
+  port: 8001
+- name: execution-engine
+  app: execution_engine
+  image: vynmatrix/execution-engine
+  port: 8000
+- name: feedback-loop-engine
+  app: feedback_loop_engine
+  image: vynmatrix/feedback-loop-engine
+  port: 8002
+- name: market-data-ingestor
+  app: market_data_ingestor
+  image: vynmatrix/market-data-ingestor
+  port: 8003
+# ``fx-rate-ingestor`` is an independently supervised process, not another image:
+# it reuses this market-data image with the ``fx-rates`` command and serves its
+# internal health/readiness endpoint on 8004. Keep it out of this image inventory
+# so the build/registry source of truth remains five artifacts.
+# The profile-gated IBKR, Saxo, and Zerodha calendar writers likewise reuse this
+# image with the ``market-calendars`` command and internal readiness on 8005.
+- name: indicator-runner
+  app: indicator_runner
+  image: vynmatrix/indicator-runner
+  port: 8080
+# apps/backend (tenant config API, port 8081) has NO standalone image: it ships
+# inside the scoring-engine image and runs as its own container with a command
+# override (python -m apps.backend.backend.main) — the db-migrate pattern.
+# The backend dependency closure is a subset of scoring's. Its container,
+# environment, vm_backend DB role, and resource limits remain independent.
+# signal_worker (core.py) is the only indicator runtime; LEAN was retired.
+# No worker may start without explicit strategy selection and activation gates.
+#
+# The retained development/E2E strategies under strategies/indicator/ ship in
+# the image but run only when an explicit STRATEGY_LIST and their config
+# activation gates both allow them.
+strategy_discovery:
+  scan_paths:
+  - strategies/indicator/*/core.py  # signal_worker cores (no main.py post-LEAN)
+  metadata_sources:
+  - config.json
+  - strategy metadata
+  classification:
+    by_asset_class: true
+    by_strategy_type: true
+    by_tags: true
+    by_dependencies: false

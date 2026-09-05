@@ -1,0 +1,18 @@
+# Provider-neutral strategy-runner config. Operators supply runtime
+# credentials and service URLs through environment variables.
+environment: production
+
+endpoints:
+  signal_api_url: "http://scoring-engine:8001"
+
+# Worker restart-policy flag (indicator_runner process monitor). true => an
+# indicator strategy that exits cleanly (code 0) is treated as crashed and
+# RESTARTED (always-on resilience). This is NOT the real-money switch: live order
+# placement is gated solely by the execution engine's EXECUTION_ENGINE_ALLOW_LIVE
+# env (default false) + EXECUTION_MODE. Keep true so always-on workers self-heal.
+live_mode: true
+
+secrets:
+  source: "env_vars"
+  names:
+    - "api_key"

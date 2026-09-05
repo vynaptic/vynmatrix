@@ -1,0 +1,455 @@
+# Runtime Configuration
+
+This source configuration reference does not claim a deployed service or authorize
+publishing, deployment, or live execution. See [the release boundary](DEPLOYMENT.md).
+
+This is the single source of truth for runtime configuration ownership and
+precedence. [`.env.example`](../.env.example) is the variable catalogue;
+deployment-specific secret values belong outside git.
+
+## Precedence
+
+For a running service, configuration is resolved in this order:
+
+1. Explicit command-line or constructor arguments used by an operational
+   command.
+2. Process environment variables injected by the local Docker Compose runtime
+   or a separately reviewed future deployment.
+3. Source-controlled strategy `config.json` values for strategy behavior only.
+4. Validated code defaults.
+
+`config/build.yaml` and `config/containers.yaml` describe artifacts, not runtime
+trading policy. `config/deployment/*.yaml` is consumed only by the
+`ApplicationManager` path. Those files contain only the provider-neutral
+strategy-runner endpoint, restart policy, and secret names; database URLs and
+deployment topology are injected by the actual runtime. This migration includes
+only the local Compose topology; no external infrastructure repository is assumed.
+
+## Ownership
+
+| Surface | Authority |
+|---|---|
+| Local runtime values | `.env` passed to `docker/docker-compose.stack.yml` |
+| Local role-specific database URLs | `docker/docker-compose.stack.yml`; future deployment ownership is unconfigured |
+| Per-user broker account and binding configuration | `apps/backend` |
+| Per-account broker ciphertext | `managed_secrets`, encrypted through `SECRETS_MASTER_KEYS` |
+| Tradable instrument identity and broker aliases | `config/instruments.yaml` plus database migrations/bootstrap |
+| Observed currency-conversion inputs | `fx-rate-ingestor`: official ECB EUR reference rates plus Coinbase USDC-EUR candles persisted in `prices` |
+| Strategy behavior | the selected strategy's source-controlled `config.json` |
+| Point-in-time equity evidence | Immutable provider lineage, observations, factor/rank snapshots, and registered strategy panel inputs; entitlement and `data_use_scope` are part of the content identity |
+| Portfolio rebalance authority | Tenant-neutral model rebalance from the completed panel decision, then one frozen user/binding/broker-account plan evaluated by scoring and leased by execution |
+| Exact paper strategy authority | evidence-hashed `paper_strategy_promotion.json`, mounted read-only into indicator and scoring; never live authority |
+| Versioned feedback baseline | immutable `strategy_versions.default_params`, registered from that release's validated strategy parameters |
+| Build dependencies, component group labels, and images | `config/build.yaml`, `config/containers.yaml`, `docker/constraints.txt` |
+| Repository review routing | `.github/CODEOWNERS` is an onboarding template until maintainers are designated |
+
+**Dependency version authority is two-tier.** Abstract ranges live in each component's
+`setup.py` (`install_requires`); the production lock is `docker/constraints.txt`. `vmdev
+audit` enforces agreement between the two, and first-party dependency truth, via the
+`runtime-dependency-contract` and `first-party-dependency-contract` rules. Add a dependency
+in both places, never only in the lock.
+
+The scoring, execution, and indicator runtimes consume configuration snapshots;
+they do not own parallel user-binding or instrument write APIs.
+
+## Startup snapshots and validation
+
+`execution-engine`, `scoring-engine`, the indicator supervisor, and each
+indicator worker call their validated configuration loader once at the process
+composition root. The resulting immutable startup configuration is injected
+into long-lived collaborators. Changing an environment variable after
+construction does not alter routing, gating, deduplication, circuit-breaker,
+scoring, binding-cache, relay, strategy selection, child-process credentials,
+or worker catch-up behavior; deploy a new process to apply a configuration
+change.
+
+Present but malformed numeric and boolean values fail startup. The canonical
+parsers in `lib_common.env_utils` own bounds and accepted boolean spellings;
+services must not reinterpret values locally. `vmdev audit` checks direct
+environment calls as well as values reached through mapping aliases and local
+variables. Ordinary string reads remain valid at a composition root for URLs,
+credentials, paths, and process host/logging options.
+
+The scoring outbox relay receives its execution API key explicitly from the
+composition root and retains that snapshot for every delivery. The fixed
+Coinbase market-fill polling timeout is a broker safety invariant, not a
+runtime override.
+
+Every PostgreSQL engine, including one created from a service-specific explicit
+URL, uses the same bounded process-local pool policy. `DB_POOL_SIZE`,
+`DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT_SECONDS`, and
+`DB_POOL_RECYCLE_SECONDS` default to `3`, `2`, `10`, and `1800`; startup rejects
+their combined capacity above `DB_POOL_CONNECTION_BUDGET` (default `5`).
+Pre-ping and LIFO reuse are always enabled. Pool capacity, checked-out
+connections, overflow, and pressure ratio are exported as
+`vm_database_pool_*` metrics without exposing a connection URL.
+
+Compose uses bounded `json-file` logging for every declared service.
+`DOCKER_LOG_MAX_SIZE` and `DOCKER_LOG_MAX_FILES` default to `10m` and `3`;
+increasing them requires an explicit local disk budget review.
+
+Continuously supervised application containers use
+`APP_STOP_GRACE_PERIOD=60s`. The shared shutdown coordinator gives tracked
+operations up to 30 seconds to drain and enforces one monotonic 45-second total
+budget across that drain and all cleanup handlers. The external window must
+also cover services with broker, database, or strategy-child cleanup. Docker's
+implicit 10-second stop window can interrupt a correct shutdown after durable
+work has stopped but before resource cleanup finishes.
+
+The feedback optimizer never reads a mutable filesystem configuration. It uses
+the exact active `strat_ver_id` attached to the signal and its persisted
+`default_params` release snapshot. Strategy registration must therefore update
+the source-controlled config and the matching version snapshot together; a
+missing, mismatched, invalid, or non-adjustable snapshot suppresses feedback.
+
+## Runtime fail-closed requirements
+
+- `EXECUTION_MODE=paper` and `EXECUTION_ENGINE_ALLOW_LIVE=false` remain set
+  throughout local development and migration verification. No live authority is supplied.
+- `API_KEY`, `ADMIN_API_KEY`, and `BACKEND_ADMIN_API_KEY` are distinct
+  boundaries. The backend is an operator/BFF surface until an end-user OIDC
+  provider is selected.
+- Each service receives its own least-privilege database login. Pipeline
+  services must not connect as the schema owner or PostgreSQL superuser.
+- Every deployed service must receive an explicit `DATABASE_URL`. Component URL
+  assembly also requires an explicit `DB_USER`; runtime images never choose a
+  database identity.
+- Alembic is the unconditional PostgreSQL schema authority; application
+  `create_all` is restricted to isolated SQLite unit stores.
+- `SECRETS_BACKEND=db` requires a newest-first comma-separated
+  `SECRETS_MASTER_KEYS` ring. Key rotation is an explicit account-scoped
+  operation; repository history rewriting does not rotate exposed credentials.
+  Backend and execution containers receive the same backend and ring because
+  backend writes account credentials and execution resolves their `secret_ref`.
+- A binding names one concrete `broker_account_id`. That identity is preserved
+  through decision, outbox command, order, fill, position, P&L, and feedback.
+- A live broker route must implement both exact order-scoped fill retrieval and
+  a broker-specific authenticated certification workflow. Order-status
+  cumulative quantities never create `executions`; missing venue trade ID,
+  actual timestamp, fee amount, or fee currency leaves the route blocked.
+- New binding rows default to `is_active=false` and `autopilot=false`. Enabling
+  execution is a separate, explicit operator decision; omitted request fields
+  never authorize trading.
+- `entries_enabled` and `exits_enabled` are separate authority. A close-only
+  binding has `is_active=true`, `entries_enabled=false`, and
+  `exits_enabled=true`; entry authority additionally requires `autopilot=true`.
+  The API and database reject authority on an inactive binding and reject more
+  than one active strategy binding for the same broker account and canonical
+  instrument until allocation accounting exists.
+- Execution re-resolves the current user, binding, broker account, credential,
+  environment, and route immediately before broker I/O. An accepted scoring
+  snapshot is audit context, not an irrevocable submission grant.
+- `users.base_ccy` and `linked_broker_accounts.base_ccy` are required. Account
+  balances, position value, P&L, and NAV are normalized to that account/user
+  currency only from fresh, point-in-time observations. Missing conversion
+  legs fail closed; USD/USDC parity is never assumed.
+- Invalid numeric and boolean environment values are handled only through
+  `lib_common.env_utils`; `vmdev audit` rejects new hand-rolled parsers.
+- `SCORING_OUTBOX_TOPICS` must retain both `execution.commands` and
+  `execution.rebalance.commands`. Removing either route fails scoring startup;
+  the portfolio topic does not grant a strategy or binding execution authority.
+
+## Progress readiness and runtime SLOs
+
+Process liveness is necessary but is not trading readiness. The current
+low-volume defaults are deliberately loose five-minute bounds:
+
+| Variable | Default | Readiness contract |
+|---|---:|---|
+| `SCORING_OUTBOX_MAX_AGE_SECONDS` | `300` | Scoring and the standalone relay are unready when an `execution.commands` or `execution.rebalance.commands` event is older than this or any such event is dead-lettered. |
+| `INDICATOR_MAX_SIGNAL_BACKLOG_AGE_SECONDS` | `300` | The indicator parent is unready when a selected child's durable signal envelope is older than this or its partition contains a dead letter. |
+| `INDICATOR_MAX_STRATEGY_LAG_SECONDS` | `300` | The indicator parent is unready when a selected strategy watermark trails the latest required complete source bar beyond this bound. |
+| `INDICATOR_PANEL_DATA_USE_SCOPE` | unset | Required for a synchronized panel worker and must be exactly `paper_forward`; historical-validation revisions are never runtime inputs. |
+| `INDICATOR_PANEL_ENTITLEMENT_OWNER_USER_ID` | unset | Canonical user owning the personal data entitlement. It may fall back to `SP500_RESEARCH_OWNER_USER_ID` inside the worker, but the resolved owner is persisted and matched exactly. |
+| `INDICATOR_PANEL_ACTIVATION_CUTOFF` | unset | Inclusive, offset-aware decision-cutoff watermark. Earlier exact-owner inputs are terminally `skipped`; inputs whose official execution session has closed are terminally `expired`. |
+| `EXECUTION_PAPER_ORDER_MAX_LAG_SECONDS` | `300` | Execution is unready when an eligible durable local-paper order has not consumed committed market time within this bound. |
+
+Execution readiness also requires zero `submission_unknown` orders, successful
+database and local-paper rehydration checks, and completion of initial
+reconciliation for every account partition discovered from active bindings,
+recoverable orders, and non-flat canonical positions. Indicator health exposes
+per-strategy lag and outbox counts; scoring exposes outbox counts, oldest age,
+and progress; execution exposes pending-order state/age, paper processing lag,
+unknown submissions, and reconciliation partitions. Configure alerts from the
+corresponding `/metrics` series; do not raise these bounds merely to hide a
+stalled worker.
+
+## Exact paper-strategy promotion configuration
+
+`INDICATOR_PAPER_PROMOTION_MANIFEST` and
+`SCORING_PAPER_PROMOTION_MANIFEST` must point to the same read-only manifest,
+and `VM_DEPLOY_IMAGE_TAG` must match its immutable image tag. In
+staging/production paper mode, a missing, stale, or mismatched manifest fails
+closed. `scripts/write_paper_promotion_manifest.py` hashes the packaged strategy
+config, released indicator image tag, exact evidence set, user, binding,
+dedicated account, broker, and instrument authority. Every manifest records
+`live_authority=false`; it can never satisfy `EXECUTION_ENGINE_ALLOW_LIVE`.
+Only synchronized portfolio authority fixes `data_use_scope=paper_forward`;
+the ordinary single-instrument contract keeps its existing data-use semantics.
+
+`model_scope=single_instrument` binds one configured canonical instrument.
+`model_scope=synchronized_portfolio` instead requires the pre-start model
+configuration digest and one reviewed, hash-pinned positive instrument-id/
+canonical-symbol allowlist artifact. The manifest embeds that exact allowlist
+and its canonical digest. Its entitlement owner must equal the indicator panel runtime owner.
+Scoring rejects independent per-symbol dispatch under portfolio authority and
+accepts only the matching atomic model rebalance, exact active binding, account,
+broker, asset class, configuration digest, and allowlist digest. Every event leg
+must be a member of the allowlist, including risk-reducing exits for retained
+holdings, while a zero-leg all-cash decision remains valid. A binding must list
+exactly that broker and full allowlist; wildcard or subset bindings do not
+inherit promotion authority.
+
+No manifest is created from unit-test output. The referenced evidence files must
+belong to one run and pass the real-data, restart, order lifecycle, exact-fill,
+reconciliation, scoring-input, transport, authorization, account-binding, and
+soak contracts before the writer will emit a manifest.
+
+## Disabled synchronized equity portfolio route
+
+`USQualityCompounder` is packaged for static validation only. Its
+source configuration remains `enabled=false`, `environments=["dev"]`, and
+`market_data.source="eodhd"`; do not add it to
+`STRATEGY_LIST` or create a binding until its provider and evidence gates in
+[the strategy README](../strategies/indicator/USQualityCompounder/README.md) pass.
+
+The synchronized runtime is not configured from a ticker list. An authorized
+provider must first persist and register one complete revision-pinned
+point-in-time panel, including official decision/execution sessions, membership,
+permanent security/share-class identity, observations, factor snapshots,
+entitlement, and provider-policy hashes. Historical-validation evidence cannot
+be selected for a `paper_forward` panel. Scoring accepts operational rebalance
+batches only for `paper_forward`, and execution remains paper-only with
+`EXECUTION_ENGINE_ALLOW_LIVE=false`.
+
+The existing market-data-ingestor image owns the transactional research import
+boundary; no additional service or image is declared. The factor materializer
+emits exactly one provider-neutral symbolic `database_evidence_bundle` in its
+content-addressed manifest. `sp500-research-import` requires
+`SP500_RESEARCH_ARTIFACT_ROOT`, `SP500_RESEARCH_FACTOR_MANIFEST`, and
+`SP500_RESEARCH_OWNER_USER_ID`. Research instrument numbers are never copied
+into the catalogue: the importer resolves
+permanent security keys locally, derives DB identities and hashes, admits only
+exact immutable replays, and rolls back the whole graph on any failure.
+
+The strategy process co-resides in the existing `indicator-runner` image with
+other selected indicator strategies; scoring, execution, and feedback remain
+shared services. Promotion therefore requires aggregate runner CPU/memory,
+database-pool, child-health, and service-SLO qualification, not a strategy-
+specific image. The equity feed is a profile-gated second instance of the
+declared `market-data-ingestor` image because each ingestor process owns one
+configured source.
+
+Do not represent this command as a successful import for the current EODHD
+six-year reconstruction. Its component-history rows contain effective dates
+but no source publication timestamps, so the importer intentionally rejects
+them before writing. The emitted bundle records membership availability as
+missing and is therefore a deterministic negative promotion artifact, not an
+E2E success artifact. A
+future source-qualified bundle may be imported through the declared container
+with the artifact root mounted read-only; changing a scope label or using
+retrieval time as historical availability is not permitted.
+
+The existing profile-gated equity ingestor can additionally persist EODHD US
+extended delayed quotes for paper execution. Set
+`EODHD_DELAYED_QUOTES_ENABLED=true` only with the exact active personal owner in
+`SP500_RESEARCH_OWNER_USER_ID`; the delayed batch is restricted to the
+catalogue-resolved `EQUITY_INGESTOR_SYMBOLS`. Every batch requires a complete,
+positive, non-crossed timestamped BBO and is stored in the immutable equity
+evidence graph. The ingestion adapter retains the EODHD-specific response and
+source-digest semantics while publishing the normalized owner-scoped
+delayed-BBO contract. The execution engine reads only that generic contract for
+the exact owner in paper mode, using
+`EXECUTION_MAX_DELAYED_PAPER_MARKET_DATA_AGE_SECONDS`; it has no EODHD import or
+credential, and live execution never falls back to delayed evidence.
+
+The EODHD live ingestor treats HTTP 402 as daily-call exhaustion, distinct
+from HTTP 401 authentication and HTTP 403 plan-entitlement failures. It opens
+a provider circuit through the next documented midnight-UTC subscription reset
+and for at least `EODHD_DAILY_QUOTA_MIN_COOLDOWN_SEC` (default 900; strict range
+60–86400), marks readiness false, and exposes a counter plus open-circuit
+gauge. Poll ticks continue without issuing EODHD requests while the circuit is
+open. This containment applies only to the long-running live ingestor; the
+one-shot historical backfill and validation commands still fail closed.
+
+Delayed quotes and daily bars have independent request cadences inside this
+same ingestor process. `EQUITY_INGESTOR_POLL_INTERVAL_SEC` controls the delayed
+quote loop (default 300 seconds), while
+`EQUITY_INGESTOR_CANDLE_POLL_INTERVAL_SEC` controls symbol-by-symbol daily-bar
+requests (default 3,600 seconds and never lower than the quote cadence). This
+prevents a 500-name delayed-quote universe from refetching unchanged daily bars
+on every quote tick; both paths still share the credential-safe quota circuit,
+catalogue identity, and readiness boundary.
+
+The existing market-data-ingestor image also provides one explicit
+`quality-compounder-once` command. The profile-gated
+`quality-compounder-panel` service invokes it after an external scheduler has
+observed the final official XNYS session of a quarter. The command rechecks the
+official consecutive-session boundary and is a no-op unless
+`QUALITY_COMPOUNDER_PANELS_ENABLED=true`.
+
+An enabled run requires `EODHD_API_TOKEN`, `EDGAR_USER_AGENT`, the exact personal
+data owner in `QUALITY_COMPOUNDER_ENTITLEMENT_OWNER_USER_ID`, and a reviewed
+`QUALITY_COMPOUNDER_ROUND_TRIP_COMMISSION_BPS`. All provider requests finish
+outside database transactions. Membership, identity, EOD prices, splits,
+dividends, SEC facts, derived market/fundamental factors, the evidence manifest,
+and the synchronized panel then commit atomically before the next official
+open. Any missing member, catalogue/conid gap, stale or mixed-scope evidence,
+corporate-action ambiguity, quota failure, or deadline breach rolls back the
+attempt and fails closed.
+
+Panel registration requires factor-complete coverage of at least 80% across
+all effective members and at least 70% in every sector with 10 or more
+effective members. Deterministic diagnostics report exact complete/total
+counts; incomplete and ineligible members do not count as complete.
+
+The command targets only the registered, active model version
+`us_quality_compounder_v1` / `0.2.0`, point-in-time S&P 500 membership, and the
+catalogued SPY ETF benchmark. The strategy catalogue row may remain inactive
+while this evidence is produced; the command does not activate the strategy,
+create an account binding, infer settled USD or NAV, or grant broker/order
+authority.
+
+Before the first panel run, build the validation runtime and compile the pinned
+ICE/NYSE artifact with
+`build/venvs/strategy-validation/bin/python -m dev_cli.validation.backtest.equity_run
+compile-official-sessions`. Record its printed SHA-256, mount the artifact read-only, and invoke
+`quality-compounder-calendar-import`. The import requires exact
+`QUALITY_COMPOUNDER_OFFICIAL_SESSION_ARTIFACT` and
+`QUALITY_COMPOUNDER_OFFICIAL_SESSION_SHA256` values and accepts only canonical
+compiler bytes; an incompatible existing XNYS calendar fails closed.
+
+Provision equities through the same profile with the generic
+`equity-catalogue-import` command. Its content-pinned canonical JSON must be
+sorted by canonical symbol and provide each exact USD scheduled equity,
+reviewed exchange and tick size, reviewed positive whole-share `lot_size`, and
+positive IBKR `STK` conId. It performs no provider symbol search and never
+creates a calendar: the official `XNYS` calendar and seeded `ibkr` broker must
+already exist. It creates missing rows or fills only null catalogue fields;
+any conflicting non-null value or conId assignment fails the transaction.
+
+Set `EQUITY_CATALOGUE_ARTIFACT` and `EQUITY_CATALOGUE_SHA256`, then invoke:
+
+```bash
+docker compose -f docker/docker-compose.stack.yml --profile quality-compounder run --rm \
+  quality-compounder-panel python -m apps.market_data_ingestor.market_data_ingestor.main \
+  equity-catalogue-import
+```
+
+`EQUITY_CATALOGUE_DRY_RUN` defaults to `true`. Review the deterministic plan,
+then set it to `false` for the atomic apply. Reapplying the same artifact is an
+exact no-op replay.
+
+## Venue candle feeds
+
+The live scheduler and execution engine keep canonical instrument identity
+separate from each venue's request identifier. `INGESTOR_SYMBOLS` contains
+canonical instrument names or configured aliases. At startup, each selector
+resolves through `instruments` and the exact broker row in
+`instrument_broker_symbols`; only the canonical symbol is emitted in
+`new_market_data` notifications.
+
+Text-symbol venues use `broker_symbol`. IBKR, Zerodha, and Saxo require the
+separate `broker_instrument_id`; Saxo also requires
+`broker_instrument_type`. These typed fields hold conids, instrument tokens,
+and UIC/AssetType without encoding them into a display symbol or an environment
+variable. Unknown or duplicate selectors, missing broker rows, incomplete
+typed identities, and non-positive numeric ids fail startup before any venue
+request. Catalogue changes are therefore reviewed and shared with execution
+routing instead of maintained in a parallel ingestor configuration.
+Untyped opaque ids such as IBKR conids and Zerodha instrument tokens are unique
+per broker. Typed ids remain unique by broker/id/type because Saxo may reuse a
+UIC across AssetTypes.
+
+| `INGESTOR_SOURCE` | Venue identifier and credentials |
+|---|---|
+| `coinbase_live` | Coinbase product id; public candles or optional key/secret |
+| `deribit`, `deribit_testnet` | Exact instrument name; public chart endpoint |
+| `delta`, `delta_india` | Exact regional product symbol; public candles |
+| `ibkr` | Positive numeric conid; an authenticated Client Portal Gateway session |
+| `zerodha` | Positive numeric instrument token; API key plus current daily access token |
+| `saxo_live` | Positive numeric UIC plus exact typed AssetType; OAuth token, RFC3339 expiry, and optional AccountKey |
+| `saxo_simulation` | Same explicit Saxo mapping and credentials, persisted only as simulation provenance |
+
+Authenticated venue feeds use dedicated platform market-data credentials
+(`ZERODHA_MARKET_DATA_*` or `SAXO_MARKET_DATA_*`). They must not reuse any
+tenant's account-scoped execution secret.
+
+The live poller and the isolated `market-data-backfill` one-shot share this
+exact source/catalogue/provider boundary. `INGESTOR_SYMBOLS` always selects
+canonical instruments; the one-shot resolves the same broker symbol, conid,
+instrument token, or UIC/AssetType and persists only the provider's intrinsic
+source tag. It never fetches Coinbase data on behalf of another source or
+rewrites provenance. Public Deribit and Delta feeds need no credential;
+Coinbase credentials are optional, IBKR requires an authenticated gateway,
+and Zerodha/Saxo use the dedicated feed credentials above. Missing identity,
+credential, coverage, or recent venue data fails the one-shot.
+
+`INGESTOR_BACKFILL_MINUTES` belongs to the live poller's bounded startup
+request. `INGESTOR_BACKFILL_DAYS` belongs only to the separately supervised
+`market-data-backfill` profile, whose independent process and connection pool
+cannot stall live polling. Continuous crypto history requires 95% total
+coverage and a current tail. Session-based assets use a conservative 15%
+wall-clock floor plus a candle within the last seven days so nights, weekends,
+and holidays are not misclassified as venue failures; the execution session
+gate remains authoritative for tradability. Network/HTTP failures are retried,
+but a successful empty scheduled-market response defers directly to those
+aggregate gates instead of retrying every overnight/weekend window.
+
+## Official market-session writers
+
+IBKR, Saxo, and Zerodha non-crypto routes remain blocked until one supervised
+writer owns each canonical instrument. The three Compose profiles reuse the
+market-data image and backend admin boundary:
+
+| Profile / service | Official source | Required configuration |
+|---|---|---|
+| `calendar-ibkr` / `market-calendar-ibkr` | IBKR `GET /contract/trading-schedule` regular `liquid_hours` | `IBKR_MARKET_CALENDAR_SYMBOLS`, authenticated `IBKR_GATEWAY_URL`, and a pinned `IBKR_CA_CERT` for non-loopback gateways |
+| `calendar-saxo` / `market-calendar-saxo` | Saxo live trading schedule; `AutomatedTrading` only | `SAXO_MARKET_CALENDAR_SYMBOLS`, current `SAXO_MARKET_DATA_ACCESS_TOKEN`, and its RFC3339 expiry |
+| `calendar-zerodha` / `market-calendar-zerodha` | NSE `/api/marketStatus` exact segment state | `ZERODHA_MARKET_CALENDAR_SYMBOLS`, exact `ZERODHA_MARKET_CALENDAR_NSE_MARKET`, 30–300 second lease |
+
+Selector variables contain canonical symbols only. Exact conids, UIC/AssetType
+pairs, and Kite tokens come from the shared broker catalogue. The processes use
+the read-only market-data database role for that resolution and
+`MARKET_CALENDAR_ADMIN_API_KEY` (in Compose, the existing
+`BACKEND_ADMIN_API_KEY`) only for the backend PUT. Never enable two writers for
+the same instrument. Empty selectors, incomplete mappings, expired credentials,
+malformed responses, and source outages fail closed; no fallback schedule is
+generated.
+
+There are no provider aliases or first-search-result fallbacks. IBKR requests
+use the exact UTC start and forward direction. A non-loopback Client Portal
+Gateway must use HTTPS and set `IBKR_CA_CERT`; TLS verification is disabled
+only for the gateway's self-signed loopback default. Zerodha request bounds
+are converted explicitly to Indian-exchange wall time and returned offset
+timestamps are persisted as UTC. Saxo live and simulation use different API
+hosts and immutable source labels; Saxo documents that simulation market data
+may be unavailable or synthetic, so it is not an acceptable real-data
+validation source. A `saxo_live` response is accepted only when Saxo reports
+`DelayedByMinutes=0`. Bid/ask chart shapes (including Saxo FX) are rejected
+because the canonical candle schema represents last-trade OHLC and does not
+silently manufacture midpoint candles.
+
+## Observed FX process
+
+`fx-rate-ingestor` reuses the market-data image but runs independently from the
+crypto-candle scheduler. It stores daily `EUR/USD`, `EUR/GBP`, and `EUR/INR`
+reference observations from the ECB and hourly traded `USDC/EUR` candles from
+Coinbase. Crosses are derived at read time through EUR with both source legs
+fresh at the requested timestamp.
+
+| Variable | Default | Owner / constraint |
+|---|---:|---|
+| `FX_RATE_CURRENCIES` | `USD,GBP,INR` | FX ingestor; non-EUR ECB quote currencies required by active tenants |
+| `FX_RATE_HISTORY_DAYS` | `90` | FX ingestor; accepted range `1..90` |
+| `FX_RATE_POLL_INTERVAL_SEC` | `21600` | FX ingestor; accepted range `60..86400` |
+| `FX_RATE_COINBASE_PRODUCT` | `USDC-EUR` | FX ingestor; intentionally rejects any other product |
+| `EXECUTION_FX_MAX_AGE_SECONDS` | `259200` | execution; accepted range `60..604800` |
+
+The FX process exposes internal `/health`, `/ready`, and `/live` endpoints on
+port `8004`. Production deployment must supervise and health-check it separately
+so an ECB/Coinbase FX-source outage cannot stall primary market-data ingestion.
+
+No hosting or identity provider is provisioned by this migration. Do not expose
+the tenant configuration API directly to end users until an OIDC issuer and
+verified user-identity mapping are chosen.

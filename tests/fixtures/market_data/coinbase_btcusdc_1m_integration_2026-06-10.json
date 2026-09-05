@@ -1,0 +1,120 @@
+{
+  "fixture_schema": "vynmatrix.real-provider-candle-fixture.v1",
+  "fixture_scope": "real_provider_integration",
+  "market_evidence": true,
+  "provider": "Coinbase Advanced Trade public API",
+  "retrieved_at_utc": "2026-07-22T22:00:49Z",
+  "product_metadata_request_url": "https://api.coinbase.com/api/v3/brokerage/market/products/BTC-USDC",
+  "candle_request_url": "https://api.coinbase.com/api/v3/brokerage/market/products/BTC-USDC/candles?start=1781049600&end=1781050200&granularity=ONE_MINUTE&limit=20",
+  "requested_product_id": "BTC-USDC",
+  "product_metadata": {
+    "product_id": "BTC-USDC",
+    "alias": "BTC-USD",
+    "alias_to": [],
+    "base_currency_id": "BTC",
+    "quote_currency_id": "USDC",
+    "quote_display_symbol": "USD",
+    "base_increment": "0.00000001",
+    "quote_increment": "0.01",
+    "price_increment": "0.01",
+    "product_type": "SPOT",
+    "status": "online",
+    "is_disabled": false,
+    "trading_disabled": false
+  },
+  "granularity": "ONE_MINUTE",
+  "provider_response_order": "reverse_chronological",
+  "requested_start_utc": "2026-06-10T00:00:00Z",
+  "requested_end_inclusive_utc": "2026-06-10T00:10:00Z",
+  "validation_window_end_exclusive_utc": "2026-06-10T00:11:00Z",
+  "candles": [
+    {
+      "start": "1781050200",
+      "low": "61750.15",
+      "high": "61808.28",
+      "open": "61808.28",
+      "close": "61778.92",
+      "volume": "1.3596707"
+    },
+    {
+      "start": "1781050140",
+      "low": "61716.58",
+      "high": "61816.05",
+      "open": "61750.15",
+      "close": "61808.27",
+      "volume": "4.44044458"
+    },
+    {
+      "start": "1781050080",
+      "low": "61742.69",
+      "high": "61824.75",
+      "open": "61819.34",
+      "close": "61750.15",
+      "volume": "1.95846016"
+    },
+    {
+      "start": "1781050020",
+      "low": "61798.64",
+      "high": "61852.8",
+      "open": "61839.67",
+      "close": "61819.34",
+      "volume": "2.68840934"
+    },
+    {
+      "start": "1781049960",
+      "low": "61809.83",
+      "high": "61853.99",
+      "open": "61836.26",
+      "close": "61839.67",
+      "volume": "3.7626487"
+    },
+    {
+      "start": "1781049900",
+      "low": "61778.66",
+      "high": "61839.67",
+      "open": "61787.45",
+      "close": "61839.39",
+      "volume": "4.55390586"
+    },
+    {
+      "start": "1781049840",
+      "low": "61743.99",
+      "high": "61789.9",
+      "open": "61765.07",
+      "close": "61787.45",
+      "volume": "2.85090617"
+    },
+    {
+      "start": "1781049780",
+      "low": "61739.96",
+      "high": "61801.36",
+      "open": "61750.36",
+      "close": "61765.07",
+      "volume": "5.08080053"
+    },
+    {
+      "start": "1781049720",
+      "low": "61660.63",
+      "high": "61756.2",
+      "open": "61660.63",
+      "close": "61750.36",
+      "volume": "3.07981981"
+    },
+    {
+      "start": "1781049660",
+      "low": "61660.63",
+      "high": "61694",
+      "open": "61686.73",
+      "close": "61660.63",
+      "volume": "2.65627013"
+    },
+    {
+      "start": "1781049600",
+      "low": "61671.99",
+      "high": "61707.93",
+      "open": "61685.81",
+      "close": "61686.73",
+      "volume": "7.81131226"
+    }
+  ]
+}

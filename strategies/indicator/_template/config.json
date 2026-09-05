@@ -1,0 +1,32 @@
+{
+  "strategy_id": "strategy_name_v1",
+  "strategy_version": "1.0.0",
+  "description": "Production signal strategy description",
+  "schema_version": "2",
+  "runner_kind": "signal_worker",
+  "enabled": false,
+  "environments": [
+    "dev"
+  ],
+  "trade_direction_mode": "long_only",
+  "parameters": {
+    "universe": "BTCUSDC",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_only",
+    "period": "14",
+    "stop_loss_pct": "0.02"
+  },
+  "market_data": {
+    "source": "coinbase_live",
+    "timeframe": "1m",
+    "consolidation_minutes": 1440,
+    "bootstrap_bars": 120
+  },
+  "feedback_loop": {
+    "evaluation_horizon": "5d"
+  },
+  "metadata": {
+    "decision": "INSUFFICIENT_EVIDENCE",
+    "readiness": "STATIC_REVIEW_ONLY"
+  }
+}

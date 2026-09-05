@@ -1,0 +1,54 @@
+ticker,effective_from,effective_to,source_ref,notes
+AAPL,2019-07-01,,incumbent_2019-07-01,
+MSFT,2019-07-01,,incumbent_2019-07-01,
+AMZN,2019-07-01,,incumbent_2019-07-01,20:1 split 2022-06-06 handled by corporate_actions
+GOOGL,2019-07-01,,incumbent_2019-07-01,Class A; both Alphabet classes are index constituents; 20:1 split 2022-07-18
+GOOG,2019-07-01,,incumbent_2019-07-01,Class C; both Alphabet classes are index constituents
+META,2019-07-01,,incumbent_2019-07-01,traded as FB until 2022-06 ticker change; vendor serves continuous history under META
+NVDA,2019-07-01,,incumbent_2019-07-01,4:1 split 2021-07-20; 10:1 split 2024-06-10
+AMD,2019-07-01,,incumbent_2019-07-01,
+NFLX,2019-07-01,,incumbent_2019-07-01,
+AVGO,2019-07-01,,incumbent_2019-07-01,10:1 split 2024-07-15
+INTC,2019-07-01,,incumbent_2019-07-01,
+MU,2019-07-01,,incumbent_2019-07-01,
+QCOM,2019-07-01,,incumbent_2019-07-01,
+ORCL,2019-07-01,,incumbent_2019-07-01,
+CRM,2019-07-01,,incumbent_2019-07-01,
+ADBE,2019-07-01,,incumbent_2019-07-01,
+COST,2019-07-01,,incumbent_2019-07-01,
+WMT,2019-07-01,,incumbent_2019-07-01,3:1 split 2024-02-26
+LLY,2019-07-01,,incumbent_2019-07-01,
+UNH,2019-07-01,,incumbent_2019-07-01,
+JPM,2019-07-01,,incumbent_2019-07-01,
+BAC,2019-07-01,,incumbent_2019-07-01,
+C,2019-07-01,,incumbent_2019-07-01,
+GS,2019-07-01,,incumbent_2019-07-01,
+XOM,2019-07-01,,incumbent_2019-07-01,
+CVX,2019-07-01,,incumbent_2019-07-01,
+OXY,2019-07-01,,incumbent_2019-07-01,continuous member through window (high-ADV in 2022 energy rally)
+BA,2019-07-01,,incumbent_2019-07-01,
+CAT,2019-07-01,,incumbent_2019-07-01,
+DIS,2019-07-01,,incumbent_2019-07-01,
+V,2019-07-01,,incumbent_2019-07-01,
+MA,2019-07-01,,incumbent_2019-07-01,
+PYPL,2019-07-01,,incumbent_2019-07-01,
+PFE,2019-07-01,,incumbent_2019-07-01,high-ADV during 2021 vaccine period
+CSCO,2019-07-01,,incumbent_2019-07-01,
+HD,2019-07-01,,incumbent_2019-07-01,
+F,2019-07-01,,incumbent_2019-07-01,high retail ADV 2021-2022
+GM,2019-07-01,,incumbent_2019-07-01,
+GE,2019-07-01,,incumbent_2019-07-01,1:8 reverse split 2021-08-02 handled by corporate_actions
+TWTR,2019-07-01,2022-10-27,incumbent_2019-07-01; trading suspended at Musk acquisition close,end-dated at last NYSE session 2022-10-27; formal index removal followed days later - ranking self-heals because prices end here
+ATVI,2019-07-01,2023-10-13,incumbent_2019-07-01; Microsoft acquisition close,end-dated at last session 2023-10-13
+TSLA,2020-12-21,,S&P DJI press release 2020-11-16 (effective 2020-12-21),largest-ever index addition at the time; first counted at the 2021-01 rebalance
+MRNA,2021-07-21,,S&P DJI press release (effective 2021-07-21),
+ABNB,2023-09-18,,S&P DJI press release (effective 2023-09-18),
+UBER,2023-12-18,,S&P DJI press release (effective 2023-12-18),
+SMCI,2024-03-18,,S&P DJI press release (effective 2024-03-18),
+CRWD,2024-06-24,,S&P DJI press release (effective 2024-06-24),
+PLTR,2024-09-23,,S&P DJI press release 2024-09-06 (effective 2024-09-23),
+DELL,2024-09-23,,S&P DJI press release 2024-09-06 (effective 2024-09-23),
+COIN,2025-05-19,,S&P DJI press release 2025-05-12 press.spglobal.com/2025-05-12-Coinbase-Global-Set-to-Join-S-P-500 (effective 2025-05-19),verified 2026-07-25
+XYZ,2025-07-23,,S&P DJI announcement (effective 2025-07-23; secondary confirmation),Block; traded as SQ until Jan-2025 ticker change; effective day verified via secondary source only - quarter-boundary insensitive
+HOOD,2025-09-22,,S&P DJI press release 2025-09-05 press.spglobal.com/2025-09-05 (effective 2025-09-22),verified 2026-07-25
+APP,2025-09-22,,S&P DJI press release 2025-09-05 press.spglobal.com/2025-09-05 (effective 2025-09-22),verified 2026-07-25

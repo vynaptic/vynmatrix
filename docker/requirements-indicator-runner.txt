@@ -1,0 +1,5 @@
+# Indicator-runner runtime profile beyond the shared production service base
+# (exact constraint-matching pins, enforced by the vmdev audit
+# runtime-dependency-contract rule).
+psutil==7.2.2
+jsonschema==4.26.0

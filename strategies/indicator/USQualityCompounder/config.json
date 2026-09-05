@@ -1,0 +1,39 @@
+{
+  "strategy_id": "us_quality_compounder_v1",
+  "strategy_version": "0.2.0",
+  "description": "Disabled quarterly quality-compounder model over point-in-time S&P 500 membership. Requires a complete factor panel and emits only account-neutral long-only target books.",
+  "schema_version": "2",
+  "runner_kind": "signal_worker",
+  "enabled": false,
+  "environments": [
+    "dev"
+  ],
+  "trade_direction_mode": "long_only",
+  "parameters": {
+    "universe": "SP500",
+    "asset_class": "equity",
+    "trade_direction_mode": "long_only",
+    "universe_contract": "point_in_time_sp500_membership",
+    "target_holdings": "15",
+    "max_panel_age_days": 100
+  },
+  "market_data": {
+    "source": "eodhd",
+    "timeframe": "1d",
+    "consolidation_minutes": 0,
+    "bootstrap_bars": 0
+  },
+  "feedback_loop": {
+    "evaluation_horizon": "3m"
+  },
+  "execution": {
+    "mode": "signal",
+    "require_explicit_scoring_inputs": false,
+    "require_stop_loss": false
+  },
+  "metadata": {
+    "decision": "IMPROVE_THEN_VALIDATE",
+    "readiness": "STATIC_REVIEW_ONLY",
+    "role": "phase-one implementation; activation remains blocked on registered point-in-time panel production, IBKR paper account binding, real-history validation, and paper promotion evidence"
+  }
+}

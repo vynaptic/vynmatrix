@@ -1,0 +1,11 @@
+environment: dev
+
+endpoints:
+  signal_api_url: http://localhost:8001
+
+live_mode: false
+
+secrets:
+  source: env_vars
+  names:
+    - api_key

@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+
+# Block direct pushes to origin/main unless explicitly overridden.
+if [ "${VM_ALLOW_MAIN_PUSH:-0}" = "1" ]; then
+  exit 0
+fi
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    echo "ERROR: Direct push to origin/main is blocked."
+    echo "Workflow: commit locally on main, then run: git mr submit"
+    echo "If you must bypass once, run: VM_ALLOW_MAIN_PUSH=1 git push origin main"
+    exit 1
+  fi
+done
+
+exit 0
