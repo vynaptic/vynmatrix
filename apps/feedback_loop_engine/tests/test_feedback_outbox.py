@@ -1,3 +1,5 @@
+"""Feedback persistence: performance rows, trackers and exact price observations."""
+
 from __future__ import annotations
 
 import json
@@ -23,11 +25,11 @@ from lib_application.db.models import (
     CanonicalSignal,
     Instrument,
     InstrumentPrice,
+    OutboxEvent,
     SignalPerformance,
     Strategy,
     StrategyConsecutiveWrongTracker,
 )
-from lib_application.outbox import OutboxStore
 
 
 class _FixedPriceProvider(PriceProvider):
@@ -131,7 +133,6 @@ def test_feedback_evaluation_cycle_persists_performance_and_outbox_event() -> No
     feedback_engine = FeedbackLoopEngine(
         engine=engine,
         price_provider=_FixedPriceProvider(),
-        outbox_store=OutboxStore(session_local),
     )
 
     result = feedback_engine.run_evaluation_cycle(horizon=EvaluationHorizon.D1, limit=10)
@@ -185,10 +186,8 @@ def test_feedback_evaluation_cycle_persists_performance_and_outbox_event() -> No
             },
         }
 
-    records = feedback_engine._outbox_store.list_pending(topics=["feedback.ready"])
-    assert len(records) == 1
-    assert records[0].payload["signal_id"] == 123
-    assert records[0].payload["is_correct"] is True
+    with session_local() as s:
+        assert s.query(OutboxEvent).count() == 0
 
 
 def test_restart_after_tracker_commit_replays_without_double_increment(
@@ -383,12 +382,10 @@ def test_late_historical_price_does_not_rewind_tracker_or_feedback_event() -> No
         )
         session.commit()
 
-    outbox_store = OutboxStore(session_local)
     feedback = FeedbackLoopEngine(
         engine=engine,
         wrong_threshold=2,
         price_provider=SqlOHLCPriceProvider(session_local),
-        outbox_store=outbox_store,
     )
     first = feedback.run_evaluation_cycle(horizon=EvaluationHorizon.H1, limit=10)
     assert first["signals_evaluated"] == 1
@@ -425,13 +422,8 @@ def test_late_historical_price_does_not_rewind_tracker_or_feedback_event() -> No
         assert performance[5501].consecutive_wrong_count == 0
         assert performance[5501].needs_optimization is False
 
-    events = {
-        int(record.payload["signal_id"]): record
-        for record in outbox_store.list_pending(topics=["feedback.ready"])
-    }
-    assert events[5502].payload["consecutive_wrong_count"] == 1
-    assert events[5501].payload["consecutive_wrong_count"] == 0
-    assert events[5501].payload["needs_optimization"] is False
+    with session_local() as s:
+        assert s.query(OutboxEvent).filter(OutboxEvent.topic == "feedback.ready").count() == 0
 
 
 def test_feedback_cycle_persists_exact_sql_price_observations() -> None:

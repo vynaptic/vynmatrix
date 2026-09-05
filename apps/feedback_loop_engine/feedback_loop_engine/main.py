@@ -17,7 +17,6 @@ from lib_application.db.session import (
     dispose_engine,
     get_session_factory,
 )
-from lib_application.outbox import OutboxStore
 from lib_common.app import start_background_health_server
 from lib_common.env_utils import build_database_url, parse_int_env
 from lib_common.logging import get_logger, setup_logging
@@ -110,7 +109,6 @@ def create_engine_instance() -> tuple[
         session_local,
         max_staleness=timedelta(days=get_feedback_price_max_staleness_days()),
     )
-    outbox_store = OutboxStore(session_local)
     signal_performance_repo = SQLAlchemySignalPerformanceRepository(engine=engine)
     suggestion_reviews = SuggestionReviewService(signal_performance_repo)
 
@@ -120,7 +118,6 @@ def create_engine_instance() -> tuple[
             wrong_threshold=wrong_threshold,
             default_horizon=EvaluationHorizon.D1,
             price_provider=price_provider,
-            outbox_store=outbox_store,
             signal_performance_repo=signal_performance_repo,
         ),
         suggestion_reviews,

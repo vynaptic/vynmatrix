@@ -25,7 +25,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from lib_application.services.heartbeat_store import HeartbeatStore
-from lib_common.internal_events import FeedbackEvaluationEvent
 from lib_common.logging import get_logger
 from lib_strategy.ports.signal_performance_port import (
     ISignalPerformanceRepository,
@@ -37,7 +36,6 @@ from .mode_performance import ModePerformanceWriter
 from .models import (
     ConsecutiveWrongStatus,
     EvaluationHorizon,
-    SignalEvaluation,
     StrategyPerformanceStats,
     TriggerReason,
 )
@@ -69,7 +67,6 @@ class FeedbackLoopEngine:
         wrong_threshold: int = 2,
         default_horizon: EvaluationHorizon = EvaluationHorizon.D1,
         price_provider: PriceProvider | None = None,
-        outbox_store: Any | None = None,
         signal_performance_repo: ISignalPerformanceRepository | None = None,
     ) -> None:
         """Initialize the feedback loop engine.
@@ -88,7 +85,6 @@ class FeedbackLoopEngine:
         self._engine = engine
         self.wrong_threshold = wrong_threshold
         self.default_horizon = default_horizon
-        self._outbox_store = outbox_store
         # DB-backed liveness: the feedback loop is a one-shot, so an in-process
         # gauge is never scraped. Each successful cycle records a heartbeat row
         # that a monitor reads to alert on staleness.
@@ -270,35 +266,12 @@ class FeedbackLoopEngine:
                     tracker_status.threshold_reached if tracker_applied else False
                 )
 
-                # Persist evaluation and co-commit the feedback event in the same
-                # transaction (transactional outbox) so a crash cannot persist the
-                # SignalPerformance row without its downstream event.
-                def _enqueue_feedback_event(
-                    perf_id: int,
-                    session: Session,
-                    *,
-                    evaluation: SignalEvaluation = evaluation,
-                    consecutive_wrong_count: int = evaluation_consecutive_wrong,
-                    needs_optimization: bool = evaluation_needs_optimization,
-                    run_id: str | None = signal.get("run_id"),
-                ) -> None:
-                    message = self._build_feedback_event_message(
-                        evaluation=evaluation,
-                        consecutive_wrong_count=consecutive_wrong_count,
-                        needs_optimization=needs_optimization,
-                        run_id=run_id,
-                        performance_id=perf_id,
-                    )
-                    if message is not None and self._outbox_store is not None:
-                        self._outbox_store.enqueue_on_session(session, **message)
-
                 _performance_id, inserted = self.evaluator.persist_evaluation(
                     evaluation=evaluation,
                     consecutive_wrong_count=evaluation_consecutive_wrong,
                     needs_optimization=evaluation_needs_optimization,
                     run_id=signal.get("run_id"),
                     did_execute=bool(execution_lineage["fill_ids"]),
-                    on_persisted=_enqueue_feedback_event,
                     meta=price_meta,
                 )
                 if not inserted:
@@ -445,52 +418,6 @@ class FeedbackLoopEngine:
             )
         except SQLAlchemyError:
             logger.exception("Failed to record aggregate feedback heartbeat")
-
-    def _build_feedback_event_message(
-        self,
-        *,
-        evaluation: SignalEvaluation,
-        consecutive_wrong_count: int,
-        needs_optimization: bool,
-        run_id: str | None,
-        performance_id: int,
-    ) -> dict[str, Any] | None:
-        """Build the outbox enqueue kwargs for the FeedbackEvaluationEvent.
-
-        Returns None when the outbox is unwired. Suitable for both
-        ``OutboxStore.enqueue`` and ``enqueue_on_session`` (the latter co-commits
-        it with the SignalPerformance row).
-        """
-        if self._outbox_store is None:
-            return None
-        event = FeedbackEvaluationEvent(
-            run_id=run_id,
-            correlation_id=str(evaluation.signal_id),
-            # The evaluated canonical signal is the cause of this feedback event.
-            causation_id=str(evaluation.signal_id),
-            producer="feedback_loop_engine",
-            signal_id=evaluation.signal_id,
-            strategy_id=evaluation.strategy_id,
-            symbol=evaluation.symbol,
-            evaluation_horizon=evaluation.evaluation_horizon.value,
-            is_correct=evaluation.is_correct,
-            price_change_pct=float(evaluation.price_change_pct),
-            pnl_pct=float(evaluation.pnl_pct),
-            consecutive_wrong_count=consecutive_wrong_count,
-            needs_optimization=needs_optimization,
-            evaluated_at=evaluation.evaluation_ts,
-        )
-        return {
-            "topic": event.topic,
-            "event_type": event.event_type,
-            "payload": event.model_dump(mode="json"),
-            "schema_version": event.schema_version,
-            "aggregate_type": "feedback_evaluation",
-            "aggregate_id": str(evaluation.signal_id),
-            "event_key": f"feedback-evaluation:{evaluation.signal_id}:{event.evaluation_horizon}",
-            "ordering_key": evaluation.strategy_id,
-            "headers": {"run_id": run_id or "", "performance_id": str(performance_id)},
-        }
 
     def _get_price_observations_for_evaluation(
         self,
