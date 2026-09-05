@@ -12,8 +12,8 @@ This file provides guidance to Codex when working with code in this repository.
 
 vynmatrix is an independent local migration of a multi-strategy trading codebase.
 It is publicly source-available under [LICENSE](LICENSE), which limits use to
-personal, noncommercial purposes and requires reciprocity for externally released
-enhancements. It is not an OSI-approved open-source license; [NOTICE](NOTICE)
+personal, noncommercial purposes and requires source publication and contribution
+back for every Enhancement. It is not an OSI-approved open-source license; [NOTICE](NOTICE)
 preserves attribution and identifies known third-party provenance gaps.
 No live deployment, account, strategy certification, or release authority transfers
 with this source tree. Favour correctness, explicit authority, auditability, and
@@ -227,5 +227,5 @@ index of every repository document is [README.md § Documentation](README.md#doc
 - `docs/BROKER_CREDENTIALS.md` — account and credential boundaries
 - `docs/REVIEWER_CHECKLIST.md` — review and audit criteria
 - `docs/E2E_VERIFICATION_GUIDE.md` — release/promotion proof only
-- `SETUP_MAC_LINUX.md` / `SETUP_WINDOWS.md` — environment setup, including the PowerShell
-  equivalents for Windows
+- `SETUP.md` — shared local tooling, configuration, and bootstrap workflow
+- `SETUP_MAC_LINUX.md` / `SETUP_WINDOWS.md` — platform prerequisites and shell-specific setup

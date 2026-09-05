@@ -1,34 +1,29 @@
 # vynmatrix notices
 
-## Project license
+## License
 
-vynmatrix is publicly source-available under the
-[Vynmatrix Personal Noncommercial Reciprocity License 1.0](LICENSE). The terms
-permit personal, noncommercial use and require public source release plus a
-good-faith pull request for externally released enhancements. The license is
-not an OSI-approved open-source license.
-
-The canonical upstream repository is
+[LICENSE](LICENSE) is the complete and controlling license. vynmatrix is
+publicly source-available under its personal, noncommercial reciprocity terms;
+it is not an OSI-approved open-source license. The canonical repository is
 <https://github.com/vynaptic/vynmatrix>.
 
 ## Copyright and attribution
 
 Copyright (c) 2024-2026 VisionMaverick. Copyright, license, and attribution
 notices in individual files and dependencies remain in effect. The `vynaptic`
-GitHub account maintains this repository; that account name does not replace or
-transfer any retained copyright notice.
+GitHub account maintains this repository and does not replace or transfer
+retained copyright.
 
 ## Third-party and fixture provenance
 
-The project license does not grant rights in third-party materials. Before
-redistributing the following materials separately or relying on them beyond
-their recorded test purpose, confirm their applicable terms and record the
-result:
+The project license does not grant rights in third-party materials. Confirm the
+applicable terms before separately redistributing or relying beyond their
+recorded test purpose on either of these incomplete records:
 
 - `config/universe/sp500_membership_full.csv` has a source label but no exact
   source revision or reuse record.
-- `tests/fixtures/market_data/` contains frozen Coinbase-related fixtures whose
-  full capture and redistribution records remain incomplete.
+- `tests/fixtures/market_data/` contains frozen Coinbase-related fixtures with
+  incomplete capture and redistribution records.
 
-The historical review and outstanding provenance work are recorded in
-[docs/MIGRATION.md](docs/MIGRATION.md).
+[docs/MIGRATION.md](docs/MIGRATION.md) records the historical review and the
+remaining provenance work.
