@@ -525,3 +525,34 @@ def test_component_metrics_proxy_forwards_child_service_key() -> None:
             endpoint.server_close()
         server_thread.join(timeout=1)
         feed_thread.join(timeout=1)
+
+
+def test_indicator_child_uses_bounded_strategy_pool_and_forwards_idle_interval(
+    runtime_env: dict[str, str],
+) -> None:
+    runtime_env["STRATEGY_LIST"] = "SwingHighLowPMO"
+    runtime_env["DB_POOL_SIZE"] = "3"
+    runtime_env["DB_MAX_OVERFLOW"] = "2"
+    runtime_env["DB_POOL_CONNECTION_BUDGET"] = "5"
+    runtime_env["SIGNAL_RELAY_IDLE_INTERVAL_SEC"] = "7"
+    specs = {spec.name: spec for spec in _module().build_processes("workers", runtime_env)}
+
+    indicator = specs["indicator"].environment
+    # Strategy grandchildren inherit this environment, so the fixed 2/0 pool
+    # bounds every worker to two pooled connections plus its LISTEN connection.
+    assert indicator["DB_POOL_SIZE"] == "2"
+    assert indicator["DB_MAX_OVERFLOW"] == "0"
+    assert indicator["DB_POOL_CONNECTION_BUDGET"] == "2"
+    assert indicator["SIGNAL_RELAY_IDLE_INTERVAL_SEC"] == "7"
+
+    feedback = specs["feedback"].environment
+    assert feedback["DB_POOL_SIZE"] == "3"
+    assert feedback["DB_MAX_OVERFLOW"] == "2"
+    assert "SIGNAL_RELAY_IDLE_INTERVAL_SEC" not in feedback
+
+
+def test_scoring_child_forwards_outbox_notify_flag(runtime_env: dict[str, str]) -> None:
+    runtime_env["SCORING_OUTBOX_NOTIFY_ENABLED"] = "false"
+    specs = {spec.name: spec for spec in _module().build_processes("application", runtime_env)}
+    assert specs["scoring"].environment["SCORING_OUTBOX_NOTIFY_ENABLED"] == "false"
+    assert "SCORING_OUTBOX_NOTIFY_ENABLED" not in specs["execution"].environment
