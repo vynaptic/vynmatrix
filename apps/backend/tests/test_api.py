@@ -95,7 +95,14 @@ def env() -> dict[str, Any]:
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
     with factory() as s:
-        s.add(User(user_id="demo_user", email="demo_user@example.invalid", base_ccy="EUR"))
+        s.add(
+            User(
+                user_id="demo_user",
+                email="demo_user@example.invalid",
+                base_ccy="EUR",
+                is_deployment_owner=True,
+            )
+        )
         s.add(User(user_id="demo_peer", email="demo_peer@example.invalid", base_ccy="INR"))
         s.add_all(
             [
@@ -212,11 +219,11 @@ def test_health_needs_no_auth(env: dict[str, Any]) -> None:
 
 
 def test_admin_key_enforced(env: dict[str, Any]) -> None:
-    assert env["client"].get("/users/demo_user/bindings").status_code == 401
+    assert env["client"].get("/bindings").status_code == 401
 
 
 def test_wrong_admin_key_rejected(env: dict[str, Any]) -> None:
-    r = env["client"].get("/users/demo_user/bindings", headers={"X-Admin-Key": "wrong-key"})
+    r = env["client"].get("/bindings", headers={"X-Admin-Key": "wrong-key"})
     assert r.status_code == 401
 
 
@@ -372,16 +379,16 @@ def test_allow_anon_opt_out_permits_unauthenticated_dev_access() -> None:
     # Explicit local-dev escape hatch: no key + BACKEND_ALLOW_ANON=true → open.
     app = create_app(session_factory=_bare_factory(), admin_api_key="", allow_anon=True)
     client = TestClient(app)
-    r = client.get("/users/demo_user/bindings")
-    assert r.status_code == 200
-    assert r.json() == []
+    r = client.get("/bindings")
+    assert r.status_code == 503
+    assert "deployment owner" in r.json()["detail"]
 
 
 def test_binding_create_update_list_deactivate(env: dict[str, Any]) -> None:
     client = env["client"]
     # Create
     r = client.post(
-        "/users/demo_user/bindings",
+        "/bindings",
         json={
             "strategy_id": "swing_high_low_pmo_v1",
             "broker_account_id": 1,
@@ -402,7 +409,7 @@ def test_binding_create_update_list_deactivate(env: dict[str, Any]) -> None:
 
     # Update the same explicit strategy/account binding.
     r2 = client.post(
-        "/users/demo_user/bindings",
+        "/bindings",
         json={
             "strategy_id": "swing_high_low_pmo_v1",
             "broker_account_id": 1,
@@ -419,7 +426,7 @@ def test_binding_create_update_list_deactivate(env: dict[str, Any]) -> None:
 
     # Activation is an explicit operator decision, never an omitted-field default.
     activated = client.post(
-        "/users/demo_user/bindings",
+        "/bindings",
         json={
             "strategy_id": "swing_high_low_pmo_v1",
             "broker_account_id": 1,
@@ -438,12 +445,12 @@ def test_binding_create_update_list_deactivate(env: dict[str, Any]) -> None:
     assert activated.json()["exits_enabled"] is True
 
     # List
-    listing = client.get("/users/demo_user/bindings", headers=AUTH).json()
+    listing = client.get("/bindings", headers=AUTH).json()
     assert len(listing) == 1
     assert listing[0]["binding_id"] == binding_id
 
     # Deactivate
-    d = client.delete(f"/users/demo_user/bindings/{binding_id}", headers=AUTH)
+    d = client.delete(f"/bindings/{binding_id}", headers=AUTH)
     assert d.json() == {
         "binding_id": binding_id,
         "is_active": False,
@@ -455,17 +462,17 @@ def test_binding_create_update_list_deactivate(env: dict[str, Any]) -> None:
 def test_binding_paths_cannot_cross_tenants_without_rls(env: dict[str, Any]) -> None:
     client = env["client"]
     created = client.post(
-        "/users/demo_user/bindings",
+        "/bindings",
         json={"broker_account_id": 1},
         headers=AUTH,
     )
     binding_id = created.json()["binding_id"]
 
-    assert client.get("/users/demo_peer/bindings", headers=AUTH).json() == []
+    assert client.get("/users/demo_peer/bindings", headers=AUTH).status_code == 404
     response = client.delete(f"/users/demo_peer/bindings/{binding_id}", headers=AUTH)
     assert response.status_code == 404
 
-    owner_listing = client.get("/users/demo_user/bindings", headers=AUTH).json()
+    owner_listing = client.get("/bindings", headers=AUTH).json()
     assert owner_listing[0]["is_active"] is False
     assert owner_listing[0]["autopilot"] is False
 
@@ -474,7 +481,7 @@ def test_strategy_config_upsert_review_deactivate_is_tenant_scoped_and_audited(
     env: dict[str, Any],
 ) -> None:
     client = env["client"]
-    path = "/users/demo_user/strategy-configs/us_quality_compounder_v1"
+    path = "/strategy-configs/us_quality_compounder_v1"
 
     created = client.put(
         path,
@@ -512,10 +519,10 @@ def test_strategy_config_upsert_review_deactivate_is_tenant_scoped_and_audited(
     assert updated.json()["config_id"] == config_id
     assert updated.json()["execution_mode"] == "paper"
 
-    listing = client.get("/users/demo_user/strategy-configs", headers=AUTH)
+    listing = client.get("/strategy-configs", headers=AUTH)
     assert listing.status_code == 200
     assert [row["config_id"] for row in listing.json()] == [config_id]
-    assert client.get("/users/demo_peer/strategy-configs", headers=AUTH).json() == []
+    assert client.get("/users/demo_peer/strategy-configs", headers=AUTH).status_code == 404
 
     cross_tenant_delete = client.delete(
         "/users/demo_peer/strategy-configs/us_quality_compounder_v1",
@@ -554,7 +561,7 @@ def test_strategy_config_rejects_unreviewed_parameters_and_inactive_catalogue(
     env: dict[str, Any],
 ) -> None:
     client = env["client"]
-    path = "/users/demo_user/strategy-configs/us_quality_compounder_v1"
+    path = "/strategy-configs/us_quality_compounder_v1"
 
     unreviewed = client.put(
         path,
@@ -567,9 +574,7 @@ def test_strategy_config_rejects_unreviewed_parameters_and_inactive_catalogue(
         headers=AUTH,
     )
     assert unreviewed.status_code == 422
-    assert "api_secret" not in str(
-        client.get("/users/demo_user/strategy-configs", headers=AUTH).json()
-    )
+    assert "api_secret" not in str(client.get("/strategy-configs", headers=AUTH).json())
     coerced_switch = client.put(
         path,
         json={"parameters": {"require_stop_loss": "false"}},
@@ -591,7 +596,7 @@ def test_drawdown_mandate_upsert_is_append_only_tenant_owned_and_audited(
     env: dict[str, Any],
 ) -> None:
     client = env["client"]
-    path = "/users/demo_user/risk-mandates/drawdown"
+    path = "/risk-mandates/drawdown"
 
     created = client.put(path, json={"max_drawdown_pct": "0.20"}, headers=AUTH)
     assert created.status_code == 200, created.text
@@ -616,7 +621,7 @@ def test_drawdown_mandate_upsert_is_append_only_tenant_owned_and_audited(
         Decimal("0.15"),
         Decimal("0.20"),
     ]
-    assert client.get("/users/demo_peer/risk-mandates/drawdown", headers=AUTH).json() == []
+    assert client.get("/users/demo_peer/risk-mandates/drawdown", headers=AUTH).status_code == 404
 
     with env["factory"]() as session:
         mandates = session.query(RiskMandate).order_by(RiskMandate.mandate_id.asc()).all()
@@ -649,7 +654,7 @@ def test_drawdown_mandate_rejects_invalid_or_unreviewed_rules(
     payload: dict[str, Any],
 ) -> None:
     response = env["client"].put(
-        "/users/demo_user/risk-mandates/drawdown",
+        "/risk-mandates/drawdown",
         json=payload,
         headers=AUTH,
     )
@@ -662,10 +667,10 @@ def test_strategy_policy_and_drawdown_mandate_routes_require_admin_auth(
 ) -> None:
     client = env["client"]
 
-    assert client.get("/users/demo_user/strategy-configs").status_code == 401
+    assert client.get("/strategy-configs").status_code == 401
     assert (
         client.put(
-            "/users/demo_user/risk-mandates/drawdown",
+            "/risk-mandates/drawdown",
             json={"max_drawdown_pct": "0.20"},
         ).status_code
         == 401
@@ -675,7 +680,7 @@ def test_strategy_policy_and_drawdown_mandate_routes_require_admin_auth(
 def test_binding_rejects_overlapping_active_strategy_scope(env: dict[str, Any]) -> None:
     client = env["client"]
     first = client.post(
-        "/users/demo_user/bindings",
+        "/bindings",
         json={
             "strategy_id": "swing_high_low_pmo_v1",
             "broker_account_id": 1,
@@ -693,7 +698,7 @@ def test_binding_rejects_overlapping_active_strategy_scope(env: dict[str, Any]) 
     assert first.json()["exits_enabled"] is True
 
     conflicting = client.post(
-        "/users/demo_user/bindings",
+        "/bindings",
         json={
             "strategy_id": "test_strategy_alpha_v1",
             "broker_account_id": 1,
@@ -713,8 +718,9 @@ def test_binding_rejects_overlapping_active_strategy_scope(env: dict[str, Any]) 
 def test_onboard_broker_account_stores_encrypted_secret(env: dict[str, Any]) -> None:
     client, secrets = env["client"], env["secrets"]
     r = client.post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json={
+            "config_key": "primary",
             "broker_code": "coinbase",
             "environment": "live",
             "credentials": {
@@ -734,7 +740,7 @@ def test_onboard_broker_account_stores_encrypted_secret(env: dict[str, Any]) -> 
     assert "SK-SECRET" not in r.text
     assert "AK-SECRET" in secrets.store[secret_ref]
 
-    listing = client.get("/users/demo_user/broker-accounts", headers=AUTH).json()
+    listing = client.get("/broker-accounts", headers=AUTH).json()
     onboarded = next(row for row in listing if row["account_id"] == body["account_id"])
     assert onboarded["secret_ref"] == secret_ref
     assert onboarded["broker_code"] == "coinbase"
@@ -750,6 +756,7 @@ def test_onboard_requires_canonical_base_currency(
     base_ccy: str | None,
 ) -> None:
     payload: dict[str, Any] = {
+        "config_key": "primary",
         "broker_code": "coinbase",
         "environment": "live",
         "credentials": {"api_key": "x", "api_secret": "y"},
@@ -758,7 +765,7 @@ def test_onboard_requires_canonical_base_currency(
         payload["base_ccy"] = base_ccy
 
     response = env["client"].post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json=payload,
         headers=AUTH,
     )
@@ -768,6 +775,7 @@ def test_onboard_requires_canonical_base_currency(
 
 def test_onboard_paper_account_requires_explicit_capital(env: dict[str, Any]) -> None:
     payload = {
+        "config_key": "primary",
         "broker_code": "coinbase",
         "environment": "paper",
         "credentials": {},
@@ -775,14 +783,14 @@ def test_onboard_paper_account_requires_explicit_capital(env: dict[str, Any]) ->
     }
 
     missing = env["client"].post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json=payload,
         headers=AUTH,
     )
     assert missing.status_code == 422
 
     invalid = env["client"].post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json={
             **payload,
             "paper_initial_equity": "10000",
@@ -793,7 +801,7 @@ def test_onboard_paper_account_requires_explicit_capital(env: dict[str, Any]) ->
     assert invalid.status_code == 422
 
     created = env["client"].post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json={
             **payload,
             "paper_initial_equity": "10000",
@@ -808,8 +816,9 @@ def test_onboard_paper_account_requires_explicit_capital(env: dict[str, Any]) ->
 
 def test_onboard_live_account_rejects_local_paper_capital(env: dict[str, Any]) -> None:
     response = env["client"].post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json={
+            "config_key": "primary",
             "broker_code": "coinbase",
             "environment": "live",
             "credentials": {
@@ -833,8 +842,9 @@ def test_onboard_unknown_broker_404(env: dict[str, Any]) -> None:
 
 def client_post_unknown(env: dict[str, Any]) -> Any:
     return env["client"].post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json={
+            "config_key": "primary",
             "broker_code": "nope",
             "environment": "live",
             "credentials": {"api_key": "x", "api_secret": "y"},
@@ -864,11 +874,12 @@ def test_env_secrets_backend_keeps_reads_available_and_rejects_writes_without_mu
             session.query(BrokerCredential).count(),
         )
 
-    bindings = client.get("/users/demo_user/bindings", headers=AUTH)
-    accounts = client.get("/users/demo_user/broker-accounts", headers=AUTH)
+    bindings = client.get("/bindings", headers=AUTH)
+    accounts = client.get("/broker-accounts", headers=AUTH)
     onboard = client.post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json={
+            "config_key": "primary",
             "broker_code": "coinbase",
             "environment": "live",
             "credentials": {"api_key": "x", "api_secret": "y"},
@@ -877,7 +888,7 @@ def test_env_secrets_backend_keeps_reads_available_and_rejects_writes_without_mu
         headers=AUTH,
     )
     rotate = client.put(
-        "/users/demo_user/broker-accounts/1/credentials",
+        "/broker-accounts/1/credentials",
         json={"api_key": "x", "api_secret": "y"},
         headers=AUTH,
     )
@@ -899,8 +910,9 @@ def test_env_secrets_backend_keeps_reads_available_and_rejects_writes_without_mu
 
 def test_local_paper_account_requires_no_external_credentials(env: dict[str, Any]) -> None:
     response = env["client"].post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json={
+            "config_key": "primary",
             "broker_code": "paper",
             "environment": "paper",
             "credentials": {},
@@ -912,16 +924,24 @@ def test_local_paper_account_requires_no_external_credentials(env: dict[str, Any
     )
 
     assert response.status_code == 200, response.text
-    stored = json.loads(env["secrets"].store[response.json()["secret_ref"]])
-    assert stored == {}
+    assert response.json()["secret_ref"] == ""
+    assert env["secrets"].store == {}
+    with env["factory"]() as session:
+        assert (
+            session.query(BrokerCredential)
+            .filter_by(account_id=response.json()["account_id"])
+            .count()
+            == 0
+        )
 
 
 def test_linked_paper_account_rejects_remote_sandbox_credentials(
     env: dict[str, Any],
 ) -> None:
     response = env["client"].post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json={
+            "config_key": "primary",
             "broker_code": "coinbase",
             "environment": "paper",
             "credentials": {
@@ -941,8 +961,9 @@ def test_linked_paper_account_rejects_remote_sandbox_credentials(
 
 def test_local_paper_broker_cannot_be_onboarded_as_live(env: dict[str, Any]) -> None:
     response = env["client"].post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json={
+            "config_key": "primary",
             "broker_code": "paper",
             "environment": "live",
             "credentials": {},
@@ -957,12 +978,13 @@ def test_local_paper_broker_cannot_be_onboarded_as_live(env: dict[str, Any]) -> 
 
 def test_delta_onboarding_requires_explicit_region(env: dict[str, Any]) -> None:
     base_payload = {
+        "config_key": "primary",
         "broker_code": "delta",
         "environment": "live",
         "base_ccy": "INR",
     }
     missing = env["client"].post(
-        "/users/demo_peer/broker-accounts",
+        "/broker-accounts",
         json={
             **base_payload,
             "credentials": {"api_key": "delta-key", "api_secret": "delta-secret"},
@@ -973,7 +995,7 @@ def test_delta_onboarding_requires_explicit_region(env: dict[str, Any]) -> None:
     assert "region" in missing.text
 
     created = env["client"].post(
-        "/users/demo_peer/broker-accounts",
+        "/broker-accounts",
         json={
             **base_payload,
             "credentials": {
@@ -991,8 +1013,9 @@ def test_delta_onboarding_requires_explicit_region(env: dict[str, Any]) -> None:
 
 def test_ibkr_onboarding_uses_account_session_credentials(env: dict[str, Any]) -> None:
     missing_tls = env["client"].post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json={
+            "config_key": "primary",
             "broker_code": "ibkr",
             "environment": "live",
             "base_ccy": "EUR",
@@ -1007,8 +1030,9 @@ def test_ibkr_onboarding_uses_account_session_credentials(env: dict[str, Any]) -
     assert "ca_cert" in missing_tls.text
 
     created = env["client"].post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json={
+            "config_key": "primary",
             "broker_code": "ibkr",
             "environment": "live",
             "base_ccy": "EUR",
@@ -1038,8 +1062,9 @@ def test_zerodha_rejects_unusable_access_token_expiry(
     expires_at: str,
 ) -> None:
     response = env["client"].post(
-        "/users/demo_peer/broker-accounts",
+        "/broker-accounts",
         json={
+            "config_key": "primary",
             "broker_code": "zerodha",
             "environment": "live",
             "base_ccy": "INR",
@@ -1059,8 +1084,9 @@ def test_zerodha_rejects_unusable_access_token_expiry(
 def test_zerodha_persists_current_access_token_expiry(env: dict[str, Any]) -> None:
     expiry = datetime.now(tz=UTC) + timedelta(hours=8)
     response = env["client"].post(
-        "/users/demo_peer/broker-accounts",
+        "/broker-accounts",
         json={
+            "config_key": "primary",
             "broker_code": "zerodha",
             "environment": "live",
             "base_ccy": "INR",
@@ -1102,8 +1128,9 @@ def _saxo_credentials(*, suffix: str) -> dict[str, str]:
 def test_saxo_rotation_atomically_replaces_complete_snapshot(env: dict[str, Any]) -> None:
     original = _saxo_credentials(suffix="old")
     created = env["client"].post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json={
+            "config_key": "primary",
             "broker_code": "saxo",
             "environment": "live",
             "base_ccy": "EUR",
@@ -1116,7 +1143,7 @@ def test_saxo_rotation_atomically_replaces_complete_snapshot(env: dict[str, Any]
     secret_ref = created.json()["secret_ref"]
 
     incomplete = env["client"].put(
-        f"/users/demo_user/broker-accounts/{account_id}/credentials",
+        f"/broker-accounts/{account_id}/credentials",
         json={"access_token": "partial-token"},
         headers=AUTH,
     )
@@ -1125,7 +1152,7 @@ def test_saxo_rotation_atomically_replaces_complete_snapshot(env: dict[str, Any]
 
     replacement = _saxo_credentials(suffix="new")
     rotated = env["client"].put(
-        f"/users/demo_user/broker-accounts/{account_id}/credentials",
+        f"/broker-accounts/{account_id}/credentials",
         json=replacement,
         headers=AUTH,
     )
@@ -1142,8 +1169,9 @@ def test_saxo_rotation_atomically_replaces_complete_snapshot(env: dict[str, Any]
 
 def test_credential_rotation_cannot_cross_tenants(env: dict[str, Any]) -> None:
     created = env["client"].post(
-        "/users/demo_user/broker-accounts",
+        "/broker-accounts",
         json={
+            "config_key": "primary",
             "broker_code": "coinbase",
             "environment": "live",
             "base_ccy": "EUR",

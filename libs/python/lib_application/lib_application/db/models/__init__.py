@@ -96,15 +96,9 @@ from .feedback import (
 )
 
 # ---------------------------------------------------------------------------
-# Section A — Core Tenancy & Users (extracted to .identity)
+# Section A — Owner & Historical Users (extracted to .identity)
 # ---------------------------------------------------------------------------
-from .identity import (
-    Organization,
-    Plan,
-    User,
-    UserPlanSubscription,
-    UserRole,
-)
+from .identity import User
 
 # ---------------------------------------------------------------------------
 # Section D — Instruments & Symbol Mapping (extracted to .instruments)
@@ -222,11 +216,7 @@ __all__ = [
     "ModelRebalance",
     "ModelRebalanceLeg",
     # Section A — identity
-    "Organization",
-    "Plan",
     "User",
-    "UserPlanSubscription",
-    "UserRole",
     # Section B — consents
     "SuitabilityQuestionnaire",
     "UserConsent",

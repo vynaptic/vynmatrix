@@ -30,6 +30,7 @@ from lib_application.db.models import (
     Instrument,
     LinkedBrokerAccount,
     Strategy,
+    StrategyVersion,
     User,
     UserStrategyBinding,
 )
@@ -207,7 +208,14 @@ def _authority_session_factory(
     Base.metadata.create_all(engine)
     sessions = sessionmaker(engine, expire_on_commit=False)
     with sessions() as session:
-        session.add(User(user_id="user-1", email="user-1@example.invalid", base_ccy="USD"))
+        session.add(
+            User(
+                user_id="user-1",
+                email="user-1@example.invalid",
+                base_ccy="USD",
+                is_deployment_owner=True,
+            )
+        )
         session.add(Broker(broker_id=1, code="coinbase", name="Coinbase"))
         session.add_all(
             [
@@ -230,6 +238,7 @@ def _authority_session_factory(
                 strategy_id="swing_high_low_pmo_v1",
                 strategy_name="Swing High Low PMO",
                 asset_class="crypto",
+                is_active=True,
             )
         )
         session.add(
@@ -267,6 +276,14 @@ def _authority_session_factory(
                 status="active",
             )
         )
+        session.add(
+            StrategyVersion(
+                strategy_id="swing_high_low_pmo_v1",
+                semver="1.0.0",
+                status="active",
+                param_schema={},
+            )
+        )
         session.commit()
     return sessions
 
@@ -284,6 +301,7 @@ def test_current_authority_allows_close_only_but_rejects_entry() -> None:
     )
 
     authority = resolver.validate_current_authority(
+        strategy_version="1.0.0",
         user_id="user-1",
         binding_id=7,
         strategy_id="swing_high_low_pmo_v1",
@@ -299,6 +317,7 @@ def test_current_authority_allows_close_only_but_rejects_entry() -> None:
     # A read-only account refresh validates every revocable route boundary but
     # does not require entry authority merely because the model leg was LONG.
     route = resolver.validate_current_route(
+        strategy_version="1.0.0",
         user_id="user-1",
         binding_id=7,
         strategy_id="swing_high_low_pmo_v1",
@@ -312,6 +331,7 @@ def test_current_authority_allows_close_only_but_rejects_entry() -> None:
 
     with pytest.raises(CurrentAuthorityError, match="entry authority disabled"):
         resolver.validate_current_authority(
+            strategy_version="1.0.0",
             user_id="user-1",
             binding_id=7,
             strategy_id="swing_high_low_pmo_v1",
@@ -336,6 +356,7 @@ def test_current_authority_rejects_revoked_credential() -> None:
         canonical_execution_store=None,
     )
     resolver.validate_current_authority(
+        strategy_version="1.0.0",
         user_id="user-1",
         binding_id=7,
         strategy_id="swing_high_low_pmo_v1",
@@ -354,6 +375,7 @@ def test_current_authority_rejects_revoked_credential() -> None:
 
     with pytest.raises(CurrentAuthorityError, match="no usable current credential"):
         resolver.validate_current_authority(
+            strategy_version="1.0.0",
             user_id="user-1",
             binding_id=7,
             strategy_id="swing_high_low_pmo_v1",
@@ -380,6 +402,7 @@ def test_current_authority_rejects_changed_binding_instrument_scope() -> None:
 
     def _validate() -> None:
         resolver.validate_current_authority(
+            strategy_version="1.0.0",
             user_id="user-1",
             binding_id=7,
             strategy_id="swing_high_low_pmo_v1",
@@ -405,6 +428,7 @@ def test_current_authority_rejects_changed_binding_instrument_scope() -> None:
     # Read-only portfolio reconciliation may inspect the incumbent and a
     # separately proven internal CLOSE may liquidate it after scope removal.
     account_route = resolver.validate_current_rebalance_account_route(
+        strategy_version="1.0.0",
         user_id="user-1",
         binding_id=7,
         strategy_id="swing_high_low_pmo_v1",
@@ -415,6 +439,7 @@ def test_current_authority_rejects_changed_binding_instrument_scope() -> None:
         instrument_id=1,
     )
     reduction = resolver.validate_current_rebalance_reduction_authority(
+        strategy_version="1.0.0",
         user_id="user-1",
         binding_id=7,
         strategy_id="swing_high_low_pmo_v1",
@@ -431,6 +456,7 @@ def test_current_authority_rejects_changed_binding_instrument_scope() -> None:
     # cannot be repurposed for an entry.
     with pytest.raises(CurrentAuthorityError, match="no longer authorizes instrument BTC/USD"):
         resolver.validate_current_authority(
+            strategy_version="1.0.0",
             user_id="user-1",
             binding_id=7,
             strategy_id="swing_high_low_pmo_v1",
@@ -443,6 +469,7 @@ def test_current_authority_rejects_changed_binding_instrument_scope() -> None:
         )
     with pytest.raises(CurrentAuthorityError, match="requires exit execution semantics"):
         resolver.validate_current_rebalance_reduction_authority(
+            strategy_version="1.0.0",
             user_id="user-1",
             binding_id=7,
             strategy_id="swing_high_low_pmo_v1",
@@ -1522,3 +1549,134 @@ def test_allow_live_with_paper_default_mode_warns_at_startup(caplog) -> None:
     with caplog.at_level(logging.WARNING):
         ExecutionEngine(order_builder=OrderBuilder(), allow_live=True, default_mode="live")
     assert "EXECUTION_ENGINE_ALLOW_LIVE=true" not in caplog.text
+
+
+@pytest.mark.parametrize("replacement", [False, True])
+def test_current_authority_rejects_revoked_or_foreign_owner(replacement: bool) -> None:
+    sessions = _authority_session_factory(autopilot=True, entries_enabled=True, exits_enabled=True)
+    with sessions() as session:
+        session.get(User, "user-1").is_deployment_owner = False
+        session.flush()
+        if replacement:
+            session.add(
+                User(
+                    user_id="new-owner",
+                    email="new@example.invalid",
+                    base_ccy="USD",
+                    is_deployment_owner=True,
+                )
+            )
+        session.commit()
+    resolver = ExecutionRouteResolver(
+        default_mode="paper", session_factory=sessions, canonical_execution_store=None
+    )
+    with pytest.raises(CurrentAuthorityError, match="deployment owner"):
+        resolver.validate_current_authority(
+            strategy_version="1.0.0",
+            user_id="user-1",
+            binding_id=7,
+            strategy_id="swing_high_low_pmo_v1",
+            account_id=42,
+            broker_type=BrokerType.COINBASE,
+            environment="paper",
+            credential_ref="coinbase-account-42",
+            instrument_id=1,
+            action="long",
+        )
+
+
+def test_current_authority_refuses_release_pulled_after_queue() -> None:
+    sessions = _authority_session_factory(autopilot=True, entries_enabled=True, exits_enabled=True)
+    with sessions() as session:
+        session.get(Strategy, "swing_high_low_pmo_v1").is_active = True
+        session.commit()
+    resolver = ExecutionRouteResolver(
+        default_mode="paper", session_factory=sessions, canonical_execution_store=None
+    )
+    kwargs = {
+        "strategy_version": "1.0.0",
+        "user_id": "user-1",
+        "binding_id": 7,
+        "strategy_id": "swing_high_low_pmo_v1",
+        "account_id": 42,
+        "broker_type": BrokerType.COINBASE,
+        "environment": "paper",
+        "credential_ref": "coinbase-account-42",
+        "instrument_id": 1,
+        "action": "long",
+    }
+    assert resolver.validate_current_authority(**kwargs).credential_ref == "coinbase-account-42"
+    with sessions() as session:
+        session.query(StrategyVersion).one().status = "pulled"
+        session.commit()
+    with pytest.raises(CurrentAuthorityError, match="active strategy release"):
+        resolver.validate_current_authority(**kwargs)
+
+
+@pytest.mark.parametrize("release_state", ["registered", "active", "pulled_during_preparation"])
+def test_exact_release_is_rechecked_before_broker_submission(monkeypatch, release_state) -> None:
+    sessions = _authority_session_factory(autopilot=True, entries_enabled=True, exits_enabled=True)
+    with sessions() as session:
+        session.get(LinkedBrokerAccount, 42).external_ref = "acct-1"
+        session.commit()
+    if release_state == "registered":
+        with sessions() as session:
+            session.query(StrategyVersion).one().status = "registered"
+            session.add(
+                StrategyVersion(
+                    strategy_id="swing_high_low_pmo_v1",
+                    semver="2.0.0",
+                    status="active",
+                    param_schema={},
+                )
+            )
+            session.commit()
+    engine = ExecutionEngine(
+        order_builder=_FakeOrderBuilder(), default_mode="paper", allow_live=False
+    )
+    engine._session_factory = sessions
+    engine._route_resolver._session_factory = sessions
+    _install_owned_account_route(engine, monkeypatch)
+    broker = _FakeBroker()
+    resolutions = []
+    original_account_info = broker.get_account_info
+
+    async def account_info():
+        account = await original_account_info()
+        if release_state == "pulled_during_preparation":
+            with sessions() as session:
+                session.query(StrategyVersion).one().status = "pulled"
+                session.commit()
+        return account
+
+    async def get_broker(*args, **kwargs):
+        resolutions.append(True)
+        return broker
+
+    monkeypatch.setattr(broker, "get_account_info", account_info)
+    monkeypatch.setattr(engine, "_get_broker", get_broker)
+    result = asyncio.run(
+        engine.handle_signal(
+            user_id="user-1",
+            profile=_account_profile(
+                user_id="user-1",
+                account_id=42,
+                broker="coinbase",
+                environment="paper",
+                live_enabled=False,
+            ),
+            user_strategy_config={"binding_id": 7, "execution_mode": "spot"},
+            signal=replace(_signal(), strategy_version="1.0.0"),
+        )
+    )
+    if release_state == "registered":
+        assert resolutions == []
+    else:
+        assert resolutions == [True]
+    if release_state == "active":
+        assert result.success is True
+        assert broker.submit_calls == 1
+    else:
+        assert result.block_reason == "current_authorization_rejected"
+        assert "active strategy release" in result.error_message
+        assert broker.submit_calls == 0

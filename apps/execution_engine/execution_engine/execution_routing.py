@@ -5,9 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from lib_application.db.session import tenant_scope
+from lib_application.services.deployment_owner import (
+    DeploymentOwnerError,
+    require_deployment_owner_id,
+)
 from lib_application.services.instrument_resolution import (
     BrokerInstrumentIdentity,
     resolve_broker_instrument_identity,
+)
+from lib_application.services.strategy_authority import (
+    StrategyReleaseError,
+    require_active_strategy_version,
 )
 from lib_common.logging import get_logger
 from lib_common.time_utils import now_utc
@@ -34,6 +43,27 @@ class CurrentExecutionAuthority:
 
     credential_ref: str
     credential_version: str
+
+
+def _require_current_owner(session: Any, user_id: str) -> str:
+    """Resolve before tenant scope and retain the I/O boundary's error contract."""
+    try:
+        owner_id = require_deployment_owner_id(session)
+    except DeploymentOwnerError as exc:
+        raise CurrentAuthorityError(str(exc)) from exc
+    if owner_id != str(user_id):
+        msg = f"User {user_id} is not the active deployment owner"
+        raise CurrentAuthorityError(msg)
+    return owner_id
+
+
+def _require_current_release(session: Any, strategy_id: str, strategy_version: str | None) -> None:
+    try:
+        require_active_strategy_version(
+            session, strategy_id=strategy_id, strategy_version=strategy_version
+        )
+    except StrategyReleaseError as exc:
+        raise CurrentAuthorityError(str(exc)) from exc
 
 
 def _require_current_instrument_id(instrument_id: int | str | None) -> int:
@@ -353,6 +383,7 @@ class ExecutionRouteResolver:
         user_id: str,
         binding_id: int | None,
         strategy_id: str,
+        strategy_version: str | None,
         account_id: int,
         broker_type: BrokerType,
         environment: str,
@@ -371,6 +402,7 @@ class ExecutionRouteResolver:
             user_id=user_id,
             binding_id=binding_id,
             strategy_id=strategy_id,
+            strategy_version=strategy_version,
             account_id=account_id,
             broker_type=broker_type,
             environment=environment,
@@ -386,6 +418,7 @@ class ExecutionRouteResolver:
         user_id: str,
         binding_id: int | None,
         strategy_id: str,
+        strategy_version: str | None,
         account_id: int,
         broker_type: BrokerType,
         environment: str,
@@ -404,6 +437,7 @@ class ExecutionRouteResolver:
             user_id=user_id,
             binding_id=binding_id,
             strategy_id=strategy_id,
+            strategy_version=strategy_version,
             account_id=account_id,
             broker_type=broker_type,
             environment=environment,
@@ -419,6 +453,7 @@ class ExecutionRouteResolver:
         user_id: str,
         binding_id: int | None,
         strategy_id: str,
+        strategy_version: str | None,
         account_id: int,
         broker_type: BrokerType,
         environment: str,
@@ -435,6 +470,7 @@ class ExecutionRouteResolver:
             user_id=user_id,
             binding_id=binding_id,
             strategy_id=strategy_id,
+            strategy_version=strategy_version,
             account_id=account_id,
             broker_type=broker_type,
             environment=environment,
@@ -450,6 +486,7 @@ class ExecutionRouteResolver:
         user_id: str,
         binding_id: int | None,
         strategy_id: str,
+        strategy_version: str | None,
         account_id: int,
         broker_type: BrokerType,
         environment: str,
@@ -462,6 +499,7 @@ class ExecutionRouteResolver:
             user_id=user_id,
             binding_id=binding_id,
             strategy_id=strategy_id,
+            strategy_version=strategy_version,
             account_id=account_id,
             broker_type=broker_type,
             environment=environment,
@@ -477,6 +515,7 @@ class ExecutionRouteResolver:
         user_id: str,
         binding_id: int | None,
         strategy_id: str,
+        strategy_version: str | None,
         account_id: int,
         broker_type: BrokerType,
         environment: str,
@@ -501,7 +540,11 @@ class ExecutionRouteResolver:
             UserStrategyBinding,
         )
 
-        with self._session_factory() as session:
+        with (
+            self._session_factory() as session,
+            tenant_scope(session, user_id=_require_current_owner(session, user_id)),
+        ):
+            _require_current_release(session, strategy_id, strategy_version)
             user = session.get(User, user_id)
             if user is None or str(user.status) != "active":
                 msg = f"User {user_id} is not currently active"

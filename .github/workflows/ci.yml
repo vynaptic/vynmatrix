@@ -112,9 +112,7 @@ jobs:
           python -m pip install \
             --constraint docker/constraints.txt \
             --requirement docker/requirements-svc-base.txt \
-            --requirement docker/requirements-scoring.txt \
-            --requirement docker/requirements-indicator-runner.txt \
-            --requirement docker/requirements-market-data.txt \
+            --requirement docker/requirements-platform.txt \
             --editable tools/dev_cli \
             pytest pytest-cov pre-commit mypy ruff types-PyYAML
       - name: Architecture audit (vmdev audit)
@@ -175,6 +173,8 @@ jobs:
       VM_FEEDBACK_DB_PASSWORD: vm_feedback_ci
       VM_MARKET_DATA_DB_PASSWORD: vm_market_data_ci
       VM_INDICATOR_DB_PASSWORD: vm_indicator_ci
+      EXECUTION_MODE: paper
+      EXECUTION_ENGINE_ALLOW_LIVE: 'false'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -186,27 +186,48 @@ jobs:
           python -m pip install \
             --constraint docker/constraints.txt \
             --requirement docker/requirements-svc-base.txt \
-            --requirement docker/requirements-scoring.txt \
-            --requirement docker/requirements-indicator-runner.txt \
+            --requirement docker/requirements-platform.txt \
             pytest
+      # This test owns its explicitly named database and the exact temporary vm_*
+      # roles. Run it before the shared integration schema creates those roles.
+      - name: Verify fresh and repeated single-owner bootstrap
+        env:
+          SINGLE_OWNER_BOOTSTRAP_TEST_ALLOW_CREATE: '1'
+          SINGLE_OWNER_BOOTSTRAP_TEST_ADMIN_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/postgres
+          SINGLE_OWNER_BOOTSTRAP_TEST_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/single_owner_bootstrap_test_ci
+        run: >-
+          pytest -v -m integration
+          tests/test_single_owner_bootstrap_postgres_integration.py
       - name: Build schema from Alembic head
         run: alembic -c scripts/db/alembic.ini upgrade head
       - name: Provision least-privilege runtime logins
         env:
-          PGHOST: localhost
-          PGPORT: '5432'
-          PGUSER: trader
-          PGPASSWORD: vm_trading_secure_2024
-          PGDATABASE: vm_trading
+          ADMIN_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/postgres
+          MIGRATION_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/vm_trading
         run: sh docker/provision-runtime-roles.sh
+      # Serial execution preserves the empty-owner precondition. These fixtures
+      # roll back their writes or delete their exact temporary owner in finally.
+      - name: Verify owner and catalogue PostgreSQL authority
+        env:
+          SINGLE_OWNER_TEST_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/vm_trading
+          OWNER_CONTROL_TEST_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/vm_trading
+          CATALOGUE_TEST_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/vm_trading
+        run: >-
+          pytest -v -m integration
+          tests/test_single_owner_migration.py
+          tests/test_catalogue_migration.py
+          tests/test_reference_catalogue_postgres_integration.py
+          tests/test_catalogue_changes_postgres_integration.py
+          tests/test_owner_control_plane_postgres_integration.py
+          tests/test_commercial_tenancy_retirement.py
       - name: Run PostgreSQL integration tests
         run: >-
           pytest -v -m integration
           apps/feedback_loop_engine/tests/test_feedback_concurrency_postgres_integration.py
           apps/scoring_engine/tests/test_api_postgres_integration.py
           apps/indicator_runner/tests/test_postgres_notify_integration.py
-          tests/test_public_strategy_pipeline_postgres_integration.py
           tests/test_service_roles_postgres_integration.py
+          tests/test_public_strategy_pipeline_postgres_integration.py
 
   schema-drift:
     name: model <-> migration drift
@@ -238,7 +259,7 @@ jobs:
           python -m pip install \
             --constraint docker/constraints.txt \
             --requirement docker/requirements-svc-base.txt \
-            --requirement docker/requirements-scoring.txt
+            --requirement docker/requirements-platform.txt
       - name: Check schema drift (must be zero)
         env:
           DRIFT_PG_ADMIN_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/postgres

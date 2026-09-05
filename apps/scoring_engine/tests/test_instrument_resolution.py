@@ -51,6 +51,7 @@ def test_distinct_assets_do_not_collide() -> None:
 
 def _signal(*, strategy_id: str = "catalogued", sector: str | None = "crypto") -> SignalRecord:
     return SignalRecord(
+        strategy_version="1.0.0",
         signal_id="catalogue-contract-signal",
         strategy_id=strategy_id,
         strategy_type="indicator",

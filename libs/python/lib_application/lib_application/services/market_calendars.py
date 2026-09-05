@@ -364,7 +364,6 @@ def replace_market_calendar(
         ]
     )
     for instrument in instruments:
-        instrument.market_session_policy = "scheduled"
         instrument.market_calendar_id = (
             int(calendar.calendar_id)
             if int(instrument.instr_id) in normalized_instrument_ids

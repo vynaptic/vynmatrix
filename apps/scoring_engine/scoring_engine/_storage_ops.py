@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from lib_application.outbox import OutboxRecord, OutboxRedriveResult
+from lib_application.services.strategy_authority import require_active_strategy_version
 from lib_common.logging import get_logger
 from lib_strategy.signals.normalization import normalize_scoring_action
 from lib_strategy.signals.utils import compute_execution_dedup_key
@@ -255,6 +256,9 @@ class _StoreOps(_RebalanceStoreOps, _StoreInfra):
             return None
         with self._session() as s:
             self._require_strategy(s, signal.strategy_id, signal.asset_class)
+            version_id = require_active_strategy_version(
+                s, strategy_id=signal.strategy_id, strategy_version=signal.strategy_version
+            )
             instr = self._resolve_instrument(
                 s, signal.symbol, signal.asset_class, signal.instrument_id
             )
@@ -292,11 +296,7 @@ class _StoreOps(_RebalanceStoreOps, _StoreInfra):
                 raise ValueError(msg)
             signal_values: dict[str, Any] = {
                 "strategy_id": signal.strategy_id,
-                "strat_ver_id": self._resolve_strategy_version(
-                    s,
-                    signal.strategy_id,
-                    signal.strategy_version,
-                ),
+                "strat_ver_id": version_id,
                 "instr_id": instr.instr_id,
                 "sector_id": sector.sector_id if sector else None,
                 "action": signal.action,

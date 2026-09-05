@@ -1,5 +1,6 @@
 -- Final fail-closed convergence for the production seed profile.
--- Applied only by scripts/db/migrate_and_seed.sh after the canonical seed files.
+-- Historical convergence SQL retained for fixture regression checks only.
+-- Normal installation uses the explicit vmdev bootstrap/catalogue lifecycle.
 
 BEGIN;
 

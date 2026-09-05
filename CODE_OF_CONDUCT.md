@@ -50,11 +50,10 @@ public spaces.
 
 ## Enforcement
 
-A private reporting channel has not yet been designated for this local migration.
-Maintainers must publish a working private contact before opening community
-participation. Do not post sensitive incident details in public issues or pull
-requests. Once a channel is established, reports should be reviewed promptly
-and fairly.
+A private reporting channel has not yet been designated. Maintainers must publish
+a working private contact before soliciting incident reports. Do not post sensitive
+incident details in public issues or pull requests. Once a channel is established,
+reports should be reviewed promptly and fairly.
 
 All project maintainers are obligated to respect the privacy and
 security of the reporter of any incident.

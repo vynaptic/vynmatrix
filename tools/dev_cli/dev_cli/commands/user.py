@@ -1,485 +1,264 @@
-"""User management commands for onboarding."""
+"""Explicit deployment-owner initialization and owner-relative lifecycle commands."""
 
-import re
+from __future__ import annotations
+
+import json
+import os
+import stat
 import sys
-from datetime import UTC
-from decimal import Decimal, InvalidOperation
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import click
-from rich.console import Console
-from rich.prompt import Confirm, Prompt
-from rich.table import Table
+import yaml
+from pydantic import ValidationError
+from sqlalchemy import select
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
-console = Console()
+from dev_cli.utils.helpers import enable_repository_libraries, get_project_root
 
-# Project root detection
-# user.py -> commands -> dev_cli -> dev_cli -> tools -> PROJECT_ROOT
-PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.parent.resolve()
-_BASE_CURRENCY_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{2,9}$")
-
-# Add libs to path for imports
-sys.path.insert(0, str(PROJECT_ROOT / "libs" / "python" / "lib_application"))
-sys.path.insert(0, str(PROJECT_ROOT / "libs" / "python" / "lib_common"))
-
-from lib_common.asset_classes import (  # noqa: E402
-    CANONICAL_ASSET_CLASS_VALUES,
-    normalize_asset_class,
-)
+_MAX_CONFIG_BYTES = 131072
 
 
-def _get_db_session():  # noqa: ANN202 - Returns Session but import is conditional
-    """Get database session."""
+@contextmanager
+def _database_session(stage: str) -> Iterator[Session]:
+    from lib_application.db.session import (  # noqa: PLC0415
+        create_engine_for_env,
+        dispose_engine,
+        get_session_factory,
+    )
+    from lib_application.services.database_authority import (  # noqa: PLC0415
+        require_backend_database_role,
+        require_maintenance_database_role,
+    )
+
+    variable = "MIGRATION_DATABASE_URL" if stage == "maintenance" else "BACKEND_DATABASE_URL"
+    url = os.environ.get(variable)
+    if not url:
+        msg = f"{variable} is required; generic DATABASE_URL is not accepted"
+        raise click.ClickException(msg)
     try:
-        from sqlalchemy.orm import Session  # noqa: PLC0415
-
-        from lib_application.db.session import create_engine_for_env  # noqa: PLC0415
-
-        engine = create_engine_for_env()
-        return Session(engine)
-    except ImportError as e:
-        console.print(f"[red]Error: Could not import database modules: {e}[/red]")
-        console.print("[dim]Make sure lib_application is built: vmdev build libs[/dim]")
-        sys.exit(1)
-    except Exception as e:
-        console.print(f"[red]Error connecting to database: {e}[/red]")
-        console.print("[dim]Make sure PostgreSQL is running: vmdev db start[/dim]")
-        sys.exit(1)
-
-
-def _load_config(config_path: str) -> dict[str, Any]:
-    """Load user configuration from YAML file."""
-    import yaml  # noqa: PLC0415
-
-    path = Path(config_path)
-    if not path.exists():
-        console.print(f"[red]Error: Config file not found: {config_path}[/red]")
-        sys.exit(1)
-
-    with path.open() as f:
-        result: dict[str, Any] = yaml.safe_load(f)
-        return result
+        parsed = make_url(url)
+    except SQLAlchemyError as exc:
+        msg = f"{variable} is invalid"
+        raise click.ClickException(msg) from exc
+    if parsed.get_backend_name() != "postgresql":
+        msg = f"{variable} must use PostgreSQL"
+        raise click.ClickException(msg)
+    engine = create_engine_for_env(env="dev", db_url=url)
+    try:
+        with get_session_factory(engine=engine)() as session:
+            checker = (
+                require_maintenance_database_role
+                if stage == "maintenance"
+                else require_backend_database_role
+            )
+            checker(session)
+            yield session
+    finally:
+        dispose_engine(engine)
 
 
-def _require_base_currency(value: Any, *, field_name: str) -> str:
-    """Return an explicit canonical account currency or fail closed."""
-
-    if not isinstance(value, str) or not _BASE_CURRENCY_PATTERN.fullmatch(value):
-        msg = f"{field_name} must be an uppercase 3-10 character currency code"
-        raise ValueError(msg)
+def _load_mapping(path: str, *, protected: bool = False) -> dict[str, Any]:
+    try:
+        if path == "-":
+            if not protected or sys.stdin.isatty():
+                msg = "Secret stdin must be redirected from a protected source"
+                raise click.ClickException(msg)
+            content = sys.stdin.read(_MAX_CONFIG_BYTES + 1)
+        elif protected:
+            if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "geteuid"):
+                msg = (
+                    "Owner-only secrets files are unsupported on this platform; "
+                    "use --secrets-file - with protected redirected stdin"
+                )
+                raise click.ClickException(msg)
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "r") as stream:
+                info = os.fstat(stream.fileno())
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or info.st_mode & 0o077
+                ):
+                    msg = "Secrets file must be a regular owner-only file (mode 0600)"
+                    raise click.ClickException(msg)
+                content = stream.read(_MAX_CONFIG_BYTES + 1)
+        else:
+            with Path(path).open() as stream:
+                content = stream.read(_MAX_CONFIG_BYTES + 1)
+        if len(content) > _MAX_CONFIG_BYTES:
+            msg = "Configuration exceeds the size limit"
+            raise click.ClickException(msg)
+        value = yaml.safe_load(content)
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        msg = "Unable to read a valid configuration mapping"
+        raise click.ClickException(msg) from exc
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        msg = "Configuration must contain a mapping"
+        raise click.ClickException(msg)
     return value
 
 
-def _require_paper_capital(broker_data: dict[str, Any]) -> tuple[Decimal | None, Decimal | None]:
-    """Validate explicit local-paper capital without inventing a balance."""
-    if broker_data.get("environment") != "paper":
-        if (
-            broker_data.get("paper_initial_equity") is not None
-            or broker_data.get("paper_initial_cash") is not None
-        ):
-            msg = "Paper capital fields are invalid for a live broker account"
-            raise ValueError(msg)
-        return None, None
+@contextmanager
+def _operation(stage: str) -> Iterator[Session]:
+    from lib_application.services.deployment_owner import DeploymentOwnerError  # noqa: PLC0415
+
     try:
-        equity = Decimal(str(broker_data["paper_initial_equity"]))
-        cash = Decimal(str(broker_data["paper_initial_cash"]))
-    except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
-        msg = "Paper broker accounts require explicit initial equity and cash"
-        raise ValueError(msg) from exc
-    if not equity.is_finite() or equity <= 0:
-        msg = "paper_initial_equity must be a positive finite amount"
-        raise ValueError(msg)
-    if not cash.is_finite() or cash < 0 or cash > equity:
-        msg = "paper_initial_cash must be finite and between zero and initial equity"
-        raise ValueError(msg)
-    return equity, cash
+        with _database_session(stage) as session:
+            yield session
+            session.commit()
+    except ValidationError as exc:
+        msg = "Invalid lifecycle configuration; check the required fields and types"
+        raise click.ClickException(msg) from exc
+    except (ValueError, DeploymentOwnerError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    except SQLAlchemyError as exc:
+        msg = "Database lifecycle operation failed; verify current state before retrying"
+        raise click.ClickException(msg) from exc
 
 
-def _create_user_interactive() -> dict[str, Any]:
-    """Interactively collect user information."""
-    console.print("\n[bold cyan]== New User Setup ==[/bold cyan]\n")
-
-    # Basic info
-    email = Prompt.ask("[cyan]Email address[/cyan]")
-    full_name = Prompt.ask("[cyan]Full name[/cyan]")
-    timezone = Prompt.ask("[cyan]Timezone[/cyan]", default="UTC")
-    base_currency = _require_base_currency(
-        Prompt.ask("[cyan]Base currency (for example EUR or USD)[/cyan]"),
-        field_name="base_currency",
-    )
-
-    # Plan selection
-    console.print("\n[bold]Available Plans:[/bold]")
-    console.print("  1. free     - 2 strategies, paper trading only")
-    console.print("  2. starter  - 5 strategies, Coinbase live")
-    console.print("  3. pro      - 20 strategies, multiple brokers")
-    console.print("  4. enterprise - Unlimited")
-    plan = Prompt.ask(
-        "[cyan]Select plan[/cyan]",
-        choices=["free", "starter", "pro", "enterprise"],
-        default="free",
-    )
-
-    # Trading preferences
-    console.print("\n[bold]Trading Preferences:[/bold]")
-    asset_class = Prompt.ask(
-        "[cyan]Primary asset class[/cyan]",
-        choices=list(CANONICAL_ASSET_CLASS_VALUES),
-        default="crypto",
-    )
-
-    horizon = Prompt.ask(
-        "[cyan]Trading horizon[/cyan]",
-        choices=["scalp", "intraday", "swing", "position"],
-        default="swing",
-    )
-
-    default_method = Prompt.ask(
-        "[cyan]Default execution method[/cyan]",
-        choices=["SPOT", "PERP", "OPTIONS_STRATEGY"],
-        default="SPOT",
-    )
-
-    # Broker setup
-    console.print("\n[bold]Broker Configuration:[/bold]")
-    setup_broker = Confirm.ask("[cyan]Set up broker account now?[/cyan]", default=False)
-
-    broker_config = None
-    if setup_broker:
-        broker = Prompt.ask(
-            "[cyan]Select broker[/cyan]",
-            choices=["coinbase", "ibkr", "deribit", "saxo", "zerodha", "delta"],
-            default="coinbase",
-        )
-        default_name = f"My {broker.title()}"
-        account_name = Prompt.ask("[cyan]Account display name[/cyan]", default=default_name)
-        environment = Prompt.ask(
-            "[cyan]Environment[/cyan]",
-            choices=["paper", "live"],
-            default="paper",
-        )
-        account_base_currency = _require_base_currency(
-            Prompt.ask("[cyan]Broker account base currency[/cyan]"),
-            field_name="broker.base_currency",
-        )
-        broker_config = {
-            "broker": broker,
-            "display_name": account_name,
-            "environment": environment,
-            "base_currency": account_base_currency,
-        }
-        if environment == "paper":
-            broker_config["paper_initial_equity"] = Prompt.ask(
-                "[cyan]Paper account initial equity[/cyan]"
-            )
-            broker_config["paper_initial_cash"] = Prompt.ask(
-                "[cyan]Paper account initial cash[/cyan]"
-            )
-            _require_paper_capital(broker_config)
-
-    return {
-        "email": email,
-        "full_name": full_name,
-        "timezone": timezone,
-        "base_currency": base_currency,
-        "plan": plan,
-        "trading_policy": {
-            "asset_class": asset_class,
-            "horizon": horizon,
-            "default_method": default_method,
-        },
-        "broker": broker_config,
-    }
-
-
-def _add_user_to_db(user_data: dict[str, Any], session: Any) -> str:
-    """Add user to database and return ``user_id``.
-
-    Returns the canonical UUID-form ``user_id`` (string). Older versions of
-    this function declared the return type as ``int`` and called
-    ``int(user.user_id)`` — that was always wrong because the schema
-    stores ``user_id`` as ``String(50)``; the bug surfaced once the
-    column gained a ``generate_uuid`` default.
-    """
-    from datetime import datetime  # noqa: PLC0415
-
-    from lib_application.db.models import (  # noqa: PLC0415
-        LinkedBrokerAccount,
-        Organization,
-        Plan,
-        User,
-        UserPlanSubscription,
-        UserRole,
-        UserTradingPolicy,
-    )
-
-    now = datetime.now(tz=UTC)
-    base_currency = _require_base_currency(
-        user_data.get("base_currency"),
-        field_name="base_currency",
-    )
-    broker_data = user_data.get("broker")
-    broker_base_currency = (
-        _require_base_currency(
-            broker_data.get("base_currency"),
-            field_name="broker.base_currency",
-        )
-        if broker_data
-        else None
-    )
-    paper_initial_equity, paper_initial_cash = (
-        _require_paper_capital(broker_data) if broker_data else (None, None)
-    )
-
-    # Get or create organization (default org for now)
-    org = session.query(Organization).first()
-    if not org:
-        org = Organization(name="vynmatrix Trading", created_at=now)
-        session.add(org)
-        session.flush()
-
-    # Check if user already exists
-    existing = session.query(User).filter_by(email=user_data["email"]).first()
-    if existing:
-        console.print(f"[yellow]User already exists: {user_data['email']}[/yellow]")
-        return str(existing.user_id)
-
-    # Create user
-    user = User(
-        org_id=org.org_id,
-        email=user_data["email"],
-        full_name=user_data["full_name"],
-        tz=user_data.get("timezone", "UTC"),
-        base_ccy=base_currency,
-        status="active",
-        created_at=now,
-    )
-    session.add(user)
-    session.flush()
-
-    # Add trader role
-    role = UserRole(user_id=user.user_id, role="trader")
-    session.add(role)
-
-    # Add plan subscription
-    plan_code = user_data.get("plan", "free")
-    plan = session.query(Plan).filter_by(code=plan_code).first()
-    if plan:
-        subscription = UserPlanSubscription(
-            user_id=user.user_id,
-            plan_id=plan.plan_id,
-            status="active",
-            started_at=now,
-        )
-        session.add(subscription)
-
-    # Add trading policy
-    policy_data = user_data.get("trading_policy", {})
-    if policy_data:
-        asset_class = normalize_asset_class(
-            policy_data.get("asset_class", "crypto"),
-            field_name="trading_policy.asset_class",
-        )
-        policy = UserTradingPolicy(
-            user_id=user.user_id,
-            asset_class=asset_class,
-            horizon=policy_data.get("horizon", "swing"),
-            methods_allowed=[policy_data.get("default_method", "SPOT")],
-            default_method=policy_data.get("default_method", "SPOT"),
-            sizing_rules={"mode": "fixed_notional", "value": 1000},
-        )
-        session.add(policy)
-
-    # Add broker account if configured
-    if broker_data:
-        from lib_application.db.models import Broker  # noqa: PLC0415
-
-        assert broker_base_currency is not None
-        broker = session.query(Broker).filter_by(code=broker_data["broker"]).first()
-        if broker:
-            # ``LinkedBrokerAccount`` carries the environment as a plain
-            # string column (``paper`` / ``live``) rather than a FK to
-            # ``broker_environments``; older revisions of this code
-            # referenced a non-existent ``env_id`` field.
-            # Schema CHECK constraint allows ``connected``/``revoked``/``error``;
-            # an "I created this in the CLI but haven't verified credentials"
-            # state isn't modelled — fresh accounts land as ``connected`` and
-            # are revoked later if a credential check fails.
-            account = LinkedBrokerAccount(
-                user_id=user.user_id,
-                broker_id=broker.broker_id,
-                environment=broker_data["environment"],
-                display_name=broker_data["display_name"],
-                base_ccy=broker_base_currency,
-                paper_initial_equity=paper_initial_equity,
-                paper_initial_cash=paper_initial_cash,
-                status="connected",
-                created_at=now,
-            )
-            session.add(account)
-
-    session.commit()
-    return str(user.user_id)
+def _output(value: Any) -> None:
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    click.echo(json.dumps(value, default=str, sort_keys=True))
 
 
 @click.group()
 def user() -> None:
-    """User management commands.
-
-    Add, list, and manage user profiles for the trading platform.
-    """
+    """Initialize and manage the single deployment owner."""
+    enable_repository_libraries(get_project_root())
 
 
-@user.command()
-@click.option("--config", "-c", "config_file", help="YAML config file for batch user creation")
-def add(config_file: str | None) -> None:
-    """Add a new user (interactive or from config file).
+@user.command("init")
+@click.option("--email")
+@click.option("--full-name")
+@click.option("--base-currency", "base_ccy")
+@click.option("--timezone", "tz")
+@click.option(
+    "--existing-user-id",
+    help="Explicitly adopt a preserved existing user using maintenance authority.",
+)
+def init_owner(
+    email: str | None,
+    full_name: str | None,
+    base_ccy: str | None,
+    tz: str | None,
+    existing_user_id: str | None,
+) -> None:
+    """Initialize once; reruns verify supplied fields without overwriting edits."""
+    from lib_application.services.owner_onboarding import initialize_owner  # noqa: PLC0415
 
-    Examples:
+    profile = {
+        key: value
+        for key, value in {
+            "email": email,
+            "full_name": full_name,
+            "base_ccy": base_ccy,
+            "tz": tz,
+        }.items()
+        if value is not None
+    }
+    with _operation("maintenance") as session:
+        result = initialize_owner(session, profile=profile, existing_user_id=existing_user_id)
+    _output(result)
 
-        vmdev user add                    # Interactive mode
-        vmdev user add --config users.yaml  # From config file
-    """
-    session = _get_db_session()
 
-    if config_file:
-        # Batch mode from config file
-        config = _load_config(config_file)
-        users_data = config.get("users", [config])  # Support single user or list
+@user.command("show")
+def show_owner() -> None:
+    """Show the designated owner using backend authority."""
+    from lib_application.services.owner_onboarding import get_owner_profile  # noqa: PLC0415
 
-        console.print(f"[cyan]Adding {len(users_data)} user(s) from config...[/cyan]\n")
+    with _operation("backend") as session:
+        result = get_owner_profile(session)
+    _output(result)
 
-        for user_data in users_data:
-            try:
-                user_id = _add_user_to_db(user_data, session)
-                console.print(f"[green]✓ Added user: {user_data['email']} (ID: {user_id})[/green]")
-            except Exception as e:
-                email = user_data.get("email", "unknown")
-                console.print(f"[red]✗ Failed to add {email}: {e}[/red]")
-                session.rollback()
+
+@user.command("update")
+@click.option("--config", required=True, type=click.Path(exists=True, dir_okay=False))
+def update_owner(config: str) -> None:
+    """Apply a profile mapping containing expected and changes objects."""
+    from lib_application.services.owner_onboarding import apply_owner_patch  # noqa: PLC0415
+
+    value = _load_mapping(config)
+    if set(value) != {"expected", "changes"} or any(
+        not isinstance(value[key], dict) for key in value
+    ):
+        msg = "Profile update requires only expected and changes mappings"
+        raise click.ClickException(msg)
+    with _operation("backend") as session:
+        result = apply_owner_patch(session, expected=value["expected"], changes=value["changes"])
+    _output(result)
+
+
+@user.command("account")
+@click.option("--config", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--secrets-file", help="Owner-only credentials file, or - for protected redirected stdin."
+)
+@click.option("--existing-account-id", type=click.IntRange(min=1))
+def account(config: str, secrets_file: str | None, existing_account_id: int | None) -> None:
+    """Add, adopt or patch an owner account by stable config_key."""
+    from lib_application.db.models import LinkedBrokerAccount  # noqa: PLC0415
+    from lib_application.db.session import get_session_factory  # noqa: PLC0415
+    from lib_application.services.account_onboarding import (  # noqa: PLC0415
+        BrokerAccountIn,
+        adopt_account,
+        onboard_account,
+        owner_scope,
+        patch_account,
+    )
+    from lib_infrastructure.brokers.secrets import create_secrets_provider  # noqa: PLC0415
+
+    value = _load_mapping(config)
+    if "credentials" in value:
+        msg = "Credentials must use --secrets-file, never the public configuration"
+        raise click.ClickException(msg)
+    if existing_account_id is not None:
+        if (
+            set(value) != {"config_key"}
+            or not isinstance(value["config_key"], str)
+            or secrets_file is not None
+        ):
+            msg = "Account adoption accepts only config_key and no credentials"
+            raise click.ClickException(msg)
+        with _operation("backend") as session:
+            result = adopt_account(session, existing_account_id, value["config_key"])
+    elif "expected" in value or "changes" in value:
+        if (
+            set(value) != {"config_key", "expected", "changes"}
+            or not isinstance(value["config_key"], str)
+            or not isinstance(value["expected"], dict)
+            or not isinstance(value["changes"], dict)
+            or secrets_file is not None
+        ):
+            msg = (
+                "Account patch requires config_key, expected and changes; "
+                "credentials use explicit rotation"
+            )
+            raise click.ClickException(msg)
+        with _operation("backend") as session, owner_scope(session) as owner_id:
+            account_id = session.scalar(
+                select(LinkedBrokerAccount.account_id).where(
+                    LinkedBrokerAccount.user_id == owner_id,
+                    LinkedBrokerAccount.config_key == value["config_key"],
+                )
+            )
+            if account_id is None:
+                msg = "Account config_key does not exist for the deployment owner"
+                raise click.ClickException(msg)
+            result = patch_account(session, account_id, value["expected"], value["changes"])
     else:
-        # Interactive mode
-        user_data = _create_user_interactive()
-
-        # Confirm
-        console.print("\n[bold]Summary:[/bold]")
-        console.print(f"  Email: {user_data['email']}")
-        console.print(f"  Name: {user_data['full_name']}")
-        console.print(f"  Plan: {user_data['plan']}")
-        console.print(f"  Asset Class: {user_data['trading_policy']['asset_class']}")
-        console.print(f"  Default Method: {user_data['trading_policy']['default_method']}")
-        if user_data.get("broker"):
-            broker_info = user_data["broker"]
-            console.print(f"  Broker: {broker_info['broker']} ({broker_info['environment']})")
-
-        if not Confirm.ask("\n[cyan]Create this user?[/cyan]", default=True):
-            console.print("[dim]Cancelled[/dim]")
-            return
-
-        try:
-            user_id = _add_user_to_db(user_data, session)
-            console.print(f"\n[bold green]✓ User created! (ID: {user_id})[/bold green]")
-        except Exception as e:
-            console.print(f"[red]✗ Failed to create user: {e}[/red]")
-            session.rollback()
-            sys.exit(1)
-
-
-@user.command("list")
-@click.option("--verbose", "-v", is_flag=True, help="Show detailed information")
-def list_users(verbose: bool) -> None:
-    """List all users in the system."""
-    session = _get_db_session()
-
-    try:
-        from lib_application.db.models import User  # noqa: PLC0415
-
-        users = session.query(User).all()
-
-        if not users:
-            console.print("[yellow]No users found.[/yellow]")
-            console.print("[dim]Add users with: vmdev user add[/dim]")
-            return
-
-        table = Table(title="Users", show_header=True, header_style="bold cyan")
-        table.add_column("ID", justify="right")
-        table.add_column("Email")
-        table.add_column("Name")
-        table.add_column("Status")
-
-        if verbose:
-            table.add_column("Timezone")
-            table.add_column("Currency")
-            table.add_column("Created")
-
-        for u in users:
-            row = [str(u.user_id), u.email, u.full_name or "-", u.status or "active"]
-            if verbose:
-                created = str(u.created_at)[:10] if u.created_at else "-"
-                row.extend([u.tz or "UTC", u.base_ccy, created])
-            table.add_row(*row)
-
-        console.print(table)
-        console.print(f"\n[dim]Total: {len(users)} user(s)[/dim]")
-
-    except Exception as e:
-        console.print(f"[red]Error listing users: {e}[/red]")
-        sys.exit(1)
-
-
-@user.command()
-@click.argument("user_id", type=str)
-def show(user_id: str) -> None:
-    """Show detailed information for a specific user."""
-    session = _get_db_session()
-
-    try:
-        from lib_application.db.models import (  # noqa: PLC0415
-            LinkedBrokerAccount,
-            Plan,
-            User,
-            UserPlanSubscription,
-            UserTradingPolicy,
-        )
-
-        user = session.query(User).filter_by(user_id=user_id).first()
-        if not user:
-            console.print(f"[red]User not found: {user_id}[/red]")
-            sys.exit(1)
-
-        console.print(f"\n[bold cyan]User: {user.full_name or user.email}[/bold cyan]\n")
-
-        # Basic info
-        console.print("[bold]Basic Information:[/bold]")
-        console.print(f"  ID: {user.user_id}")
-        console.print(f"  Email: {user.email}")
-        console.print(f"  Status: {user.status}")
-        console.print(f"  Timezone: {user.tz}")
-        console.print(f"  Currency: {user.base_ccy}")
-
-        # Plan
-        subscription = (
-            session.query(UserPlanSubscription).filter_by(user_id=user_id, status="active").first()
-        )
-        if subscription:
-            plan = session.query(Plan).filter_by(plan_id=subscription.plan_id).first()
-            console.print(f"\n[bold]Plan:[/bold] {plan.code if plan else 'Unknown'}")
-
-        # Trading policies
-        policies = session.query(UserTradingPolicy).filter_by(user_id=user_id).all()
-        if policies:
-            console.print("\n[bold]Trading Policies:[/bold]")
-            for p in policies:
-                console.print(f"  {p.asset_class}/{p.horizon}: {p.default_method}")
-
-        # Linked accounts
-        accounts = session.query(LinkedBrokerAccount).filter_by(user_id=user_id).all()
-        if accounts:
-            console.print("\n[bold]Linked Broker Accounts:[/bold]")
-            for a in accounts:
-                console.print(f"  {a.display_name}: {a.status}")
-
-    except Exception as e:
-        console.print(f"[red]Error showing user: {e}[/red]")
-        sys.exit(1)
+        if secrets_file is not None:
+            value["credentials"] = _load_mapping(secrets_file, protected=True)
+        with _operation("backend") as session:
+            payload = BrokerAccountIn.model_validate(value)
+            provider = create_secrets_provider(
+                backend="db", session_factory=get_session_factory(engine=session.get_bind().engine)
+            )
+            result = onboard_account(session, payload, provider)
+    _output(result)

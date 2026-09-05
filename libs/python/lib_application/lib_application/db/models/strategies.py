@@ -40,7 +40,7 @@ class Strategy(Base):
     strategy_name: Mapped[str] = mapped_column(String(255), nullable=False)
     asset_class: Mapped[str | None] = mapped_column(String(50))
     description: Mapped[str | None] = mapped_column(String(500))
-    is_active: Mapped[bool | None] = mapped_column(Boolean, default=True, server_default="true")
+    is_active: Mapped[bool | None] = mapped_column(Boolean, default=False, server_default="false")
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(tz=UTC),
@@ -86,7 +86,7 @@ class StrategyVersion(Base):
     param_schema: Mapped[Any] = mapped_column(JSONType, nullable=False)
     default_params: Mapped[Any] = mapped_column(JSONType, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="active", server_default="active"
+        String(20), nullable=False, default="registered", server_default="registered"
     )
     released_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -102,7 +102,10 @@ class StrategyVersion(Base):
             name="uq_strategy_version_lineage",
         ),
         UniqueConstraint("strategy_id", "semver", name="uq_strategy_version_semver"),
-        CheckConstraint("status IN ('active', 'deprecated', 'pulled')", name="ck_version_status"),
+        CheckConstraint(
+            "status IN ('registered', 'active', 'deprecated', 'pulled')",
+            name="ck_version_status",
+        ),
     )
 
     # Relationships

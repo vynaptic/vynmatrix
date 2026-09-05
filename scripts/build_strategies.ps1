@@ -26,7 +26,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 vmdev build docker --from-config --tag $Tag
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-docker image inspect "vynmatrix/indicator-runner:$Tag" | Out-Null
+docker image inspect "vynmatrix/platform:$Tag" | Out-Null
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "Built and verified vynmatrix/indicator-runner:$Tag" -ForegroundColor Green
+Write-Host "Built and verified vynmatrix/platform:$Tag" -ForegroundColor Green

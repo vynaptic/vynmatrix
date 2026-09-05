@@ -1,10 +1,11 @@
 # Local Docker and Release Boundary
 
-vynmatrix is a local independent migration. No cloud infrastructure, registry,
-production environment, or broker certification is provisioned by this source
-tree. The project is not yet open-source: [LICENSE](../LICENSE) is unchanged and
-a license/rights decision is pending. Publishing, pushing, releasing, and
-deploying require a separate owner decision; this document authorizes none of them.
+vynmatrix is a self-hosted independent migration. No cloud infrastructure,
+registry, production environment, or broker certification is provisioned by this
+source tree. The source is available under [LICENSE](../LICENSE) for personal,
+noncommercial use; see [NOTICE](../NOTICE) for retained attribution and
+third-party-material boundaries. Source publication does not authorize deployment,
+release, or live trading.
 
 ## What this repository contains
 
@@ -18,9 +19,10 @@ deploying require a separate owner decision; this document authorizes none of th
 | CI and optional image publication | [.github/workflows/](../.github/workflows/) |
 
 Earlier documentation described external infrastructure. That repository and its
-runtime authority are not included in vynmatrix. No public repository owner,
-cloud budget, deployment host, or disaster-recovery result should be inferred
-from the inherited technical history.
+runtime authority are not included in vynmatrix. The canonical source repository
+is [`vynaptic/vynmatrix`](https://github.com/vynaptic/vynmatrix), but no cloud
+budget, deployment host, or disaster-recovery result should be inferred from the
+inherited technical history.
 
 ## Local image build
 
@@ -32,72 +34,94 @@ vmdev build strategies
 vmdev build docker --from-config --tag latest
 ```
 
-The Docker command checks the inventory, Dockerfiles, declared wheels, and wheel
-freshness before contacting the daemon. The five service images are:
-
-- `vynmatrix/scoring-engine`
-- `vynmatrix/execution-engine`
-- `vynmatrix/feedback-loop-engine`
-- `vynmatrix/market-data-ingestor`
-- `vynmatrix/indicator-runner`
-
-They derive from the local multi-stage `vynmatrix/svc-base`, containing the
-shared pinned third-party dependencies. Service builders add only declared local
-wheels and extras, run `pip check`, and copy the result into clean runtime
-stages. The indicator image includes `vynmatrix_indicator`; it does not select
-strategies automatically. Buildx receives the just-built base as a named image
-context so it does not need to pull a private intermediate image.
-
-The backend, database/bootstrap one-shots, and optional outbox relay reuse the
-scoring image. FX, calendar writers, and historical/equity one-shots reuse the
-market-data image. They are separate processes with their own configuration,
-health, and ownership boundaries, not additional registry artifacts.
+The Docker command checks the explicit inventory, Dockerfiles, declared wheels,
+and wheel freshness before building `vynmatrix/platform`. Its intermediate
+`vynmatrix/svc-base` holds pinned shared dependencies; the platform profile adds
+its declared extras, six library wheels and the indicator strategy wheel, then
+runs `pip check`. The platform image contains backend, scoring, execution,
+feedback, market-data and indicator entrypoints plus the maintenance CLI.
+Presence in the image does not activate a strategy.
 
 ## Local Compose topology
 
-Prepare `.env` using the [OS setup guides](../README.md#new-developer-onboarding).
-Keep paper execution and the disabled live gate explicit.
+The same single-owner topology can run locally or on one separately approved
+private host. Prepare `.env` from [`.env.example`](../.env.example), then follow
+[the database lifecycle](DATABASE.md) for bootstrap and startup.
+
+| Layout | Configuration | Running containers |
+|---|---|---|
+| Recommended split | `COMPOSE_PROFILES=workers`, `PLATFORM_APPLICATION_GROUP=application` | PostgreSQL + `application` + `workers` |
+| Small combined installation | Empty `COMPOSE_PROFILES`, `PLATFORM_APPLICATION_GROUP=all` | PostgreSQL + `application` running all selected processes |
+
+The application group supervises backend, scoring with its inline transactional
+outbox relay, and execution. Workers always include the feedback daemon.
+`PLATFORM_WORKERS` explicitly selects feeds, FX and calendars; `STRATEGY_LIST`
+explicitly selects indicator strategies. Empty selections start no optional
+producer. All children retain separate interpreters and role-specific credentials.
+There is no Redis, standalone relay, pgAdmin or additional scheduler container.
+
+Only backend `127.0.0.1:8081` and PostgreSQL `127.0.0.1:5432` are published by
+default; their host ports are configurable. A private cloud baseline uses an
+SSH tunnel to backend loopback, without an added load balancer or TLS service.
+A future UI should serve static assets through backend in the same image.
+
+An IBKR Client Portal Gateway is an explicit external dependency, including
+interactive authentication and gateway/TLS requirements in
+[BROKER_CREDENTIALS.md](BROKER_CREDENTIALS.md). A separately approved gateway
+container consumes the third slot and therefore requires the combined layout.
+An owner-operated external gateway must be configured explicitly; this stack
+neither supplies nor provisions one.
+
+Read-only inspection uses the existing service identities:
 
 ```bash
-docker compose --env-file .env -f docker/docker-compose.stack.yml up -d
-
-# Optional exact development canary selection (Bash syntax)
-STRATEGY_LIST=SwingHighLowPMO \
-docker compose --env-file .env -f docker/docker-compose.stack.yml --profile indicator up -d
-
 docker compose --env-file .env -f docker/docker-compose.stack.yml ps
+docker compose --env-file .env -f docker/docker-compose.stack.yml logs --tail 100 application workers
 ```
-
-The default outbox relay runs inline in scoring; feedback runs repeated one-shot
-`evaluate` invocations. The optional `standalone-relay` profile plus
-`SCORING_OUTBOX_RELAY_INLINE=false` and `FEEDBACK_RUN_MODE=daemon` exercises an
-alternative topology. Neither configuration implies a deployed cloud service.
-
-The independent FX process uses internal port `8004`. Optional official calendar
-writers use `8005` and require exact selectors, catalogue mappings, credentials,
-and backend admin authority. Only one calendar writer may own each instrument.
-Leave optional profiles disabled until their prerequisites are reviewed.
-
-Use `docker compose ... exec <service>` for inspection; container names are
-assigned by the Compose project. `down` stops this local stack; adding `--volumes`
-would delete database state and is not part of ordinary teardown.
 
 ## Database bootstrap and operational bounds
 
-The declared Compose bootstrap chain runs migrations, seed convergence, and
-runtime-role provisioning before dependent services start. The shared
-[scripts/db/migrate_and_seed.sh](../scripts/db/migrate_and_seed.sh) uses Alembic,
-including triggers that ORM `create_all` does not install. Use a separate
-disposable database for tests, and do not copy a personal or live database into
-this migration.
+Use the supported `vmdev db` lifecycle described in [DATABASE.md](DATABASE.md).
+Bootstrap stops both runtime groups, verifies they have exited, starts PostgreSQL,
+runs the declared maintenance `bootstrap` service with `--rm --no-deps`, and waits
+for success before restarting the selected groups. Administrative and migration
+credentials belong only to maintenance. Safe reference catalogue reconciliation
+and explicit owner designation replace broad demo/commercial seeding.
 
-Readiness depends on progress as well as process health. Scoring checks aged or
-dead-lettered execution commands; indicator workers check signal backlog and
-source lag; execution checks ambiguous submissions, paper-order lag, and initial
-account reconciliation. The corresponding age bounds default to 300 seconds.
-Database pools default to `3 + 2 <= 5` connections per process. Compose uses
-bounded log rotation and a 60-second application stop grace period. Changes to
-these limits require measured capacity and failure evidence.
+The three-container limit covers supported lifecycle operations and explicit jobs
+inside existing containers. Raw `docker compose --profile '*' up`, parallel
+maintenance jobs, extra services or manual `run` commands bypass that contract.
+Do not use them as an alternative startup path. Build tools create images, not
+extra running services. A failed maintenance stage leaves runtime stopped for
+review and a bounded retry.
+
+The supervisor exposes `/health`, `/ready`, `/status` and `/metrics` internally
+on `8090`; component metrics are available through `/metrics/<component>`.
+Management can stay healthy while owner setup or a selected feed is unready.
+Trading readiness separately checks source progress, outbox age/dead letters,
+durable paper orders, reconciliation and feedback heartbeats. See
+[CONFIGURATION.md](CONFIGURATION.md) for the complete internal port and key map.
+
+The explicit jobs `python -m scripts.run_platform job backfill` and
+`python -m scripts.run_platform job quality-compounder` run with `compose exec`
+in `workers` (or `application` in the combined layout). They require their
+reviewed source/owner settings, accept `--timeout-seconds` (default 3600,
+maximum 86400), and prevent same-job overlap within that container. There is
+no automatic scheduler. File locks assume the single prescribed worker group;
+multiple independent worker containers are outside this topology.
+
+PostgreSQL persists in `postgres-data`; `Data` is mounted at `/data`, and
+`.artifacts` is mounted read-only at `/app/.artifacts`. Retain encrypted-secret
+key-ring recovery material separately from database backups. Take and verify a
+backup before upgrade; keep the previous image and apply only reviewed migration
+rollback procedures. Recreating empty retired tables cannot recover disposed data.
+
+Logs rotate at 10 MB with three files per container by default. Pools default
+to at most five connections per process. Compose grants 60 seconds for shutdown;
+the supervisor forwards termination, reaps process trees and bounds group cleanup
+to 55 seconds. Readiness, restore and restart evidence must be checked after an
+upgrade. Unit/contract checks do not establish that PostgreSQL acceptance or the
+new image build has passed.
 
 ## Optional future release workflow
 
@@ -105,8 +129,8 @@ these limits require measured capacity and failure evidence.
 `workflow_dispatch` image build/publication path. Publication is
 opt-in (`publish=false` by default); pushing a tag is not an automatic registry
 publication instruction. A configured destination must explicitly provide
-`DO_REGISTRY_NAME` and the registry credential. No registry or GitHub owner is
-assumed by the local migration.
+`DO_REGISTRY_NAME` and the registry credential. No registry destination is
+configured by this repository.
 
 The retained release checks require a strict SemVer tag, a matching dated
 changelog section, the current `origin/main` commit, and successful CI for that
@@ -123,9 +147,17 @@ bootstrap suppression, fresh signals, stale-signal rejection, explicitly
 bounded paper replay, durable orders/fills, restart accounting, and feedback.
 A green unit suite or running container cannot substitute for that evidence.
 
+Swing is an `E2E_PIPELINE_CANARY_ONLY` development fixture, permanently excluded
+from paper promotion and live trading. The narrow maintenance canary activation
+in [DATABASE.md](DATABASE.md) only enables its exact registered dev-only release;
+it creates no account/binding authority and does not grant deployment eligibility.
+
 Paper promotion manifests bind the exact image/config/evidence, strategy version,
 user, binding, broker account, data scope, and instrument set. Portfolio
 manifests also bind the model configuration. They record `live_authority=false`.
+The image repository is `vynmatrix/platform`; the logical `indicator-runner`
+attestation role does not imply a separate image or container. Retired-image
+evidence is rejected and cannot be relabeled for the consolidated image.
 Inherited marker-writing utilities and broker certification descriptions are
 technical references only; no certificate or live authority is supplied here.
 Keep `EXECUTION_MODE=paper` and `EXECUTION_ENGINE_ALLOW_LIVE=false` throughout

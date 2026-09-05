@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build the production indicator strategy wheel, shared libraries, managed
-# environments, and the single indicator-runner service image. Per-strategy
+# environments, and the single platform service image. Per-strategy
 # Docker images are not supported.
 
 set -euo pipefail
@@ -35,5 +35,5 @@ vmdev build strategies
 vmdev build venvs
 vmdev build docker --from-config --tag "$TAG"
 
-docker image inspect "vynmatrix/indicator-runner:$TAG" >/dev/null
-echo "Built and verified vynmatrix/indicator-runner:$TAG"
+docker image inspect "vynmatrix/platform:$TAG" >/dev/null
+echo "Built and verified vynmatrix/platform:$TAG"

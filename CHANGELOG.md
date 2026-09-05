@@ -9,15 +9,35 @@ This technical history was inherited with the source snapshot and sanitized for
 vynmatrix. The new repository has fresh Git history; earlier commits, runtime
 artifacts, external infrastructure, personal accounts, and certification evidence
 are not included. Past test/deployment statements below describe prior work and
-are not verification results for this migration. The project is not yet
-open-source: [LICENSE](LICENSE) is unchanged and a license/rights decision is pending.
+are not verification results for this migration. The current [LICENSE](LICENSE)
+makes the repository publicly source-available for personal, noncommercial use;
+it is not an OSI-approved open-source license. See [NOTICE](NOTICE) for retained
+attribution and known third-party provenance gaps.
 
 ## [Unreleased]
 
+- Converted management to one explicitly designated deployment owner while retaining broker-account,
+  environment, instrument, currency/FX, session and ledger authority. Added guarded `0099`–`0104`
+  migrations, owner-relative APIs, stable account keys and transactional expected-value updates.
+- Published the source at `vynaptic/vynmatrix` under the Vynmatrix Personal
+  Noncommercial Reciprocity License 1.0. The license permits personal,
+  noncommercial use and requires public source release plus a good-faith upstream
+  pull request for externally released enhancements; `NOTICE` preserves
+  attribution and unresolved third-party provenance records.
+- Added resumable `vmdev db bootstrap`, safe inactive catalogue registration, explicit owner/account
+  onboarding and password-preserving runtime-role provisioning. Retired destructive demo/reset
+  helpers and the extra Compose stack. Existing-data conflicts stop before destructive DDL.
+- Consolidated runtime into PostgreSQL plus application/workers, with a two-container combined
+  alternative, bounded process supervision, scoped API/admin credentials and progress health.
+  Registration remains non-executable and live execution remains disabled.
+- Corrected multi-account scoring snapshots to retain the selected account's authority without
+  inheriting another account's credentials or financial state. Verified transactional archive
+  restore through the existing PostgreSQL container and credential-free local-paper onboarding.
+
 - Prepared the independent vynmatrix codebase with neutral example identities,
-  renamed package/image branding, a local contributor workflow, and explicit
-  pending license/rights and publication boundaries. Historical operational
-  claims do not confer authority on this migration.
+  renamed package/image branding, a contributor workflow, and explicit
+  publication boundaries. Historical operational claims do not confer authority
+  on this migration.
 
 - **Closed two US Quality Compounder market-data admission gaps.** Forward panel registration now
   requires 80% factor-complete coverage overall and 70% in every sector with at least 10 members.

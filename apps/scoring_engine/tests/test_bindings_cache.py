@@ -1,9 +1,11 @@
 """Tests for the short-TTL ``list_bindings`` cache on ``AppScoreStore``."""
 
+import pytest
 from sqlalchemy.orm import Session
 
 from lib_application.db import models as app_models
 from lib_application.db.models import Broker, LinkedBrokerAccount
+from lib_application.services.deployment_owner import DeploymentOwnerError
 from scoring_engine.storage import AppScoreStore
 
 
@@ -17,7 +19,12 @@ def _store(monkeypatch, *, ttl_seconds: float = 60.0) -> AppScoreStore:
         broker = Broker(code="paper", name="Paper Broker", capabilities={})
         session.add_all(
             [
-                app_models.User(user_id="user-1", email="u1@example.com", base_ccy="USD"),
+                app_models.User(
+                    user_id="user-1",
+                    email="u1@example.com",
+                    base_ccy="USD",
+                    is_deployment_owner=True,
+                ),
                 app_models.User(user_id="user-2", email="u2@example.com", base_ccy="EUR"),
                 broker,
             ]
@@ -76,7 +83,7 @@ def _insert_binding(store: AppScoreStore, *, user_id: str, account_id: int) -> N
         session.commit()
 
 
-def test_list_bindings_served_from_cache_within_ttl(monkeypatch) -> None:
+def test_list_bindings_rechecks_revocation_within_ttl(monkeypatch) -> None:
     store = _store(monkeypatch)
     _insert_binding(store, user_id="user-1", account_id=1)
 
@@ -86,8 +93,8 @@ def test_list_bindings_served_from_cache_within_ttl(monkeypatch) -> None:
     # Mutate the DB behind the cache's back.
     _deactivate_all_bindings_directly(store)
 
-    # Still served from cache: the stale-but-consistent list is returned.
-    assert [b.user_id for b in store.list_bindings()] == ["user-1"]
+    # Revocation is authoritative even while the projection cache is warm.
+    assert store.list_bindings() == []
 
     # Explicit invalidation forces a re-read that reflects the DB change.
     store.invalidate_bindings_cache()
@@ -101,7 +108,7 @@ def test_explicit_invalidation_observes_backend_write(monkeypatch) -> None:
 
     _insert_binding(store, user_id="user-2", account_id=2)
     store.invalidate_bindings_cache()
-    assert sorted(b.user_id for b in store.list_bindings()) == ["user-1", "user-2"]
+    assert sorted(b.user_id for b in store.list_bindings()) == ["user-1"]
 
 
 def test_cache_disabled_when_ttl_zero(monkeypatch) -> None:
@@ -112,3 +119,40 @@ def test_cache_disabled_when_ttl_zero(monkeypatch) -> None:
     # TTL=0 disables caching, so a direct DB change is reflected immediately.
     _deactivate_all_bindings_directly(store)
     assert store.list_bindings() == []
+
+
+def test_owner_revocation_is_checked_before_cached_bindings(monkeypatch) -> None:
+    store = _store(monkeypatch)
+    _insert_binding(store, user_id="user-1", account_id=1)
+    assert store.list_bindings()
+    with Session(store._engine) as session:
+        session.get(app_models.User, "user-1").is_deployment_owner = False
+        session.commit()
+    with pytest.raises(DeploymentOwnerError):
+        store.list_bindings()
+
+
+def test_failed_refresh_cannot_label_old_grants_as_current(monkeypatch) -> None:
+    store = _store(monkeypatch)
+    _insert_binding(store, user_id="user-1", account_id=1)
+    with Session(store._engine) as session:
+        binding = session.query(app_models.UserStrategyBinding).one()
+        binding.autopilot = True
+        binding.entries_enabled = True
+        session.commit()
+    assert store.list_bindings()[0].entries_enabled is True
+    with Session(store._engine) as session:
+        binding = session.query(app_models.UserStrategyBinding).one()
+        binding.entries_enabled = False
+        session.commit()
+
+    original = store._load_instrument_map
+
+    def unavailable_map(*args, **kwargs):
+        raise OSError("Database read interrupted during binding refresh")
+
+    monkeypatch.setattr(store, "_load_instrument_map", unavailable_map)
+    with pytest.raises(OSError, match="interrupted"):
+        store.list_bindings()
+    monkeypatch.setattr(store, "_load_instrument_map", original)
+    assert store.list_bindings()[0].entries_enabled is False

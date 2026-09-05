@@ -74,6 +74,10 @@ The repo follows a Clean-Architecture-ish layering. New code should respect it.
 - [ ] **Golden snapshots used responsibly.** Snapshot tests should assert on a *small* normalised dict, not entire JSON dumps. Use them only for cross-cutting contracts (e.g., `ExecutionResult.to_dict()` shape) where unit tests would miss interaction.
 - [ ] **No tests that depend on live external services in default CI.** Kite, TrueData, Coinbase, etc. tests must be marked `@pytest.mark.integration` or behind an env flag.
 - [ ] **E2E tests assert per-layer state**, not just final-output shape. The pipeline is Strategy → Scoring → DB → Execution → Feedback; a meaningful E2E test inspects all five.
+- [ ] **Evidence identifies its boundary.** Current-time real-data transport,
+  normal historical stale rejection, explicit historical paper/accounting replay,
+  and fixture-based failure-mode tests are separate proofs. Skipped PostgreSQL
+  checks and running containers are not acceptance evidence.
 
 ## 5. Public-API hygiene
 
@@ -86,6 +90,16 @@ The repo follows a Clean-Architecture-ish layering. New code should respect it.
 ## 6. Operational scripts
 
 - [ ] **New script in `scripts/` is documented in `scripts/README.md`** (Purpose, Usage, Owner team).
+- [ ] **The declared runtime stays within three running containers, including
+  PostgreSQL.** Use application/workers groups or the combined `all` group, the
+  shared `vynmatrix/platform` image, and explicit selectors. Maintenance stops
+  both runtime groups before its one-shot job; bounded operational jobs use
+  `exec` inside an existing group. Review the canonical
+  [database lifecycle](DATABASE.md), not a parallel seed/startup path.
+- [ ] **Child roles and progress remain isolated.** Runtime children receive
+  their own database login and required service/admin keys, never maintenance
+  credentials. Management health must remain distinct from feed/execution
+  readiness; shutdown must reap descendants within the group deadline.
 - [ ] **No new `*_REPORT.md` / `*_SUMMARY.md` / `*_ANALYSIS.md` / `*_REVIEW.md`** at repo root. Use `docs/historical/` for archived snapshots; ephemeral reports go under `reports/` (gitignored).
 - [ ] **Stakeholder CSVs / backtest exports** go in `reports/` (gitignored). Do not commit them.
 
@@ -95,10 +109,25 @@ The repo follows a Clean-Architecture-ish layering. New code should respect it.
 - [ ] **`models/__init__.py` re-exports the new class** so `from lib_application.db.models import X` keeps working.
 - [ ] **Alembic round-trip verified** if the model split changed (i.e., a new migration runs cleanly + downgrades).
 - [ ] **Cross-domain `relationship("OtherClass")` strings** still resolve. SQLAlchemy resolves these via `Base.registry`, which works as long as every domain submodule is imported by `models/__init__.py` before any relationship is accessed.
+- [ ] **Owner boundaries preserve history.** Owner designation is explicit
+  maintenance authority; routine CLI/API changes share owner-relative application
+  services and retain account/ledger identity. No implicit user selection,
+  runtime owner designation, demo account authority, or commercial-data deletion
+  is introduced. A populated commercial-retirement guard must block before DDL.
 
 ## 8. Indicator-strategy contract (CRITICAL)
 
 - [ ] **No `self.Buy(...)`, `self.Sell(...)`, `self.MarketOrder(...)`, `self.Liquidate(...)`, etc. in `strategies/indicator/`.** Indicator strategies are signal-only — emit a canonical `Signal` instead. The audit blocks this; a passing audit means this is fine.
+- [ ] **Registration, canary activation and promotion stay separate.** Registration
+  is inactive. `vmdev db activate-canary` requires exact registered, enabled,
+  dev-only `E2E_PIPELINE_CANARY_ONLY` source and explicit paper/live-false gates;
+  it enables no account/binding and cannot promote a strategy. Swing remains
+  permanently excluded from paper promotion and live trading. Any other candidate
+  needs its own [readiness evidence](STRATEGY_READINESS.md).
+- [ ] **Image evidence names the actual platform image.** The logical attestation
+  role `indicator-runner` maps to `vynmatrix/platform`; retired-image manifests
+  are rejected, not relabeled. An image/config/evidence change requires newly
+  matched attestation and any independently eligible promotion evidence.
 
 ## 9. Documentation
 

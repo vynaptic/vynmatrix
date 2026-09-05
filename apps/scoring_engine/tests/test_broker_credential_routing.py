@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -28,6 +29,7 @@ from lib_application.db.models import (
     UserStrategyBinding,
     UserStrategyConfig,
 )
+from lib_application.services.deployment_owner import DeploymentOwnerError
 from scoring_engine.providers_db import DBProfileProvider, DBStrategyConfigProvider
 
 
@@ -37,7 +39,9 @@ def _build_provider() -> DBProfileProvider:
     session_local = sessionmaker(engine, expire_on_commit=False)
 
     with session_local() as s:
-        s.add(User(user_id="user-a", email="a@example.com", base_ccy="USD"))
+        s.add(
+            User(user_id="user-a", email="a@example.com", base_ccy="USD", is_deployment_owner=True)
+        )
         s.add(User(user_id="user-b", email="b@example.com", base_ccy="EUR"))
         coinbase = Broker(
             code="coinbase", name="Coinbase", capabilities={"asset_classes": ["crypto"]}
@@ -97,16 +101,17 @@ def test_profile_carries_per_user_active_credential_ref() -> None:
     provider = _build_provider()
 
     profile_a = provider("user-a")
-    profile_b = provider("user-b")
+    with pytest.raises(DeploymentOwnerError, match="deployment owner"):
+        provider("user-b")
 
     # Active per-account secret_ref reaches the per-broker profile entry...
     assert profile_a["brokers"]["coinbase"]["credential_ref"] == "users/user-a/coinbase/live"
-    assert profile_b["brokers"]["coinbase"]["credential_ref"] == "users/user-b/coinbase/live"
     # ...and the default-broker top-level pointer.
     assert profile_a["credential_ref"] == "users/user-a/coinbase/live"
 
     # Tenant isolation: the two users never share a credential reference.
-    assert profile_a["credential_ref"] != profile_b["credential_ref"]
+    assert "2" not in profile_a["accounts"]
+    assert "org_id" not in profile_a
 
 
 def test_execution_resolves_per_user_credential_ref() -> None:
@@ -177,7 +182,14 @@ def test_live_account_preferred_over_linked_paper_account() -> None:
     Base.metadata.create_all(engine)
     session_local = sessionmaker(engine, expire_on_commit=False)
     with session_local() as s:
-        s.add(User(user_id="user-live", email="live@example.com", base_ccy="USDC"))
+        s.add(
+            User(
+                user_id="user-live",
+                email="live@example.com",
+                base_ccy="USDC",
+                is_deployment_owner=True,
+            )
+        )
         cb = Broker(code="coinbase", name="Coinbase", capabilities={"asset_classes": ["crypto"]})
         s.add(cb)
         s.flush()
@@ -238,7 +250,9 @@ def test_expired_credential_is_not_selected() -> None:
     Base.metadata.create_all(engine)
     session_local = sessionmaker(engine, expire_on_commit=False)
     with session_local() as s:
-        s.add(User(user_id="user-x", email="x@example.com", base_ccy="USD"))
+        s.add(
+            User(user_id="user-x", email="x@example.com", base_ccy="USD", is_deployment_owner=True)
+        )
         cb = Broker(code="coinbase", name="Coinbase", capabilities={"asset_classes": ["crypto"]})
         s.add(cb)
         s.flush()
@@ -281,7 +295,9 @@ def _config_provider_with_binding(allowed_brokers: list[str] | None) -> DBStrate
     Base.metadata.create_all(engine)
     session_local = sessionmaker(engine, expire_on_commit=False)
     with session_local() as s:
-        s.add(User(user_id="user-a", email="a@example.com", base_ccy="USD"))
+        s.add(
+            User(user_id="user-a", email="a@example.com", base_ccy="USD", is_deployment_owner=True)
+        )
         s.add(Broker(broker_id=1, code="paper", name="Paper"))
         s.flush()
         s.add(
@@ -347,7 +363,14 @@ def test_strategy_config_provider_resolves_exact_account_scoped_binding() -> Non
     Base.metadata.create_all(engine)
     session_local = sessionmaker(engine, expire_on_commit=False)
     with session_local() as session:
-        session.add(User(user_id="multi-user", email="multi@example.com", base_ccy="EUR"))
+        session.add(
+            User(
+                user_id="multi-user",
+                email="multi@example.com",
+                base_ccy="EUR",
+                is_deployment_owner=True,
+            )
+        )
         session.add(Strategy(strategy_id="multi-v1", strategy_name="Multi Account"))
         session.add_all(
             [
@@ -434,7 +457,14 @@ def _config_provider_with_policy_rows(
     Base.metadata.create_all(engine)
     session_local = sessionmaker(engine, expire_on_commit=False)
     with session_local() as s:
-        s.add(User(user_id="policy-user", email="policy@example.com", base_ccy="USD"))
+        s.add(
+            User(
+                user_id="policy-user",
+                email="policy@example.com",
+                base_ccy="USD",
+                is_deployment_owner=True,
+            )
+        )
         s.add(Broker(broker_id=1, code="paper", name="Paper"))
         s.add(
             Strategy(
@@ -544,3 +574,9 @@ def test_strategy_policy_ignores_inactive_and_mismatched_config_rows() -> None:
 
     assert "require_explicit_scoring_inputs" not in config
     assert "require_stop_loss" not in config
+
+
+def test_strategy_config_rejects_caller_selected_foreign_owner() -> None:
+    provider = _config_provider_with_binding(["coinbase"])
+    with pytest.raises(DeploymentOwnerError, match="deployment owner"):
+        provider("foreign-owner")

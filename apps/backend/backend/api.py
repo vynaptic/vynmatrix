@@ -1,37 +1,21 @@
-"""Tenant self-service config API (gap #3).
-
-A FastAPI surface for a user (or an admin/web BFF on their behalf) to manage their
-own trading config: strategy bindings, reviewed strategy safety switches,
-append-only drawdown mandates, and broker-account onboarding (link an account +
-store its API keys in the DB-encrypted secret store).
-
-Multi-tenant by construction: every DB unit-of-work is wrapped in
-``tenant_scope(session, user_id=...)``, so when the service connects through
-``vm_backend_login`` Postgres RLS enforces that a request can only ever read/write
-that user's rows — a hard backstop behind the application logic. Broker
-API keys are written via the pluggable secrets backend (``DbSecretsProvider`` in
-prod) and are never returned or logged.
-
-Auth here is an admin API key (operator / web BFF); per-end-user JWT auth that
-derives ``user_id`` from a verified token is a web-layer follow-up.
-"""
+"""Authenticated owner control plane with durable account-scoped configuration."""
 
 from __future__ import annotations
 
-import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import (
     AnyHttpUrl,
     BaseModel,
     ConfigDict,
     Field,
-    SecretStr,
     field_validator,
     model_validator,
 )
@@ -40,8 +24,6 @@ from sqlalchemy import text
 from lib_application.db.models import (
     ApiAuditLog,
     Broker,
-    BrokerCredential,
-    BrokerEnvironment,
     Instrument,
     LinkedBrokerAccount,
     RiskMandate,
@@ -50,7 +32,20 @@ from lib_application.db.models import (
     UserStrategyBinding,
     UserStrategyConfig,
 )
-from lib_application.db.session import tenant_scope
+from lib_application.services.account_onboarding import (
+    AccountOnboardingError,
+    BrokerAccountIn,
+    BrokerAccountOut,
+    BrokerCredentialIn,
+    BrokerCredentialRotationOut,
+    account_output,
+    adopt_account,
+    onboard_account,
+    owner_scope,
+    patch_account,
+    rotate_credentials,
+)
+from lib_application.services.deployment_owner import DeploymentOwnerError
 from lib_application.services.instrument_resolution import (
     InstrumentResolutionError,
     resolve_instrument,
@@ -58,6 +53,11 @@ from lib_application.services.instrument_resolution import (
 from lib_application.services.market_calendars import (
     MarketSessionWindow,
     replace_market_calendar,
+)
+from lib_application.services.owner_onboarding import (
+    OwnerOnboardingError,
+    apply_owner_patch,
+    get_owner_profile,
 )
 from lib_common.api_security import is_production_environment, secret_matches
 from lib_common.app import create_service_app
@@ -69,16 +69,13 @@ from lib_common.logging import get_logger
 logger = get_logger(__name__)
 
 SessionFactory = Callable[[], Any]
-_WRITABLE_SECRETS_UNAVAILABLE = (
-    "credential writes are unavailable with the configured secrets backend; "
-    "set SECRETS_BACKEND=db and configure SECRETS_MASTER_KEYS"
-)
 
 
 # --------------------------------------------------------------------------- #
 # Schemas
 # --------------------------------------------------------------------------- #
 class BindingIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     strategy_id: str | None = Field(default=None, min_length=1, max_length=50)
     broker_account_id: int = Field(gt=0)
     asset_score_threshold: float = Field(default=0.60, ge=0, le=1)
@@ -303,77 +300,14 @@ class DrawdownMandateOut(BaseModel):
     effective_at: datetime
 
 
-class BrokerCredentialIn(BaseModel):
-    """Broker-specific secret material accepted only on write surfaces."""
-
-    api_key: SecretStr | None = Field(default=None, min_length=1, max_length=16384)
-    api_secret: SecretStr | None = Field(default=None, min_length=1, max_length=16384)
-    passphrase: SecretStr | None = Field(default=None, min_length=1, max_length=4096)
-    subaccount: str | None = Field(default=None, min_length=1, max_length=200)
-    access_token: SecretStr | None = Field(default=None, min_length=1, max_length=16384)
-    access_token_expires_at: datetime | None = None
-    refresh_token: SecretStr | None = Field(default=None, min_length=1, max_length=16384)
-    refresh_token_expires_at: datetime | None = None
-    account_key: str | None = Field(default=None, min_length=1, max_length=200)
-    client_key: str | None = Field(default=None, min_length=1, max_length=200)
-    region: Literal["global", "india"] | None = None
-    gateway_url: AnyHttpUrl | None = None
-    ca_cert: str | None = Field(default=None, min_length=1, max_length=4096)
-
-
-class BrokerAccountIn(BaseModel):
-    broker_code: str = Field(min_length=1, max_length=50)
-    environment: Literal["paper", "live"]
-    credentials: BrokerCredentialIn = Field(default_factory=BrokerCredentialIn)
-    base_ccy: str = Field(
-        min_length=3,
-        max_length=10,
-        pattern=r"^[A-Z][A-Z0-9]{2,9}$",
-    )
-    display_name: str | None = None
-    paper_initial_equity: Decimal | None = Field(default=None, gt=0)
-    paper_initial_cash: Decimal | None = Field(default=None, ge=0)
-
-    @model_validator(mode="after")
-    def validate_paper_capital(self) -> BrokerAccountIn:
-        """Require explicit, internally consistent capital for paper routes."""
-        if self.environment == "paper":
-            if self.paper_initial_equity is None or self.paper_initial_cash is None:
-                msg = "paper accounts require paper_initial_equity and paper_initial_cash"
-                raise ValueError(msg)
-            if self.paper_initial_cash > self.paper_initial_equity:
-                msg = "paper_initial_cash cannot exceed paper_initial_equity"
-                raise ValueError(msg)
-        elif self.paper_initial_equity is not None or self.paper_initial_cash is not None:
-            msg = "paper capital fields are only valid for paper accounts"
-            raise ValueError(msg)
-        return self
-
-
-class BrokerCredentialRotationOut(BaseModel):
-    account_id: int
-    secret_ref: str
-    expires_at: datetime | None
-    status: str
-
-
-class BrokerAccountOut(BaseModel):
-    account_id: int
-    broker_code: str
-    environment: str
-    status: str
-    secret_ref: str  # pointer only — the key material is never returned
-    base_ccy: str
-    paper_initial_equity: Decimal | None
-    paper_initial_cash: Decimal | None
-
-
 class MarketSessionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     opens_at: datetime
     closes_at: datetime
 
 
 class MarketCalendarIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     source_kind: Literal["broker", "exchange"]
     provider: str = Field(min_length=1, max_length=100)
     source_reference: AnyHttpUrl
@@ -393,188 +327,6 @@ class MarketCalendarOut(BaseModel):
     observed_at: datetime
     session_count: int
     instrument_ids: list[int]
-
-
-_CREDENTIAL_FIELDS = frozenset(BrokerCredentialIn.model_fields)
-_BROKER_CREDENTIAL_RULES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
-    "paper": (frozenset(), frozenset()),
-    "coinbase": (
-        frozenset({"api_key", "api_secret"}),
-        frozenset({"api_key", "api_secret", "passphrase"}),
-    ),
-    "deribit": (
-        frozenset({"api_key", "api_secret"}),
-        frozenset({"api_key", "api_secret", "subaccount"}),
-    ),
-    "delta": (
-        frozenset({"api_key", "api_secret", "region"}),
-        frozenset({"api_key", "api_secret", "region"}),
-    ),
-    "ibkr": (
-        frozenset({"subaccount", "gateway_url"}),
-        frozenset({"subaccount", "gateway_url", "ca_cert"}),
-    ),
-    "zerodha": (
-        frozenset(
-            {
-                "api_key",
-                "api_secret",
-                "access_token",
-                "access_token_expires_at",
-            }
-        ),
-        frozenset(
-            {
-                "api_key",
-                "api_secret",
-                "access_token",
-                "access_token_expires_at",
-            }
-        ),
-    ),
-    "saxo": (
-        frozenset(
-            {
-                "api_key",
-                "api_secret",
-                "access_token",
-                "access_token_expires_at",
-                "refresh_token",
-                "refresh_token_expires_at",
-                "account_key",
-                "client_key",
-            }
-        ),
-        frozenset(
-            {
-                "api_key",
-                "api_secret",
-                "access_token",
-                "access_token_expires_at",
-                "refresh_token",
-                "refresh_token_expires_at",
-                "account_key",
-                "client_key",
-            }
-        ),
-    ),
-}
-
-
-def _credential_values(payload: BrokerCredentialIn) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for field_name in _CREDENTIAL_FIELDS:
-        raw = getattr(payload, field_name)
-        if raw is None:
-            continue
-        if isinstance(raw, SecretStr):
-            value = raw.get_secret_value()
-        elif isinstance(raw, datetime):
-            value = raw.isoformat()
-        else:
-            value = str(raw)
-        normalized = value.strip()
-        if normalized:
-            values[field_name] = normalized
-    return values
-
-
-def _credential_blob(
-    *,
-    broker_code: str,
-    environment: str,
-    payload: BrokerCredentialIn,
-) -> tuple[dict[str, str], datetime | None]:
-    """Validate and serialize one complete broker credential snapshot."""
-    code = broker_code.strip().lower()
-    try:
-        required, allowed = _BROKER_CREDENTIAL_RULES[code]
-    except KeyError as exc:
-        msg = f"broker {broker_code!r} has no credential contract"
-        raise ValueError(msg) from exc
-
-    values = _credential_values(payload)
-    if environment == "paper":
-        # Normal tenant paper execution is always the deterministic in-process
-        # broker. Remote sandboxes are isolated certification workflows and do
-        # not share linked-account credential state.
-        required = frozenset()
-        allowed = frozenset()
-    present = frozenset(values)
-    missing = sorted(required - present)
-    unexpected = sorted(present - allowed)
-    if missing:
-        msg = f"{code} credentials are missing required fields: {', '.join(missing)}"
-        raise ValueError(msg)
-    if unexpected:
-        msg = f"{code} credentials contain unsupported fields: {', '.join(unexpected)}"
-        raise ValueError(msg)
-    if code == "ibkr" and environment == "live" and "ca_cert" not in present:
-        msg = "ibkr live credentials require ca_cert for gateway TLS verification"
-        raise ValueError(msg)
-    if (
-        code == "ibkr"
-        and environment == "live"
-        and not values["gateway_url"].startswith("https://")
-    ):
-        msg = "ibkr gateway_url must use HTTPS"
-        raise ValueError(msg)
-
-    access_expiry = payload.access_token_expires_at
-    refresh_expiry = payload.refresh_token_expires_at
-    now = datetime.now(tz=UTC)
-    for name, expiry in (
-        ("access_token_expires_at", access_expiry),
-        ("refresh_token_expires_at", refresh_expiry),
-    ):
-        if expiry is None:
-            continue
-        if expiry.tzinfo is None or expiry.utcoffset() is None:
-            msg = f"{code} {name} must be timezone-aware"
-            raise ValueError(msg)
-        if expiry.astimezone(UTC) <= now:
-            msg = f"{code} {name} must be in the future"
-            raise ValueError(msg)
-    if (
-        access_expiry is not None
-        and refresh_expiry is not None
-        and refresh_expiry.astimezone(UTC) <= access_expiry.astimezone(UTC)
-    ):
-        msg = f"{code} refresh_token_expires_at must be after access_token_expires_at"
-        raise ValueError(msg)
-
-    expires_at = (
-        access_expiry.astimezone(UTC).replace(tzinfo=None) if access_expiry is not None else None
-    )
-    return values, expires_at
-
-
-def _require_supported_broker_environment(
-    session: Any,
-    *,
-    broker: Broker,
-    environment: str,
-    credentials: BrokerCredentialIn,
-) -> None:
-    query = session.query(BrokerEnvironment).filter(
-        BrokerEnvironment.broker_id == broker.broker_id,
-        BrokerEnvironment.environment == environment,
-    )
-    if str(broker.code) == "delta" and environment == "live":
-        query = query.filter(BrokerEnvironment.region == credentials.region)
-    rows = query.all()
-    if not rows:
-        detail = f"{broker.code} does not support environment {environment!r}"
-        if str(broker.code) == "delta" and credentials.region:
-            detail += f" in region {credentials.region!r}"
-        raise HTTPException(status_code=422, detail=detail)
-    if len(rows) > 1 and not (str(broker.code) == "delta" and environment == "paper"):
-        logger.error(
-            "Broker catalogue has ambiguous environment rows",
-            broker=str(broker.code),
-            environment=environment,
-        )
-        raise HTTPException(status_code=503, detail="broker catalogue is ambiguous")
 
 
 def _binding_out(row: UserStrategyBinding) -> BindingOut:
@@ -825,78 +577,6 @@ def _build_admin_dependency(
     return _require_admin
 
 
-def _require_writable_secrets_provider(secrets_provider: Any | None) -> Any:
-    """Return a credential writer or fail without entering a DB unit-of-work."""
-    if secrets_provider is None or not callable(getattr(secrets_provider, "set_secret", None)):
-        raise HTTPException(status_code=503, detail=_WRITABLE_SECRETS_UNAVAILABLE)
-    return secrets_provider
-
-
-def _rotate_broker_credentials(
-    *,
-    session_factory: SessionFactory,
-    secrets_provider: Any,
-    user_id: str,
-    account_id: int,
-    payload: BrokerCredentialIn,
-) -> BrokerCredentialRotationOut:
-    if account_id <= 0:
-        raise HTTPException(status_code=404, detail="broker account not found")
-
-    with session_factory() as s, tenant_scope(s, user_id=user_id):
-        row = (
-            s.query(LinkedBrokerAccount, Broker, BrokerCredential)
-            .join(Broker, Broker.broker_id == LinkedBrokerAccount.broker_id)
-            .join(
-                BrokerCredential,
-                BrokerCredential.account_id == LinkedBrokerAccount.account_id,
-            )
-            .filter(
-                LinkedBrokerAccount.account_id == account_id,
-                LinkedBrokerAccount.user_id == user_id,
-                LinkedBrokerAccount.status == "connected",
-                BrokerCredential.status == "active",
-            )
-            .one_or_none()
-        )
-        if row is None:
-            raise HTTPException(status_code=404, detail="broker account not found")
-
-        account, broker, credential = row
-        try:
-            credential_blob, expires_at = _credential_blob(
-                broker_code=str(broker.code),
-                environment=str(account.environment),
-                payload=payload,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        _require_supported_broker_environment(
-            s,
-            broker=broker,
-            environment=str(account.environment),
-            credentials=payload,
-        )
-
-        credential.expires_at = expires_at
-        credential.last_rotated_at = datetime.now(tz=UTC).replace(tzinfo=None)
-        credential.status = "active"
-        secrets_provider.set_secret(
-            str(credential.secret_ref),
-            json.dumps(credential_blob),
-            account_id=int(account.account_id),
-            session=s,
-        )
-        s.commit()
-
-        return BrokerCredentialRotationOut(
-            account_id=int(account.account_id),
-            secret_ref=str(credential.secret_ref),
-            expires_at=credential.expires_at,
-            status=str(credential.status),
-        )
-
-
 def _replace_market_calendar(
     *,
     session_factory: SessionFactory,
@@ -960,6 +640,30 @@ def _register_market_calendar_route(
         )
 
 
+class ExpectedPatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected: dict[str, Any]
+    changes: dict[str, Any]
+
+
+class AccountAdoptionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    config_key: str = Field(min_length=1, max_length=100)
+
+
+@contextmanager
+def _owner_session(session_factory: SessionFactory) -> Iterator[tuple[Any, str]]:
+    with session_factory() as session, owner_scope(session) as user_id:
+        yield session, user_id
+
+
+def _reject_owner_query(request: Request) -> None:
+    if "user_id" in request.query_params or any(
+        name in request.headers for name in ("user_id", "user-id", "x-user-id")
+    ):
+        raise HTTPException(status_code=422, detail="caller-supplied user_id is not accepted")
+
+
 def create_app(  # noqa: PLR0915
     *,
     session_factory: SessionFactory,
@@ -973,6 +677,19 @@ def create_app(  # noqa: PLR0915
         version="0.1.0",
         service_auth=False,
     )
+    app.router.dependencies.append(Depends(_reject_owner_query))
+
+    @app.exception_handler(OwnerOnboardingError)
+    @app.exception_handler(AccountOnboardingError)
+    async def account_error(
+        _request: Request, exc: AccountOnboardingError | OwnerOnboardingError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    @app.exception_handler(DeploymentOwnerError)
+    async def owner_error(_request: Request, exc: DeploymentOwnerError) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
     _require_admin = _build_admin_dependency(*_resolve_admin_auth(admin_api_key, allow_anon))
     _register_market_calendar_route(
         app,
@@ -980,15 +697,15 @@ def create_app(  # noqa: PLR0915
         require_admin=_require_admin,
     )
 
-    @app.get("/users/{user_id}/bindings", dependencies=[Depends(_require_admin)])
-    def list_bindings(user_id: str) -> list[BindingOut]:
-        with session_factory() as s, tenant_scope(s, user_id=user_id):
+    @app.get("/bindings", dependencies=[Depends(_require_admin)])
+    def list_bindings() -> list[BindingOut]:
+        with _owner_session(session_factory) as (s, user_id):
             rows = s.query(UserStrategyBinding).filter(UserStrategyBinding.user_id == user_id).all()
             return [_binding_out(r) for r in rows]
 
-    @app.post("/users/{user_id}/bindings", dependencies=[Depends(_require_admin)])
-    def upsert_binding(user_id: str, payload: BindingIn) -> BindingOut:
-        with session_factory() as s, tenant_scope(s, user_id=user_id):
+    @app.post("/bindings", dependencies=[Depends(_require_admin)])
+    def upsert_binding(payload: BindingIn) -> BindingOut:
+        with _owner_session(session_factory) as (s, user_id):
             # Serialize authority changes for one broker account before reading
             # competing bindings. Under PostgreSQL READ COMMITTED this separate
             # row-locking statement ensures the subsequent conflict query sees
@@ -1049,13 +766,21 @@ def create_app(  # noqa: PLR0915
             else:
                 for key, value in fields.items():
                     setattr(row, key, value)
+            s.flush()
+            response = _binding_out(row)
+            _append_control_audit(
+                s,
+                user_id=user_id,
+                action="binding.upsert",
+                request_payload=fields,
+                response_payload={"binding_id": response.binding_id},
+            )
             s.commit()
-            s.refresh(row)
-            return _binding_out(row)
+            return response
 
-    @app.delete("/users/{user_id}/bindings/{binding_id}", dependencies=[Depends(_require_admin)])
-    def deactivate_binding(user_id: str, binding_id: int) -> dict[str, Any]:
-        with session_factory() as s, tenant_scope(s, user_id=user_id):
+    @app.delete("/bindings/{binding_id}", dependencies=[Depends(_require_admin)])
+    def deactivate_binding(binding_id: int) -> dict[str, Any]:
+        with _owner_session(session_factory) as (s, user_id):
             row = (
                 s.query(UserStrategyBinding)
                 .filter(
@@ -1070,6 +795,13 @@ def create_app(  # noqa: PLR0915
             row.autopilot = False
             row.entries_enabled = False
             row.exits_enabled = False
+            _append_control_audit(
+                s,
+                user_id=user_id,
+                action="binding.deactivate",
+                request_payload={"binding_id": binding_id},
+                response_payload={"is_active": False},
+            )
             s.commit()
             return {
                 "binding_id": binding_id,
@@ -1079,11 +811,11 @@ def create_app(  # noqa: PLR0915
             }
 
     @app.get(
-        "/users/{user_id}/strategy-configs",
+        "/strategy-configs",
         dependencies=[Depends(_require_admin)],
     )
-    def list_strategy_configs(user_id: str) -> list[StrategyConfigOut]:
-        with session_factory() as s, tenant_scope(s, user_id=user_id):
+    def list_strategy_configs() -> list[StrategyConfigOut]:
+        with _owner_session(session_factory) as (s, user_id):
             rows = (
                 s.query(UserStrategyConfig)
                 .filter(UserStrategyConfig.user_id == user_id)
@@ -1093,18 +825,17 @@ def create_app(  # noqa: PLR0915
             return [_strategy_config_out(row) for row in rows]
 
     @app.put(
-        "/users/{user_id}/strategy-configs/{strategy_id}",
+        "/strategy-configs/{strategy_id}",
         dependencies=[Depends(_require_admin)],
     )
     def upsert_strategy_config(
-        user_id: str,
         strategy_id: str,
         payload: StrategyConfigIn,
     ) -> StrategyConfigOut:
         normalized_strategy_id = strategy_id.strip()
         if not normalized_strategy_id:
             raise HTTPException(status_code=404, detail="strategy not found")
-        with session_factory() as s, tenant_scope(s, user_id=user_id):
+        with _owner_session(session_factory) as (s, user_id):
             _lock_tenant_control(
                 s,
                 user_id=user_id,
@@ -1161,12 +892,12 @@ def create_app(  # noqa: PLR0915
             return response
 
     @app.delete(
-        "/users/{user_id}/strategy-configs/{strategy_id}",
+        "/strategy-configs/{strategy_id}",
         dependencies=[Depends(_require_admin)],
     )
-    def deactivate_strategy_config(user_id: str, strategy_id: str) -> StrategyConfigOut:
+    def deactivate_strategy_config(strategy_id: str) -> StrategyConfigOut:
         normalized_strategy_id = strategy_id.strip()
-        with session_factory() as s, tenant_scope(s, user_id=user_id):
+        with _owner_session(session_factory) as (s, user_id):
             _lock_tenant_control(
                 s,
                 user_id=user_id,
@@ -1202,11 +933,11 @@ def create_app(  # noqa: PLR0915
             return response
 
     @app.get(
-        "/users/{user_id}/risk-mandates/drawdown",
+        "/risk-mandates/drawdown",
         dependencies=[Depends(_require_admin)],
     )
-    def list_drawdown_mandates(user_id: str) -> list[DrawdownMandateOut]:
-        with session_factory() as s, tenant_scope(s, user_id=user_id):
+    def list_drawdown_mandates() -> list[DrawdownMandateOut]:
+        with _owner_session(session_factory) as (s, user_id):
             rows = (
                 s.query(RiskMandate)
                 .filter(RiskMandate.user_id == user_id)
@@ -1220,14 +951,13 @@ def create_app(  # noqa: PLR0915
             ]
 
     @app.put(
-        "/users/{user_id}/risk-mandates/drawdown",
+        "/risk-mandates/drawdown",
         dependencies=[Depends(_require_admin)],
     )
     def upsert_drawdown_mandate(
-        user_id: str,
         payload: DrawdownMandateIn,
     ) -> DrawdownMandateOut:
-        with session_factory() as s, tenant_scope(s, user_id=user_id):
+        with _owner_session(session_factory) as (s, user_id):
             _lock_tenant_control(s, user_id=user_id, resource_key="drawdown-mandate")
             rows = (
                 s.query(RiskMandate)
@@ -1290,120 +1020,59 @@ def create_app(  # noqa: PLR0915
             s.commit()
             return response
 
-    @app.get("/users/{user_id}/broker-accounts", dependencies=[Depends(_require_admin)])
-    def list_broker_accounts(user_id: str) -> list[BrokerAccountOut]:
-        with session_factory() as s, tenant_scope(s, user_id=user_id):
-            rows = (
-                s.query(LinkedBrokerAccount, Broker, BrokerCredential)
-                .join(Broker, Broker.broker_id == LinkedBrokerAccount.broker_id)
-                .outerjoin(
-                    BrokerCredential,
-                    BrokerCredential.account_id == LinkedBrokerAccount.account_id,
-                )
+    @app.get("/owner", dependencies=[Depends(_require_admin)])
+    def get_owner() -> dict[str, Any]:
+        with session_factory() as session:
+            return get_owner_profile(session)
+
+    @app.patch("/owner", dependencies=[Depends(_require_admin)])
+    def update_owner(payload: ExpectedPatchIn) -> dict[str, Any]:
+        with session_factory() as session:
+            response = apply_owner_patch(
+                session, expected=payload.expected, changes=payload.changes
+            )
+            session.commit()
+            return response
+
+    @app.get("/broker-accounts", dependencies=[Depends(_require_admin)])
+    def list_broker_accounts() -> list[BrokerAccountOut]:
+        with _owner_session(session_factory) as (session, user_id):
+            accounts = (
+                session.query(LinkedBrokerAccount)
                 .filter(LinkedBrokerAccount.user_id == user_id)
+                .order_by(LinkedBrokerAccount.account_id)
                 .all()
             )
-            return [
-                BrokerAccountOut(
-                    account_id=int(acc.account_id),
-                    broker_code=str(broker.code),
-                    environment=str(acc.environment),
-                    status=str(acc.status),
-                    secret_ref=str(cred.secret_ref) if cred else "",
-                    base_ccy=str(acc.base_ccy),
-                    paper_initial_equity=acc.paper_initial_equity,
-                    paper_initial_cash=acc.paper_initial_cash,
-                )
-                for acc, broker, cred in rows
-            ]
+            return [account_output(session, account) for account in accounts]
 
-    @app.post("/users/{user_id}/broker-accounts", dependencies=[Depends(_require_admin)])
-    def onboard_broker_account(user_id: str, payload: BrokerAccountIn) -> BrokerAccountOut:
-        writable_secrets = _require_writable_secrets_provider(secrets_provider)
-        with session_factory() as s, tenant_scope(s, user_id=user_id):
-            broker = s.query(Broker).filter(Broker.code == payload.broker_code).one_or_none()
-            if broker is None:
-                raise HTTPException(status_code=404, detail=f"unknown broker {payload.broker_code}")
-            try:
-                credential_blob, expires_at = _credential_blob(
-                    broker_code=str(broker.code),
-                    environment=payload.environment,
-                    payload=payload.credentials,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
-            _require_supported_broker_environment(
-                s,
-                broker=broker,
-                environment=payload.environment,
-                credentials=payload.credentials,
-            )
-            account = LinkedBrokerAccount(
-                user_id=user_id,
-                broker_id=broker.broker_id,
-                environment=payload.environment,
-                display_name=payload.display_name or f"{broker.name} {payload.environment}",
-                base_ccy=payload.base_ccy,
-                paper_initial_equity=payload.paper_initial_equity,
-                paper_initial_cash=payload.paper_initial_cash,
-                status="connected",
-            )
-            s.add(account)
-            s.flush()  # assign account_id
-            secret_ref = f"users/{user_id}/broker-accounts/{int(account.account_id)}"
-            s.add(
-                BrokerCredential(
-                    account_id=account.account_id,
-                    secret_ref=secret_ref,
-                    expires_at=expires_at,
-                    status="active",
-                )
-            )
-            # The account, credential pointer, and ciphertext are one atomic
-            # unit-of-work. A partial onboarding must never leave a connected
-            # account whose credential reference cannot be resolved.
-            writable_secrets.set_secret(
-                secret_ref,
-                json.dumps(credential_blob),
-                account_id=int(account.account_id),
-                session=s,
-            )
-            s.commit()
-            account_id = int(account.account_id)
-        logger.info("Onboarded broker account", user_id=user_id, broker=payload.broker_code)
-        return BrokerAccountOut(
-            account_id=account_id,
-            broker_code=payload.broker_code,
-            environment=payload.environment,
-            status="connected",
-            secret_ref=secret_ref,
-            base_ccy=payload.base_ccy,
-            paper_initial_equity=payload.paper_initial_equity,
-            paper_initial_cash=payload.paper_initial_cash,
-        )
+    @app.post("/broker-accounts", dependencies=[Depends(_require_admin)])
+    def onboard_broker_account(payload: BrokerAccountIn) -> BrokerAccountOut:
+        with session_factory() as session:
+            response = onboard_account(session, payload, secrets_provider)
+            session.commit()
+            return response
 
-    @app.put(
-        "/users/{user_id}/broker-accounts/{account_id}/credentials",
-        dependencies=[Depends(_require_admin)],
-    )
+    @app.post("/broker-accounts/{account_id}/adopt", dependencies=[Depends(_require_admin)])
+    def adopt_broker_account(account_id: int, payload: AccountAdoptionIn) -> BrokerAccountOut:
+        with session_factory() as session:
+            response = adopt_account(session, account_id, payload.config_key)
+            session.commit()
+            return response
+
+    @app.patch("/broker-accounts/{account_id}", dependencies=[Depends(_require_admin)])
+    def update_broker_account(account_id: int, payload: ExpectedPatchIn) -> BrokerAccountOut:
+        with session_factory() as session:
+            response = patch_account(session, account_id, payload.expected, payload.changes)
+            session.commit()
+            return response
+
+    @app.put("/broker-accounts/{account_id}/credentials", dependencies=[Depends(_require_admin)])
     def rotate_broker_credentials(
-        user_id: str,
-        account_id: int,
-        payload: BrokerCredentialIn,
+        account_id: int, payload: BrokerCredentialIn
     ) -> BrokerCredentialRotationOut:
-        """Atomically replace one complete broker credential snapshot.
-
-        OAuth refresh-token rotation invalidates the previous token document at
-        several brokers. Partial field patches are therefore deliberately not
-        supported: callers must persist the full replacement document in one
-        transaction.
-        """
-        return _rotate_broker_credentials(
-            session_factory=session_factory,
-            secrets_provider=_require_writable_secrets_provider(secrets_provider),
-            user_id=user_id,
-            account_id=account_id,
-            payload=payload,
-        )
+        with session_factory() as session:
+            response = rotate_credentials(session, account_id, payload, secrets_provider)
+            session.commit()
+            return response
 
     return app

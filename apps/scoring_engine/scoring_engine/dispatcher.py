@@ -383,13 +383,7 @@ def _route_snapshot(
         broker=str(broker),
         broker_account_id=account_id,
         broker_environment=broker_environment,
-        credential_ref=str(
-            config.get("credential_ref")
-            or broker_credential_ref
-            or profile.get("credential_ref")
-            or ""
-        )
-        or None,
+        credential_ref=str(config.get("credential_ref") or broker_credential_ref or "") or None,
         allowed_brokers=_allowed_brokers(profile, config)
         or [str(item) for item in decision.allowed_brokers],
         route_source="scoring_policy",
@@ -400,6 +394,42 @@ def _route_snapshot(
         asset_class=asset_class,
         execution_mode=str(execution_mode) if execution_mode else None,
     )
+
+
+def _profile_for_route(profile: dict[str, Any], route: BrokerRouteSnapshot) -> dict[str, Any]:
+    """Freeze executable routing from the binding, leaving provider defaults diagnostic."""
+    scoped = dict(profile)
+    for key in ("spot_broker", "options_broker", "options_broker_crypto", "options_broker_equity"):
+        scoped.pop(key, None)
+    if str(profile.get("broker_account_id")) != str(route.broker_account_id):
+        # A provider's default-account cache cannot become another account's
+        # capital or currency merely because its binding selected that account.
+        for key in (
+            "equity",
+            "available_cash",
+            "cash",
+            "margin_used",
+            "unrealized_pnl",
+            "realized_pnl",
+            "positions",
+            "open_positions",
+            "daily_trades",
+            "currency",
+            "base_ccy",
+            "account_state_fetched_at",
+            "last_synced_at",
+            "fetched_at",
+        ):
+            scoped.pop(key, None)
+    scoped.update(
+        broker=route.broker,
+        broker_account_id=route.broker_account_id,
+        broker_environment=route.broker_environment,
+        credential_ref=route.credential_ref,
+        sandbox=route.sandbox,
+        live_enabled=route.live_enabled,
+    )
+    return {key: _json_safe(value) for key, value in scoped.items()}
 
 
 class ExecutionDispatcher:
@@ -572,7 +602,7 @@ class ExecutionDispatcher:
             score_context=score_snapshot,
         )
         return FrozenBindingContext(
-            profile=_json_safe(profile),
+            profile=_profile_for_route(profile, route_snapshot),
             user_strategy_config=_json_safe(user_strat_cfg),
             score_context=score_snapshot,
             execution_policy=policy_snapshot,
@@ -629,7 +659,7 @@ class ExecutionDispatcher:
             score_context=score_snapshot,
         )
         return FrozenBindingContext(
-            profile=_json_safe(profile),
+            profile=_profile_for_route(profile, route_snapshot),
             user_strategy_config=_json_safe(user_strat_cfg),
             score_context=score_snapshot,
             execution_policy=policy_snapshot,
@@ -822,7 +852,7 @@ class ExecutionDispatcher:
                 score_context=score_snapshot,
                 execution_policy=policy_snapshot,
                 broker_route=route_snapshot,
-                profile=_json_safe(profile),
+                profile=_profile_for_route(profile, route_snapshot),
                 user_strategy_config=_json_safe(user_strat_cfg),
             )
 

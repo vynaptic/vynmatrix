@@ -10,13 +10,13 @@ Utilities retained with vynmatrix for local database work, audits, and paper ver
 
 ## Core Scripts
 
-Windows equivalents exist for shell scripts (`*.ps1`) in the same locations.
+Use the PowerShell sibling where one is listed; not every shell utility has one.
 
 ### `build_strategies.sh` / `build_strategies.ps1`
 
 **Purpose**: Build library and strategy wheels, managed venvs, and the
-config-declared service images, then verify the consolidated `indicator-runner`
-image. The indicator wheel is installed into that image;
+config-declared platform image, then verify `vynmatrix/platform`.
+The indicator wheel is installed into that shared image;
 per-strategy/category images are retired.
 
 **Usage**:
@@ -49,6 +49,31 @@ per-strategy/category images are retired.
 
 ## Database & Pipeline Utilities
 
+### `run_platform.py` / `platform_processes.py`
+
+**Purpose**: Supervise existing entrypoints with explicit per-process database
+roles, scoped API keys, bounded restarts, and graceful group shutdown. The
+declared Compose stack runs PostgreSQL plus `application` and `workers`; the
+two-container alternative uses the same `application` service in `all` mode.
+Feedback always runs, optional producers require `PLATFORM_WORKERS`, and an
+empty `STRATEGY_LIST` skips indicator execution. See
+[configuration](../docs/CONFIGURATION.md) for selectors and private listener ports.
+
+Backfill and the existing quality-compounder panel cycle are explicit bounded
+jobs inside the current group, with no additional container or hidden scheduler:
+
+```bash
+docker compose --env-file .env -f docker/docker-compose.stack.yml \
+  exec -T workers python -m scripts.run_platform job backfill --timeout-seconds 3600
+```
+
+The alternative job name is `quality-compounder`; its independent provider,
+entitlement, session, catalogue, and panel prerequisites must already be satisfied.
+Use `application` instead of `workers` in the `all` layout. Timeouts must be
+positive and at most 86400 seconds; expiry returns 124, overlapping same-job
+execution returns 75, and termination returns 130. The local job lock covers the
+single prescribed worker container, not multiple independently provisioned workers.
+
 ### `replay_canonical_signals.py`
 
 **Purpose**: Replay persisted `canonical_signals` through the production paper
@@ -72,11 +97,13 @@ paper route; CLI sizing values are not independent economic authority.
 **Usage**:
 
 ```bash
+: "${CANARY_OWNER_ID:?Set the actual owner ID from onboarding}"
+: "${CANARY_PAPER_ACCOUNT_ID:?Set the actual dedicated paper account ID}"
 docker compose --env-file .env -f docker/docker-compose.stack.yml \
-  run --rm --no-deps execution-engine \
-  python /app/scripts/replay_canonical_signals.py \
-  --user-id demo_user \
-  --broker-account-id 1 \
+  exec -T application sh -c \
+  'DATABASE_URL="$EXECUTION_DATABASE_URL" exec python /app/scripts/replay_canonical_signals.py "$@"' replay \
+  --user-id "$CANARY_OWNER_ID" \
+  --broker-account-id "$CANARY_PAPER_ACCOUNT_ID" \
   --strategy-id swing_high_low_pmo_v1 \
   --symbols BTC-USDC \
   --start-date 2026-07-10 \
@@ -86,22 +113,29 @@ docker compose --env-file .env -f docker/docker-compose.stack.yml \
   --no-enable-shorting
 ```
 
-The reviewed real Coinbase witness emits LONG at `2026-07-14T11:00:00Z` and
+This selects the execution database role for the replay child in the existing
+container. It creates no account or execution authority. The reviewed real
+Coinbase witness for Swing version `1.0.1` emits LONG at `2026-07-14T11:00:00Z` and
 CLOSE at `2026-07-14T12:45:00Z`. Every resulting fill must preserve the exact
-persisted source price ID/content revision and versioned trigger policy.
+persisted source price ID/content revision and versioned trigger policy. Keep
+that historical artifact separate from a new release's canary evidence; see the
+[complete composite proof](../docs/E2E_VERIFICATION_GUIDE.md).
 
 ### `audit_table_counts.sql`
 
-**Purpose**: Quick row-count audit of every production table grouped by domain
-(tenancy/users, brokers, instruments, signals, scoring, execution, feedback,
-outbox). Run via `psql $DATABASE_URL -f scripts/audit_table_counts.sql` to
-sanity-check post-migration / post-deploy state.
+**Purpose**: Read PostgreSQL's estimated live-row counts for public tables,
+ordered by count and name. These statistics are a diagnostic, not exact ledger
+reconciliation. Use the explicit maintenance target from `vmdev db connect` and
+the SQL file through the existing PostgreSQL connection; do not introduce a
+global runtime `DATABASE_URL` for installation.
 
 ### `write_paper_promotion_manifest.py`
 
-**Purpose**: Build one fail-closed paper authority for an exact single-
-instrument strategy or synchronized portfolio. The default config and inferred
-scope/broker preserve the single-instrument command surface. A synchronized
+**Purpose**: Build one fail-closed paper authority for an independently eligible
+single-instrument strategy or synchronized portfolio. The CLI's default Swing
+config is currently an E2E-only development canary, permanently excluded from
+paper promotion; passing the local pipeline procedure cannot promote it. Supply
+the exact independently eligible candidate configuration. A synchronized
 portfolio supplies `--config`, `--model-configuration-sha256`, and one reviewed
 `--instrument-set-artifact`; the writer validates, embeds, and hashes its exact
 instrument-id/canonical-symbol allowlist. Account/binding identity and the
@@ -124,11 +158,20 @@ pre-start model configuration carried by later rebalance events:
 }
 ```
 
-Run it from the exact immutable `indicator-runner` image being promoted. Both
+Run it from the exact immutable `vynmatrix/platform` image being promoted, using
+`exec -T` in the existing container and `--output -` to stream the validated
+manifest to a new host-side file; the mounted `/app/.artifacts` evidence is
+read-only. Review it before placing it at the configured host artifact path. Both
 the runner and scoring engine re-hash the files and require the same config,
 model/instrument scope, evidence run, owner, binding, account, broker and image.
 Synchronized authority fixes `data_use_scope=paper_forward`; every manifest
 fixes `live_authority=false`.
+
+The logical indicator attestation role remains `indicator-runner`, supplied as
+`--container-image indicator-runner=vynmatrix/platform:<exact-tag>` to the existing
+environment-attestation command. That role does not name another running
+container. Retired indicator-image manifests are rejected; the platform image
+requires newly matched image/config/evidence, never relabeled old certification.
 
 ### `write_sandbox_certification_marker.py`
 
@@ -152,14 +195,17 @@ python scripts/write_sandbox_certification_marker.py \
 
 ### `db/pre_migration_backup.sh`
 
-**Purpose**: Take a `pg_dump` backup before production migrations. Cloud-agnostic
-for a locally operated PostgreSQL database or a future separately approved
-PostgreSQL topology.
+**Purpose**: Retained standalone `pg_dump` helper for an explicitly selected
+host database. The supported stack backup/restore lifecycle is
+[`vmdev db backup` / `restore`](../docs/DATABASE.md); it scopes the maintenance
+connection and retains runtime ordering. The standalone helper requires host
+`pg_dump` and an explicitly supplied `DATABASE_URL`; its optional `SPACES_TARGET`
+uploads outside the machine and requires separate authorization.
 
 **Usage**:
 
 ```bash
-DATABASE_URL="$DATABASE_URL" SPACES_TARGET=s3://vm-backups/pg scripts/db/pre_migration_backup.sh
+vmdev db backup backups/before-maintenance.dump
 ```
 
 ---
@@ -173,6 +219,7 @@ underlying workflow is replaced.
 
 | Script | Owner team | Purpose |
 |---|---|---|
+| `run_platform.py` / `platform_processes.py` | platform | Scoped process groups and bounded existing jobs |
 | `manage_broker_secret.py` | platform security | Account-scoped credential onboarding, verification, and atomic MultiFernet rotation; runbook: `docs/BROKER_CREDENTIALS.md` §4 |
 | `replay_canonical_signals.py` | platform | Account-scoped historical paper-execution replay from persisted real market/FX data |
 | `audit_table_counts.sql` | platform | Per-domain DB row-count audit |
@@ -187,6 +234,8 @@ underlying workflow is replaced.
 
 ```
 scripts/
+├── run_platform.py                # Group supervisor and bounded job launcher
+├── platform_processes.py          # Existing entrypoints and child environment contracts
 ├── manage_broker_secret.py       # Account-scoped encrypted credential operations
 ├── replay_canonical_signals.py    # Account-scoped historical paper-execution replay
 ├── write_paper_promotion_manifest.py  # Exact strategy/model paper authority
@@ -198,10 +247,7 @@ scripts/
 ├── diagnose_environments.ps1       # Local environment diagnostics (Windows)
 ├── setup_windows.ps1               # Windows setup helper
 ├── db/                             # Database management helpers
-│   ├── bootstrap_scoring.py        # Seed source-controlled instruments after Alembic
 │   ├── pre_migration_backup.sh     # pg_dump pre-migration backup (cloud-agnostic)
-│   ├── manage_db.sh                # Postgres lifecycle (macOS/Linux)
-│   ├── manage_db.ps1               # Postgres lifecycle (Windows)
 │   └── alembic/                    # Alembic migrations
 └── venv/                           # Virtual environment management
     ├── create_dev_venv.sh          # Development venv setup (macOS/Linux)
@@ -225,29 +271,41 @@ dedicated `strategy-validation` venv first as documented in
 ### 1. Prepare the local environment
 
 Follow the [OS setup guide](../README.md#new-developer-onboarding) for the
-`.venv-dev` runtime, wheels, images, and private `.env`. The full Compose stack
-bootstraps its own PostgreSQL database. `vmdev db start` is an alternative for
-host-side DB work; do not also start it on the same port as this stack.
+`.venv-dev` runtime, wheels, platform image, and private `.env`. Installation and
+routine database work share the canonical stack lifecycle in
+[the database guide](../docs/DATABASE.md). The retired shell database managers,
+automatic seed chain, and separate database Compose file are not startup paths.
 
-### 2. Bring up the local stack
+### 2. Bootstrap with explicit owner configuration
+
+Start with `COMPOSE_PROFILES=workers`,
+`PLATFORM_APPLICATION_GROUP=application`, an empty `STRATEGY_LIST`, and only the
+required explicit producer selection. Prepare the reviewed private owner document
+and role credentials described in the database guide, then run:
 
 ```bash
-STRATEGY_LIST=SwingHighLowPMO \
-docker compose --env-file .env -f docker/docker-compose.stack.yml \
-  --profile indicator up -d
+vmdev db bootstrap --owner-config owner.local.yaml
+vmdev db status
 ```
 
-The profile adds `indicator-runner` to the default core services. No catalogue
-candidate is staged by default; the explicit benchmark selection prevents a
-developer's local `.env` from changing which worker is exercised.
+Bootstrap stops both runtime groups before its declared maintenance job and
+starts them only after successful completion, keeping the supported lifecycle
+within three running containers. Registration creates inactive strategies and
+registered releases, with no account, binding, or trading authority. The backend
+has no general release-activation endpoint; setting `STRATEGY_LIST` does not
+activate a registered release. The narrow maintenance-only
+`vmdev db activate-canary` operation requires exact existing dev-only E2E canary
+source and explicit paper/live-false gates. Follow its eligibility boundary and
+the recorded-data requirements in [the E2E guide](../docs/E2E_VERIFICATION_GUIDE.md).
 
 ### 3. Validate signal flow
 
-Inspect Postgres to confirm the pipeline is producing output:
+For an already eligible, explicitly authorized canary, inspect the exact
+application database with `vmdev db connect`. Read its durable outputs:
 
-```bash
-psql "$DATABASE_URL" -c "SELECT * FROM canonical_signals ORDER BY ts DESC LIMIT 20;"
-psql "$DATABASE_URL" -c "SELECT * FROM asset_scores ORDER BY ts DESC LIMIT 20;"
+```sql
+SELECT * FROM canonical_signals ORDER BY ts DESC LIMIT 20;
+SELECT * FROM asset_scores ORDER BY ts DESC LIMIT 20;
 ```
 
 Replay already-ingested signals through account-scoped paper execution with

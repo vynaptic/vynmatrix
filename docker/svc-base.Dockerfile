@@ -1,7 +1,6 @@
 # syntax=docker/dockerfile:1.7
-# Shared runtime for the five production services. Only dependencies required
-# by every service wheel belong here; provider-specific and service-specific
-# packages are installed in each service's isolated builder stage.
+# Shared base for the composed platform runtime. Platform-specific additions
+# are installed in the platform builder stage.
 
 ARG PYTHON_IMAGE=python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93
 

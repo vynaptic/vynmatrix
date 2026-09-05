@@ -73,7 +73,7 @@ def test_prepush_hook_blocks_direct_push_to_main() -> None:
     assert "git mr submit" in result.stdout
 
 
-def test_prepush_hook_allows_override() -> None:
+def test_prepush_hook_rejects_environment_override() -> None:
     repo_root = Path(__file__).resolve().parents[3]
     hook_path = repo_root / ".githooks" / "pre-push"
     env = os.environ.copy()
@@ -88,7 +88,8 @@ def test_prepush_hook_allows_override() -> None:
         env=env,
     )
 
-    assert result.returncode == 0
+    assert result.returncode == 1
+    assert "Direct push to origin/main is blocked" in result.stdout
 
 
 def test_git_install_preserves_global_configuration(tmp_path, monkeypatch) -> None:

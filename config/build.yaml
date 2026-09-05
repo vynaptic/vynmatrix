@@ -98,7 +98,7 @@ apps:
     - lib_application
     - lib_infrastructure
     owner_team: platform
-    docker: true
+    docker: false
   - name: execution_engine
     path: apps/execution_engine
     version: 0.1.0
@@ -110,7 +110,7 @@ apps:
     - lib_application
     - lib_infrastructure
     owner_team: platform
-    docker: true
+    docker: false
   - name: scoring_engine
     path: apps/scoring_engine
     version: 0.1.0
@@ -123,7 +123,7 @@ apps:
     - lib_application
     - lib_infrastructure
     owner_team: platform
-    docker: true
+    docker: false
   - name: feedback_loop_engine
     path: apps/feedback_loop_engine
     version: 0.1.0
@@ -135,7 +135,7 @@ apps:
     - lib_application
     - lib_infrastructure
     owner_team: platform
-    docker: true
+    docker: false
   - name: market_data_ingestor
     path: apps/market_data_ingestor
     version: 0.1.0
@@ -151,14 +151,14 @@ apps:
     strategy_groups:
     - indicator
     owner_team: platform
-    docker: true
+    docker: false
   - name: backend
     path: apps/backend
     version: 0.1.0
-    description: Tenant config API (strategy-binding CRUD + broker-account onboarding);
-      runs as the non-superuser vm_backend role so Postgres RLS is the multi-tenant backstop.
-      No standalone image — ships inside the scoring-engine image (DOCR Basic 5-repo
-      cap, see config/containers.yaml) and runs as its own container via command override.
+    description: Owner configuration API (strategy bindings and broker-account onboarding);
+      runs as the non-superuser vm_backend role with owner-scoped PostgreSQL RLS.
+      Ships with the other applications in the platform image; its dedicated process
+      retains the vm_backend database role (see config/containers.yaml).
     dependencies:
     - lib_common
     - lib_strategy

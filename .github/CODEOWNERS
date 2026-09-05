@@ -1,13 +1,2 @@
-# CODEOWNERS — review routing for vynmatrix
-# Configure verified repository users or teams before enabling required code-owner
-# reviews. This independent repository does not assume a GitHub organization.
-# Component owner_team labels in config/build.yaml describe build ownership only.
-#
-# Onboarding:
-# 1. Add maintainers with repository write access and verify their GitHub handles.
-# 2. Add an active default rule: * followed by the verified owner handle(s).
-# 3. Add narrower path rules for platform and quant maintainers as needed.
-# 4. Validate that GitHub resolves every handle before requiring owner reviews.
-#
-# Suggested areas: /libs/python/, /strategies/indicator/, /apps/, /config/,
-# /docker/, /.github/, and /tools/. No active rules are supplied in this template.
+# Default review routing for pull requests targeting main.
+* @vynaptic

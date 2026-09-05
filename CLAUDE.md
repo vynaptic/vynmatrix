@@ -11,8 +11,10 @@ This file provides guidance to Claude Code when working with code in this reposi
 ## Purpose and priorities
 
 vynmatrix is an independent local migration of a multi-strategy trading codebase.
-It is not yet open-source: the existing [LICENSE](LICENSE) remains unchanged,
-and a license/rights decision is pending before publication or external distribution.
+It is publicly source-available under [LICENSE](LICENSE), which limits use to
+personal, noncommercial purposes and requires reciprocity for externally released
+enhancements. It is not an OSI-approved open-source license; [NOTICE](NOTICE)
+preserves attribution and identifies known third-party provenance gaps.
 No live deployment, account, strategy certification, or release authority transfers
 with this source tree. Favour correctness, explicit authority, auditability, and
 fail-closed behaviour over convenience.
@@ -84,6 +86,9 @@ treat `graphify path` as unreliable for architecture claims, and never bulk-read
 - Keep cash indices non-tradable. Execution targets an explicitly catalogued tradable
   contract. Do not guess venue schedules, currency parity, funding, liquidation, or tenant
   identity.
+- One active deployment owner is designated explicitly through maintenance onboarding.
+  Routine CLI/API callers cannot select another owner; retained historical user IDs and
+  transaction-local RLS/account scope remain authoritative.
 - Use the transactional outbox for scoring-to-execution delivery and preserve at-least-once
   delivery with idempotent consumers.
 
@@ -103,7 +108,7 @@ treat `graphify path` as unreliable for architecture claims, and never bulk-read
   (`USQualityCompounder` ships `panel.py`). There is no `main.py` and no strategy registry.
 - Binding thresholds are **magnitude-based**: `abs(score) >= threshold`, with direction taken
   from the score's sign. Do not write `score >= threshold` — that silently drops shorts.
-- Indicator source ships in the single `indicator-runner` image, but presence on disk does
+- Indicator source ships in the shared `vynmatrix/platform` image, but presence on disk does
   not authorize execution: the runtime `STRATEGY_LIST` is explicit and fail-closed, and the
   database strategy/version/binding gates remain authoritative.
 - Asset-class values come from `libs/python/lib_common/lib_common/asset_classes.py`
@@ -196,7 +201,9 @@ exemption requires a justification in the same change.
 - Use only services and images declared in `docker/docker-compose.stack.yml` and
   `config/containers.yaml`. Get explicit approval before creating an ad-hoc container,
   image, tag, or topology, and remove approved temporary artifacts afterward. Prefer
-  `docker compose run --rm` for an approved one-shot invocation of an existing service.
+  the `vmdev db bootstrap` lifecycle, which stops application/workers before its declared
+  maintenance job. Keep at most three running containers including PostgreSQL; use `exec`
+  in an existing slot for bounded operational jobs. Never use wildcard Compose profiles.
 - Never run broad destructive filesystem, Git, Docker, cloud, or database operations without
   resolving the exact target and confirming the requested scope authorizes them. Prefer
   recoverable operations.

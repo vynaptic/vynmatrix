@@ -1,40 +1,52 @@
 # Backend configuration API
 
-This FastAPI service is the administrative write surface for user strategy
-bindings, linked broker accounts, and encrypted broker credentials. Credential
-material is never returned by the API. Each database unit of work applies the
-selected tenant scope, with PostgreSQL RLS as the persistence backstop.
+Backend is the administrative API for the single deployment owner, linked broker
+accounts, strategy bindings/configuration, risk mandates and encrypted broker
+credentials. Owner identity comes from the database designation. Callers cannot
+select another user through a path, query, header or request field; historical
+user/account IDs remain available for durable attribution.
 
-Authentication currently uses `BACKEND_ADMIN_API_KEY` for a trusted operator
-or web BFF. The `user_id` path value is selected by that trusted caller; it is
-not derived from a verified end-user identity token. Do not expose this service
-as a direct end-user API until an IdP and token-to-user mapping are implemented.
+The backend process runs inside the `application` service from
+`vynmatrix/platform`, using `BACKEND_DATABASE_URL` for `vm_backend_login`.
+Its loopback host endpoint defaults to `http://127.0.0.1:8081`. Requests use
+`X-Admin-Key` with `BACKEND_ADMIN_API_KEY`; the platform launcher fixes
+`BACKEND_ALLOW_ANON=false`. It also supplies the database secrets backend and
+newest-first `SECRETS_MASTER_KEYS` ring. No credentials are returned by this API.
+Use loopback or an owner-controlled SSH tunnel. A future owner UI can serve
+static assets here without another container; public authentication is not supplied.
 
-The declared local Compose service uses the `vm_backend_login` database role
-and reuses the scoring-engine image. No cloud deployment is included. Configure
-`BACKEND_ADMIN_API_KEY` and keep `BACKEND_ALLOW_ANON=false` for local setup.
+Owner designation is a maintenance operation. Follow
+[the database guide](../../docs/DATABASE.md) and the shared `vmdev user` workflow;
+this API cannot designate or silently adopt an owner.
 
-New strategy bindings are inactive with autopilot disabled unless the trusted
-operator explicitly sets both controls. Broker-account onboarding requires a
-canonical uppercase `base_ccy`; the API never guesses a tenant's reporting
-currency. Broker secrets are submitted in the request's nested `credentials`
-object under the exact per-broker contract documented in
-[the broker credential reference](../../docs/BROKER_CREDENTIALS.md). Credential rotation is a full-document atomic
-replacement through
-`PUT /users/{user_id}/broker-accounts/{account_id}/credentials`; partial OAuth
-token updates are rejected.
+| Surface | Routes |
+|---|---|
+| Profile | `GET /owner`, `PATCH /owner` |
+| Accounts | `GET /broker-accounts`, `POST /broker-accounts` |
+| Existing owner account adoption | `POST /broker-accounts/{account_id}/adopt` |
+| Account edits | `PATCH /broker-accounts/{account_id}` |
+| Complete credential replacement | `PUT /broker-accounts/{account_id}/credentials` |
+| Bindings | `GET /bindings`, `POST /bindings`, `DELETE /bindings/{binding_id}` |
+| Strategy configuration | `GET /strategy-configs`, `PUT`/`DELETE /strategy-configs/{strategy_id}` |
+| Drawdown policy | `GET`/`PUT /risk-mandates/drawdown` |
+| Official calendar coverage | `PUT /market-calendars/{code}` |
 
-The same trusted operator boundary exposes
-`PUT /market-calendars/{code}` for complete official broker/exchange session
-coverage. A replacement declares its HTTPS source, observation time, bounded
-coverage interval, regular-session windows, and exact instrument assignments in
-one transaction. Empty complete coverage represents an authoritative closed
-interval. Crypto remains explicitly continuous and cannot be assigned a
-scheduled calendar; non-crypto execution fails closed when fresh coverage is
-missing.
+Accounts require an explicit stable `config_key`, canonical uppercase `base_ccy`
+and exact broker/environment identity. Paper accounts require explicit initial
+cash/equity and contain no exchange credentials. Profile/account patches provide
+`expected` and `changes`; stale edits conflict. Used account financial identity
+cannot be changed while execution is active or after financial activity.
+Credential rotation replaces the complete document atomically. CLI and API use
+the same [broker credential contracts](../../docs/BROKER_CREDENTIALS.md).
 
-Optional official schedule writers run from the market-data image under the
-`calendar-ibkr`, `calendar-saxo`, and `calendar-zerodha` Compose profiles. They
-read canonical-to-venue identity with the least-privilege market-data role and
-submit normalized provider observations here using the same admin key; they do
-not write calendar tables directly.
+New bindings are inactive and have autopilot disabled. Enabling a binding does
+not replace the strategy/version, owner/account, promotion or execution gates.
+Management liveness remains available when owner configuration or trading
+readiness is incomplete.
+
+Optional calendar workers are selected with `PLATFORM_WORKERS=calendar-ibkr`,
+`calendar-saxo` and/or `calendar-zerodha` within `workers` or the combined group.
+They resolve exact instrument identity using the market-data role and submit
+complete official coverage with the backend admin key. Only one writer may own
+each instrument. Empty complete coverage represents an authoritative closure;
+missing or stale non-crypto coverage blocks execution. Crypto remains continuous.

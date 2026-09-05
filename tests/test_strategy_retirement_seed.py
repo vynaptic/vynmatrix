@@ -70,12 +70,10 @@ _ATTRIBUTED_RETIREMENT_LOCK_ORDER = _LEGACY_RETIREMENT_LOCK_ORDER.replace(
 )
 
 
-def test_canonical_seed_contains_no_fabricated_demo_tenants() -> None:
+def test_historical_catalogue_fixture_contains_no_fabricated_demo_tenants() -> None:
     seed = (_ROOT / "docker" / "seed" / "02_seed_data.sql").read_text(encoding="utf-8")
-    bootstrap = (_ROOT / "scripts" / "db" / "migrate_and_seed.sh").read_text(encoding="utf-8")
 
     assert "include_demo_tenants" not in seed
-    assert "include_demo_tenants" not in bootstrap
     assert "Demo Trader" not in seed
     assert "admin@example.invalid" not in seed
 

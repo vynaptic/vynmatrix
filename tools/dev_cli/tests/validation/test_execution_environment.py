@@ -33,11 +33,9 @@ def test_container_image_inspection_derives_digest_and_rejects_fabrication(
         return subprocess.CompletedProcess(command, 0, stdout=f"{digest}\n", stderr="")
 
     monkeypatch.setattr(execution_environment.subprocess, "run", inspect_success)
-    references, digests = _inspect_container_images(
-        ("indicator-runner=vynmatrix/indicator-runner:latest",)
-    )
+    references, digests = _inspect_container_images(("indicator-runner=vynmatrix/platform:latest",))
 
-    assert references == {"indicator-runner": "vynmatrix/indicator-runner:latest"}
+    assert references == {"indicator-runner": "vynmatrix/platform:latest"}
     assert digests == {"indicator-runner": digest}
     assert inspected_commands == [
         [
@@ -46,14 +44,17 @@ def test_container_image_inspection_derives_digest_and_rejects_fabrication(
             "inspect",
             "--format",
             "{{.Id}}",
-            "vynmatrix/indicator-runner:latest",
+            "vynmatrix/platform:latest",
         ]
     ]
+    with pytest.raises(ValueError, match="vynmatrix/platform"):
+        _inspect_container_images(("indicator-runner=vynmatrix/indicator-runner:latest",))
+    assert len(inspected_commands) == 1
     with pytest.raises(ValueError, match="duplicate container"):
         _inspect_container_images(
             (
-                "indicator-runner=vynmatrix/indicator-runner:latest",
-                "indicator-runner=vynmatrix/indicator-runner:latest",
+                "indicator-runner=vynmatrix/platform:latest",
+                "indicator-runner=vynmatrix/platform:latest",
             )
         )
 
@@ -62,7 +63,7 @@ def test_container_image_inspection_derives_digest_and_rejects_fabrication(
 
     monkeypatch.setattr(execution_environment.subprocess, "run", inspect_missing)
     with pytest.raises(RuntimeError, match="locally built container image is unavailable"):
-        _inspect_container_images(("indicator-runner=vynmatrix/indicator-runner:fabricated",))
+        _inspect_container_images(("indicator-runner=vynmatrix/platform:fabricated",))
 
 
 def test_attestation_output_is_confined_to_ignored_artifact_root(tmp_path: Path) -> None:

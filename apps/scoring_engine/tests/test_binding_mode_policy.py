@@ -14,7 +14,14 @@ def _store() -> AppScoreStore:
     store = AppScoreStore("sqlite+pysqlite:///:memory:")
     with Session(store._engine) as session:
         broker = Broker(code="paper", name="Paper Broker", capabilities={})
-        session.add_all([User(user_id="u1", email="u1@example.com", base_ccy="USD"), broker])
+        session.add_all(
+            [
+                User(
+                    user_id="u1", email="u1@example.com", base_ccy="USD", is_deployment_owner=True
+                ),
+                broker,
+            ]
+        )
         session.flush()
         session.add(
             LinkedBrokerAccount(

@@ -8,20 +8,8 @@ import yaml
 
 _ROOT = Path(__file__).resolve().parents[1]
 _COMPOSE_PATH = _ROOT / "docker" / "docker-compose.stack.yml"
-_EXPECTED_STOP_GRACE = "${APP_STOP_GRACE_PERIOD:-60s}"
-_SUPERVISED_APPLICATION_SERVICES = {
-    "scoring-engine",
-    "scoring-outbox-relay",
-    "execution-engine",
-    "feedback-loop-engine",
-    "market-data-ingestor",
-    "fx-rate-ingestor",
-    "market-calendar-ibkr",
-    "market-calendar-saxo",
-    "market-calendar-zerodha",
-    "indicator-runner",
-    "backend",
-}
+_EXPECTED_STOP_GRACE = "60s"
+_SUPERVISED_APPLICATION_SERVICES = {"application", "workers", "bootstrap"}
 
 
 def test_supervised_application_services_have_explicit_stop_grace() -> None:

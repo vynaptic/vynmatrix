@@ -1,5 +1,7 @@
 import datetime as dt
 
+import pytest
+
 from lib_application.db.models import Strategy, StrategyVersion
 from lib_strategy.signals.signal import Signal, SignalAction
 from scoring_engine.engine import ScoreEngine
@@ -126,6 +128,7 @@ def test_options_signal_roundtrip_preserves_contract_metadata(provision_scoring_
 
     now = dt.datetime.now(tz=dt.UTC)
     signal = Signal(
+        strategy_version="1.0.0",
         strategy_id="options_test_strategy_v1",
         strategy_type="indicator",
         symbol=symbol,
@@ -170,3 +173,62 @@ def test_options_signal_roundtrip_preserves_contract_metadata(provision_scoring_
     assert persisted.metadata["side_bucket"] == "CE"
     assert persisted.metadata["lot_size"] == 50
     assert persisted.metadata["hard_stop_price"] == 276.0
+
+
+@pytest.mark.parametrize("version_status", ["registered", "deprecated", "pulled"])
+def test_new_signal_requires_its_exact_active_release(version_status, provision_scoring_catalogue):
+    store = AppScoreStore("sqlite+pysqlite:///:memory:")
+    provision_scoring_catalogue(store, strategy_ids=["test_strat"])
+    with store.get_session() as session:
+        session.get(Strategy, "test_strat").is_active = True
+        session.add_all(
+            [
+                StrategyVersion(
+                    strategy_id="test_strat", semver="2.0.0", status=version_status, param_schema={}
+                ),
+            ]
+        )
+        session.commit()
+    signal = Signal(
+        strategy_id="test_strat",
+        strategy_type="indicator",
+        symbol="BTCUSD",
+        action=SignalAction.LONG,
+        confidence=0.8,
+        timestamp=dt.datetime.now(dt.UTC),
+        asset_class="crypto",
+        strategy_version="2.0.0",
+        external_signal_id="blocked-release",
+    )
+    with pytest.raises(ValueError, match="active strategy release"):
+        ScoreEngine(store).ingest_signal(signal)
+    assert store.list_signals("BTCUSD") == []
+    with store.get_session() as session:
+        assert store._resolve_strategy_version(session, "test_strat", "2.0.0") is not None
+
+
+@pytest.mark.parametrize("case", ["missing_version", "unknown_version", "inactive_parent"])
+def test_new_signal_cannot_infer_or_bypass_release_authority(case, provision_scoring_catalogue):
+    store = AppScoreStore("sqlite+pysqlite:///:memory:")
+    provision_scoring_catalogue(store, strategy_ids=["test_strat"])
+    if case == "inactive_parent":
+        with store.get_session() as session:
+            session.get(Strategy, "test_strat").is_active = False
+            session.commit()
+    version = {"missing_version": None, "unknown_version": "9.9.9", "inactive_parent": "1.0.0"}[
+        case
+    ]
+    signal = Signal(
+        strategy_id="test_strat",
+        strategy_type="indicator",
+        symbol="BTCUSD",
+        action=SignalAction.LONG,
+        confidence=0.8,
+        timestamp=dt.datetime.now(dt.UTC),
+        asset_class="crypto",
+        strategy_version=version,
+        external_signal_id=f"release-{case}",
+    )
+    with pytest.raises(ValueError, match="active strategy release"):
+        ScoreEngine(store).ingest_signal(signal)
+    assert store.list_signals("BTCUSD") == []

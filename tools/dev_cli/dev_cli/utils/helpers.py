@@ -42,3 +42,25 @@ def find_python_executable(venv_path: Path) -> Path:
         raise FileNotFoundError(message)
 
     return python_path
+
+
+def enable_repository_libraries(root: Path) -> None:
+    """Use checkout sources for lifecycle commands; packaged images use their wheels.
+
+    Loading remains command-scoped so build/audit can run before libraries exist.
+    The supplied root comes from repository detection, never a caller import path.
+    """
+    libraries = root / "libs/python"
+    if not libraries.is_dir():
+        return
+    for name in (
+        "lib_common",
+        "lib_data",
+        "lib_indicators",
+        "lib_strategy",
+        "lib_application",
+        "lib_infrastructure",
+    ):
+        path = libraries / name
+        if (path / name / "__init__.py").is_file() and str(path) not in sys.path:
+            sys.path.insert(0, str(path))

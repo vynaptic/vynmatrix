@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from copy import deepcopy
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 import httpx
@@ -11,6 +13,7 @@ import pytest
 from lib_strategy.signals.signal import Signal, SignalAction
 from scoring_engine.dispatcher import (
     _EXECUTION_COMMAND_MAX_ATTEMPTS,
+    DispatchProviderContexts,
     ExecutionDispatcher,
 )
 from scoring_engine.models import TriggerDecision
@@ -189,7 +192,7 @@ def test_in_memory_outbox_claim_accepts_single_pass_topic_iterables() -> None:
 
 
 def test_dispatcher_forces_paper_route_snapshot_when_runtime_mode_is_paper(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = InMemoryScoreStore()
     dispatcher = ExecutionDispatcher(
@@ -337,6 +340,8 @@ def test_same_user_signal_dispatches_independently_to_two_broker_accounts() -> N
     }
     profile = {
         "broker": "coinbase",
+        "spot_broker": "coinbase",
+        "options_broker_crypto": "coinbase",
         "broker_account_id": 201,
         "broker_environment": "paper",
         "sandbox": True,
@@ -377,6 +382,152 @@ def test_same_user_signal_dispatches_independently_to_two_broker_accounts() -> N
         "coinbase",
         "ibkr",
     ]
+    for result in results:
+        command = result["execution_command"]
+        assert (
+            command["profile"]["broker_account_id"] == command["broker_route"]["broker_account_id"]
+        )
+        assert command["profile"]["broker"] == command["broker_route"]["broker"]
+        assert "spot_broker" not in command["profile"]
+        assert "options_broker_crypto" not in command["profile"]
+    assert profile["broker_account_id"] == 201
+    assert profile["spot_broker"] == "coinbase"
+
+
+@pytest.mark.parametrize("portfolio", [False, True])
+def test_binding_freeze_uses_selected_account_authority_without_mutating_provider(
+    portfolio: bool,
+) -> None:
+    profile = _account_profile(account_id=201, broker="coinbase", environment="live")
+    profile["credential_ref"] = "default-live-reference"
+    profile.update(
+        equity=100000,
+        available_cash=50000,
+        margin_used=0,
+        unrealized_pnl=0,
+        realized_pnl=0,
+        positions=[],
+        open_positions=0,
+        daily_trades=1,
+        currency="USD",
+        base_ccy="USD",
+        account_state_fetched_at=datetime(2026, 3, 7, tzinfo=UTC),
+    )
+    selected = {
+        "account_id": 202,
+        "broker": "paper",
+        "environment": "paper",
+        "status": "connected",
+        "credential_ref": None,
+        "base_ccy": "EUR",
+    }
+    profile["accounts"]["202"] = selected
+    profile["linked_brokers"].append("paper")
+    before = deepcopy(profile)
+    contexts = DispatchProviderContexts(profiles={"owner": profile})
+    decision = TriggerDecision(
+        user_id="owner",
+        should_execute=True,
+        reason="threshold_passed",
+        binding_id=32,
+        broker_account_id=202,
+        execution_mode="spot",
+    )
+    dispatcher = ExecutionDispatcher("http://execution.test")
+    if portfolio:
+        frozen = dispatcher.freeze_portfolio_binding_context_resolved(
+            decision=decision,
+            strategy_id="selected-account",
+            asset_class="crypto",
+            provider_contexts=contexts,
+        )
+    else:
+        frozen = dispatcher.freeze_binding_context_resolved(
+            decision=decision,
+            signal=Signal(
+                strategy_id="selected-account",
+                strategy_type="indicator",
+                symbol="BTCUSD",
+                action=SignalAction.LONG,
+                confidence=0.9,
+                asset_class="crypto",
+            ),
+            provider_contexts=contexts,
+        )
+    assert frozen.broker_route.broker_account_id == 202
+    assert frozen.profile["broker_account_id"] == 202
+    assert frozen.profile["broker"] == "paper"
+    assert frozen.profile["broker_environment"] == "paper"
+    assert frozen.profile["credential_ref"] is None
+    assert frozen.broker_route.credential_ref is None
+    assert frozen.profile["sandbox"] is True
+    assert frozen.profile["live_enabled"] is False
+    assert frozen.profile["accounts"]["202"] == selected
+    assert not {
+        "equity",
+        "available_cash",
+        "margin_used",
+        "unrealized_pnl",
+        "realized_pnl",
+        "positions",
+        "open_positions",
+        "daily_trades",
+        "currency",
+        "base_ccy",
+        "account_state_fetched_at",
+    }.intersection(frozen.profile)
+    assert profile == before
+
+
+@pytest.mark.parametrize("portfolio", [False, True])
+@pytest.mark.parametrize(
+    ("config", "error"),
+    [
+        ({"broker_account_id": 201}, "conflicts with configured account"),
+        ({"broker": "coinbase"}, "not selected broker"),
+    ],
+)
+def test_binding_freeze_rejects_conflicting_account_or_broker_config(
+    portfolio: bool, config: dict[str, Any], error: str
+) -> None:
+    profile = _account_profile(account_id=202, broker="paper")
+    contexts = DispatchProviderContexts(
+        profiles={"owner": profile},
+        strategy_configs={("owner", 32, 202): config},
+    )
+    decision = TriggerDecision(
+        user_id="owner",
+        should_execute=True,
+        reason="threshold_passed",
+        binding_id=32,
+        broker_account_id=202,
+        execution_mode="spot",
+    )
+    dispatcher = ExecutionDispatcher("http://execution.test")
+    if portfolio:
+        freeze = partial(
+            dispatcher.freeze_portfolio_binding_context_resolved,
+            decision=decision,
+            strategy_id="selected-account",
+            asset_class="crypto",
+            provider_contexts=contexts,
+        )
+    else:
+        freeze = partial(
+            dispatcher.freeze_binding_context_resolved,
+            decision=decision,
+            signal=Signal(
+                strategy_id="selected-account",
+                strategy_type="indicator",
+                symbol="BTCUSD",
+                action=SignalAction.LONG,
+                confidence=0.9,
+                asset_class="crypto",
+            ),
+            provider_contexts=contexts,
+        )
+    with pytest.raises(ValueError, match=error):
+        freeze()
 
 
 def test_execution_command_enqueued_with_extended_max_attempts() -> None:

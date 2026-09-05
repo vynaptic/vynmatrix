@@ -14,8 +14,8 @@ runtime, fed from the `prices` table via Postgres LISTEN/NOTIFY. It emits canoni
 `LONG` and `CLOSE` signals only; it does not place broker orders directly and it does
 not emit `SHORT` signals.
 
-Default universe: `BTCUSDC`. Other pairs are opt-in and require complete,
-quality-gated Coinbase minute history before use.
+The current `1.1.0` universe is `BTCUSDC,ETHUSDC,SOLUSDC`. Every selected pair
+requires complete, quality-gated Coinbase minute history before use.
 
 ## Trading Logic
 
@@ -51,7 +51,7 @@ Core parameters live under `parameters` in `config.json` (`runner_kind` is
 
 ```json
 {
-  "universe": "BTCUSDC",
+  "universe": "BTCUSDC,ETHUSDC,SOLUSDC",
   "pmo_first_length": "35",
   "pmo_second_length": "20",
   "pmo_signal_length": "10",
@@ -71,23 +71,38 @@ downstream execution service, not by this signal core.
 
 ## Local Run (paper mode)
 
-The strategy runs inside the `indicator-runner` service (`runner_kind:
-signal_worker`), fed from the `prices` table. Populate `prices` with the
-`market_data_ingestor`, then run the worker in paper mode via the local stack:
+The indicator child runs inside `workers` in the three-container layout, or
+`application` in the two-container `all` layout, using the declared
+`vynmatrix/platform` image. Follow the canonical
+[paper verification procedure](../../../docs/E2E_VERIFICATION_GUIDE.md) for
+bootstrap, explicit owner/account onboarding, exact development-canary activation,
+and bounded binding authority. Keep `EXECUTION_MODE=paper`,
+`EXECUTION_ENGINE_ALLOW_LIVE=false`, and both stop-loss and explicit-scoring-input
+requirements enabled. Presence in the image or a binding row grants no release
+eligibility. This development-only canary is excluded from paper promotion and
+live trading.
+
+Begin with an empty `STRATEGY_LIST`, `PLATFORM_WORKERS=market-data,fx`, and all
+three configured Coinbase pairs. Set an explicit bounded recent-history window
+in the private `.env`; verify 500 complete `15m` bootstrap bars formed from 7,500
+aligned real `1m` candles per pair. Run the existing backfill job inside the
+running worker group:
 
 ```bash
-# Warm real history in a separate, deficit-aware process, then start 60s polling.
-INGESTOR_SYMBOLS=BTC-USDC INGESTOR_BACKFILL_DAYS=150 \
 docker compose --env-file .env -f docker/docker-compose.stack.yml \
-  --profile backfill run --rm --no-deps market-data-backfill
-docker compose --env-file .env -f docker/docker-compose.stack.yml \
-  up -d market-data-ingestor
-
-# Run only this opt-in indicator strategy
-STRATEGY_LIST=SwingHighLowPMO RUN_MODE=paper \
-docker compose --env-file .env -f docker/docker-compose.stack.yml --profile indicator up -d \
-  indicator-runner
+  exec -T workers python -m scripts.run_platform job backfill --timeout-seconds 3600
 ```
+
+After verifying history and the authority prerequisites, set
+`STRATEGY_LIST=SwingHighLowPMO` in `.env` and recreate the existing worker group:
+
+```bash
+docker compose --env-file .env -f docker/docker-compose.stack.yml \
+  up -d --no-deps workers
+```
+
+In the combined layout, target `application` for both commands. Recreating it
+also restarts the APIs. No step starts another service or container.
 
 The `SignalWorker` LISTENs on `new_market_data`, consolidates 1-minute bars to
 15-minute bars, calls `core.on_data()`, and emits signals to the scoring engine.
@@ -101,14 +116,19 @@ set via `SIGNAL_API_URL`):
 - `CLOSE`: flatten the current long position.
 
 It never emits `SHORT`; inherited short emission is explicitly rejected by the strategy core.
+Entries carry entry/stop/target prices and confidence, without explicit expected
+return or predicted risk. Normalization labels these inputs `price_ladder`;
+`require_explicit_scoring_inputs=true` therefore blocks their execution. Preserve
+that gate and report the blocked branch accurately; do not invent forecasts or
+claim an economic order without observed evidence.
 
 ## Validation
 
 Focused tests:
 
 ```bash
-pytest tests/test_swing_high_low_pmo_public_replay.py -q
-pytest tests/test_http_signal_emitter_capture.py -q
+python -m pytest tests/test_swing_high_low_pmo_public_replay.py -q
+python -m pytest tests/test_http_signal_emitter_capture.py -q
 ```
 
 Build checks:
@@ -138,6 +158,7 @@ JOIN instruments AS i USING (instr_id)
 GROUP BY i.canonical;
 ```
 
-Run the profile-gated `market-data-backfill` one-shot if a configured symbol
-lacks history; use the live `market_data_ingestor` only for the short startup
-window and continuous polling.
+Run the bounded `scripts.run_platform job backfill` invocation above if a
+configured symbol lacks history. The supervised market-data child supplies its
+short startup window and continuous polling. Historical replay uses a separately
+bounded recorded window and does not authorize historical catch-up emissions.

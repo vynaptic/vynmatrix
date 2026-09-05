@@ -2,10 +2,12 @@
 
 import logging
 
+import pytest
 from sqlalchemy.orm import Session
 
 from lib_application.db import models as app_models
 from lib_application.db.models import Broker, LinkedBrokerAccount
+from lib_application.services.deployment_owner import DeploymentOwnerError
 from lib_common.hashing import canonical_json_hash
 from lib_common.paper_promotion import (
     PaperPromotionModelContext,
@@ -637,7 +639,12 @@ def test_inactive_specific_binding_suppresses_wildcard_trading(caplog) -> None:
         broker = Broker(code="paper", name="Paper Broker", capabilities={})
         s.add_all(
             [
-                app_models.User(user_id="user-1", email="u1@example.com", base_ccy="USD"),
+                app_models.User(
+                    user_id="user-1",
+                    email="u1@example.com",
+                    base_ccy="USD",
+                    is_deployment_owner=True,
+                ),
                 broker,
             ]
         )
@@ -746,7 +753,12 @@ def test_list_inactive_strategy_binding_ids_scopes_to_user_and_strategy() -> Non
         broker = Broker(code="paper", name="Paper Broker", capabilities={})
         s.add_all(
             [
-                app_models.User(user_id="user-1", email="u1@example.com", base_ccy="USD"),
+                app_models.User(
+                    user_id="user-1",
+                    email="u1@example.com",
+                    base_ccy="USD",
+                    is_deployment_owner=True,
+                ),
                 app_models.User(user_id="user-2", email="u2@example.com", base_ccy="EUR"),
                 broker,
             ]
@@ -813,5 +825,6 @@ def test_list_inactive_strategy_binding_ids_scopes_to_user_and_strategy() -> Non
 
     assert store.list_inactive_strategy_binding_ids("user-1", "test_strategy_alpha_v1", 1) == [3]
     assert store.list_inactive_strategy_binding_ids("user-1", "swing_high_low_pmo_v1", 1) == []
-    assert store.list_inactive_strategy_binding_ids("user-3", "test_strategy_alpha_v1", 1) == []
+    with pytest.raises(DeploymentOwnerError, match="deployment owner"):
+        store.list_inactive_strategy_binding_ids("user-3", "test_strategy_alpha_v1", 1)
     assert store.list_inactive_strategy_binding_ids("user-1", "test_strategy_alpha_v1", 2) == []

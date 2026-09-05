@@ -193,6 +193,7 @@ class ExecutionEngineRebalanceAdapter:
                 user_id=resolved.user_id,
                 binding_id=command.binding_id,
                 strategy_id=resolved.signal.strategy_id,
+                strategy_version=resolved.signal.strategy_version,
                 account_id=resolved.broker_account_id,
                 broker_type=resolved.broker_type,
                 environment=resolved.environment,

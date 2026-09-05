@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session, aliased
 
+from lib_application.db.session import tenant_scope
+from lib_application.services.deployment_owner import (
+    DeploymentOwnerError,
+    require_deployment_owner_id,
+)
 from lib_application.services.instrument_resolution import resolve_instrument
 from lib_common.logging import get_logger
 
@@ -259,90 +265,106 @@ class AppScoreStore(_StoreOps):
     def list_bindings(self) -> list[ScoringUserBinding]:
         if app_models is None:
             return []
-        cached = self._cached_bindings()
-        if cached is not None:
-            return cached
         with self._session() as s:
-            rows = (
-                s.query(app_models.UserStrategyBinding)
-                .filter(app_models.UserStrategyBinding.is_active.is_(True))
-                .all()
-            )
-            if not rows:
-                self._store_bindings_cache([])
-                return []
-
-            instrument_ids = self._collect_instrument_ids(rows)
-            instrument_map = self._load_instrument_map(s, instrument_ids)
-            sector_map = self._load_sector_map(s, self._collect_sector_ids(rows))
-            sizing_map = self._load_sizing_profiles(s, rows)
-
-            bindings: list[ScoringUserBinding] = []
-            for row in rows:
-                asset_filter = self._resolve_asset_filter(row, instrument_map)
-                sector_filter = [
-                    sector_map.get(sector_id)
-                    for sector_id in (row.sectors_allowed or [])
-                    if sector_map.get(sector_id)
-                ]
-                execution_mode = resolve_execution_mode(
-                    preferred=row.preferred_mode,
-                    allowed=row.execution_modes_allowed,
-                    policy=row.mode_selection_policy,
+            owner_id = require_deployment_owner_id(s)
+            with tenant_scope(s, user_id=owner_id):
+                rows = (
+                    s.query(app_models.UserStrategyBinding)
+                    .filter(app_models.UserStrategyBinding.is_active.is_(True))
+                    .filter(app_models.UserStrategyBinding.user_id == owner_id)
+                    .populate_existing()
+                    .all()
                 )
-                sizing_profile = sizing_map.get(row.sizing_profile_id, {})
-                risk_caps = {
-                    "max_position_pct": (
-                        float(row.max_position_pct) if row.max_position_pct is not None else None
-                    ),
-                    "max_total_exposure_pct": (
-                        float(row.max_total_exposure_pct)
-                        if row.max_total_exposure_pct is not None
-                        else None
-                    ),
-                    "max_daily_loss_pct": (
-                        float(row.max_daily_loss_pct)
-                        if row.max_daily_loss_pct is not None
-                        else None
-                    ),
-                    "max_open_positions": row.max_open_positions,
-                }
-                risk_caps = {k: v for k, v in risk_caps.items() if v is not None}
+                signature = json.dumps(
+                    [
+                        {column.name: getattr(row, column.name) for column in row.__table__.columns}
+                        for row in rows
+                    ],
+                    sort_keys=True,
+                    default=str,
+                )
+                cached = self._cached_bindings(signature)
+                if cached is not None:
+                    return cached
+                if not rows:
+                    self._store_bindings_cache([], signature=signature)
+                    return []
 
-                bindings.append(
-                    ScoringUserBinding(
-                        user_id=row.user_id,
-                        binding_id=row.binding_id,
-                        strategy_id=row.strategy_id,
-                        broker_account_id=row.broker_account_id,
-                        asset_score_threshold=float(row.asset_score_threshold),
-                        asset_filter=asset_filter,
-                        sector_filter=[s for s in sector_filter if s],
-                        execution_mode=execution_mode,
-                        sizing_profile=sizing_profile,
-                        risk_caps=risk_caps,
-                        sector_score_threshold=(
-                            float(row.sector_score_threshold)
-                            if row.sector_score_threshold is not None
-                            else None
-                        ),
-                        market_score_threshold=(
-                            float(row.market_score_threshold)
-                            if row.market_score_threshold is not None
-                            else None
-                        ),
-                        allowed_brokers=list(row.allowed_brokers or []),
-                        autopilot=bool(row.autopilot) if row.autopilot is not None else False,
-                        entries_enabled=bool(row.entries_enabled),
-                        exits_enabled=bool(row.exits_enabled),
-                        execution_modes_allowed=list(row.execution_modes_allowed or ["spot"]),
-                        mode_selection_policy=str(row.mode_selection_policy or "highest_sharpe"),
-                        preferred_mode=row.preferred_mode,
+                instrument_ids = self._collect_instrument_ids(rows)
+                instrument_map = self._load_instrument_map(s, instrument_ids)
+                sector_map = self._load_sector_map(s, self._collect_sector_ids(rows))
+                sizing_map = self._load_sizing_profiles(s, rows)
+
+                bindings: list[ScoringUserBinding] = []
+                for row in rows:
+                    asset_filter = self._resolve_asset_filter(row, instrument_map)
+                    sector_filter = [
+                        sector_map.get(sector_id)
+                        for sector_id in (row.sectors_allowed or [])
+                        if sector_map.get(sector_id)
+                    ]
+                    execution_mode = resolve_execution_mode(
+                        preferred=row.preferred_mode,
+                        allowed=row.execution_modes_allowed,
+                        policy=row.mode_selection_policy,
                     )
-                )
+                    sizing_profile = sizing_map.get(row.sizing_profile_id, {})
+                    risk_caps = {
+                        "max_position_pct": (
+                            float(row.max_position_pct)
+                            if row.max_position_pct is not None
+                            else None
+                        ),
+                        "max_total_exposure_pct": (
+                            float(row.max_total_exposure_pct)
+                            if row.max_total_exposure_pct is not None
+                            else None
+                        ),
+                        "max_daily_loss_pct": (
+                            float(row.max_daily_loss_pct)
+                            if row.max_daily_loss_pct is not None
+                            else None
+                        ),
+                        "max_open_positions": row.max_open_positions,
+                    }
+                    risk_caps = {k: v for k, v in risk_caps.items() if v is not None}
 
-            self._store_bindings_cache(bindings)
-            return bindings
+                    bindings.append(
+                        ScoringUserBinding(
+                            user_id=row.user_id,
+                            binding_id=row.binding_id,
+                            strategy_id=row.strategy_id,
+                            broker_account_id=row.broker_account_id,
+                            asset_score_threshold=float(row.asset_score_threshold),
+                            asset_filter=asset_filter,
+                            sector_filter=[s for s in sector_filter if s],
+                            execution_mode=execution_mode,
+                            sizing_profile=sizing_profile,
+                            risk_caps=risk_caps,
+                            sector_score_threshold=(
+                                float(row.sector_score_threshold)
+                                if row.sector_score_threshold is not None
+                                else None
+                            ),
+                            market_score_threshold=(
+                                float(row.market_score_threshold)
+                                if row.market_score_threshold is not None
+                                else None
+                            ),
+                            allowed_brokers=list(row.allowed_brokers or []),
+                            autopilot=bool(row.autopilot) if row.autopilot is not None else False,
+                            entries_enabled=bool(row.entries_enabled),
+                            exits_enabled=bool(row.exits_enabled),
+                            execution_modes_allowed=list(row.execution_modes_allowed or ["spot"]),
+                            mode_selection_policy=str(
+                                row.mode_selection_policy or "highest_sharpe"
+                            ),
+                            preferred_mode=row.preferred_mode,
+                        )
+                    )
+
+                self._store_bindings_cache(bindings, signature=signature)
+                return bindings
 
     def list_inactive_strategy_binding_ids(
         self,
@@ -360,17 +382,22 @@ class AppScoreStore(_StoreOps):
         if app_models is None or broker_account_id is None:
             return []
         with self._session() as s:
-            rows = (
-                s.query(app_models.UserStrategyBinding.binding_id)
-                .filter(
-                    app_models.UserStrategyBinding.user_id == user_id,
-                    app_models.UserStrategyBinding.strategy_id == strategy_id,
-                    app_models.UserStrategyBinding.broker_account_id == broker_account_id,
-                    app_models.UserStrategyBinding.is_active.is_(False),
+            owner_id = require_deployment_owner_id(s)
+            if owner_id != user_id:
+                message = f"User {user_id} is not the active deployment owner"
+                raise DeploymentOwnerError(message)
+            with tenant_scope(s, user_id=owner_id):
+                rows = (
+                    s.query(app_models.UserStrategyBinding.binding_id)
+                    .filter(
+                        app_models.UserStrategyBinding.user_id == user_id,
+                        app_models.UserStrategyBinding.strategy_id == strategy_id,
+                        app_models.UserStrategyBinding.broker_account_id == broker_account_id,
+                        app_models.UserStrategyBinding.is_active.is_(False),
+                    )
+                    .all()
                 )
-                .all()
-            )
-            return [int(row[0]) for row in rows]
+                return [int(row[0]) for row in rows]
 
     def list_mode_performance(
         self,

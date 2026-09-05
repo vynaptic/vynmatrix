@@ -1,0 +1,9 @@
+# Platform image extras beyond svc-base. Keep exact pins aligned with constraints.
+# Includes bounded bootstrap/owner CLI dependencies; no runtime package installs.
+alembic==1.18.5
+pandas==3.0.3
+exchange_calendars==4.13.2
+psutil==7.2.2
+jsonschema==4.26.0
+click==8.4.1
+rich==15.0.0

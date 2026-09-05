@@ -296,7 +296,7 @@ def test_docker_python_base_drift_flagged(fake_repo: Path) -> None:
     _write_build_yaml(fake_repo, "3.11.13")
     docker = fake_repo / "docker"
     docker.mkdir(parents=True, exist_ok=True)
-    (docker / "scoring_engine.Dockerfile").write_text(
+    (docker / "platform_runtime.Dockerfile").write_text(
         "FROM python:3.14-slim\nRUN true\n", encoding="utf-8"
     )
     _git_add_all(fake_repo)
@@ -315,7 +315,7 @@ def test_docker_python_base_match_arg_and_nonpython_pass(fake_repo: Path) -> Non
     _write_build_yaml(fake_repo, "3.11.13")
     docker = fake_repo / "docker"
     (docker / "base").mkdir(parents=True, exist_ok=True)
-    (docker / "scoring_engine.Dockerfile").write_text("FROM python:3.11-slim\n", encoding="utf-8")
+    (docker / "platform_runtime.Dockerfile").write_text("FROM python:3.11-slim\n", encoding="utf-8")
     (docker / "base" / "Dockerfile").write_text(
         "ARG PYTHON_VERSION=3.11\nFROM python:${PYTHON_VERSION}-slim\n", encoding="utf-8"
     )
@@ -338,11 +338,7 @@ def _write_runtime_dependency_contract(root: Path) -> None:
     )
     profiles = {
         audit_module.RUNTIME_REQUIREMENTS_PATHS[0]: "fastapi==0.110.0\n",
-        audit_module.RUNTIME_REQUIREMENTS_PATHS[1]: "alembic==1.18.3\n",
-        audit_module.RUNTIME_REQUIREMENTS_PATHS[2]: "# no extras\n",
-        audit_module.RUNTIME_REQUIREMENTS_PATHS[3]: "# no extras\n",
-        audit_module.RUNTIME_REQUIREMENTS_PATHS[4]: "# no extras\n",
-        audit_module.RUNTIME_REQUIREMENTS_PATHS[5]: "psutil==7.2.2\n",
+        audit_module.RUNTIME_REQUIREMENTS_PATHS[1]: "alembic==1.18.3\npsutil==7.2.2\n",
     }
     for relative, content in profiles.items():
         path = root / relative
@@ -365,7 +361,7 @@ def test_runtime_dependency_contract_rejects_service_base_duplication(
     fake_repo: Path,
 ) -> None:
     _write_runtime_dependency_contract(fake_repo)
-    execution = fake_repo / audit_module.RUNTIME_REQUIREMENTS_PATHS[2]
+    execution = fake_repo / audit_module.RUNTIME_REQUIREMENTS_PATHS[1]
     execution.write_text("fastapi==0.110.0\n", encoding="utf-8")
     report = audit_module.AuditReport()
 
@@ -378,7 +374,7 @@ def test_runtime_dependency_contract_rejects_duplicate_pin_in_one_profile(
     fake_repo: Path,
 ) -> None:
     _write_runtime_dependency_contract(fake_repo)
-    execution = fake_repo / audit_module.RUNTIME_REQUIREMENTS_PATHS[2]
+    execution = fake_repo / audit_module.RUNTIME_REQUIREMENTS_PATHS[1]
     execution.write_text("alembic==1.18.3\nalembic==1.18.3\n", encoding="utf-8")
     report = audit_module.AuditReport()
 
@@ -396,7 +392,7 @@ def test_runtime_dependency_contract_rejects_heavy_optional_runtime_package(
         constraints.read_text(encoding="utf-8") + "pyarrow==24.0.0\n",
         encoding="utf-8",
     )
-    market = fake_repo / audit_module.RUNTIME_REQUIREMENTS_PATHS[4]
+    market = fake_repo / audit_module.RUNTIME_REQUIREMENTS_PATHS[1]
     market.write_text("pyarrow==24.0.0\n", encoding="utf-8")
     report = audit_module.AuditReport()
 

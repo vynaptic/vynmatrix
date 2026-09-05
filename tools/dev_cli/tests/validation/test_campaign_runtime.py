@@ -558,7 +558,7 @@ def test_execution_attestation_rejects_container_tag_drift(
             key: hashlib.sha256(payload).hexdigest() for key, payload in payloads.items()
         },
         "container_image_digests": {"indicator-runner": expected_digest},
-        "container_image_references": {"indicator-runner": "vynmatrix/indicator-runner:validation"},
+        "container_image_references": {"indicator-runner": "vynmatrix/platform:validation"},
     }
 
     hash_drift = deepcopy(attestation)
@@ -571,6 +571,12 @@ def test_execution_attestation_rejects_container_tag_drift(
     assert (
         validated["validation_protocol_sha256"] == hashlib.sha256(payloads["protocol"]).hexdigest()
     )
+    retired_image = deepcopy(attestation)
+    retired_image["container_image_references"]["indicator-runner"] = (
+        "vynmatrix/indicator-runner:validation"
+    )
+    with pytest.raises(ValueError, match="vynmatrix/platform"):
+        validator._validate_installed_artifacts(strategy_path, retired_image)
 
     monkeypatch.setattr(
         validator,
@@ -650,9 +656,7 @@ def test_resumed_campaign_rejects_mutated_installed_wheel_payload(
                 "installed_strategy_core_path": str(installed_core),
                 "installed_strategy_core_sha256": validator._file_sha256(installed_core),
                 "container_image_digests": {"indicator-runner": container_digest},
-                "container_image_references": {
-                    "indicator-runner": "vynmatrix/indicator-runner:validation"
-                },
+                "container_image_references": {"indicator-runner": "vynmatrix/platform:validation"},
             },
         }
     }
@@ -702,15 +706,19 @@ def test_resumed_campaign_rejects_container_tag_drift(
                 "installed_strategy_core_path": str(installed_core),
                 "installed_strategy_core_sha256": validator._file_sha256(installed_core),
                 "container_image_digests": {"indicator-runner": expected_digest},
-                "container_image_references": {
-                    "indicator-runner": "vynmatrix/indicator-runner:validation"
-                },
+                "container_image_references": {"indicator-runner": "vynmatrix/platform:validation"},
             },
         }
     }
     _attach_validation_protocol(tmp_path, manifest["environment"]["installed_artifacts"])
 
     validator._require_execution_environment(manifest)
+    retired_image = deepcopy(manifest)
+    retired_image["environment"]["installed_artifacts"]["container_image_references"][
+        "indicator-runner"
+    ] = "vynmatrix/indicator-runner:validation"
+    with pytest.raises(RuntimeError, match="vynmatrix/platform"):
+        validator._require_execution_environment(retired_image)
     observed_vmdev["payload_sha256"] = "c" * 64
     with pytest.raises(RuntimeError, match="active vmdev runner differs"):
         validator._require_execution_environment(manifest)
@@ -882,9 +890,7 @@ def test_resumed_campaign_rejects_runtime_distribution_drift(
                 "installed_strategy_core_path": str(installed_core),
                 "installed_strategy_core_sha256": validator._file_sha256(installed_core),
                 "container_image_digests": {"indicator-runner": container_digest},
-                "container_image_references": {
-                    "indicator-runner": "vynmatrix/indicator-runner:validation"
-                },
+                "container_image_references": {"indicator-runner": "vynmatrix/platform:validation"},
             },
         }
     }

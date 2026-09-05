@@ -162,6 +162,7 @@ def test_api_derives_expected_return_from_price_ladder_when_magnitude_is_placeho
         "symbol": "BTCUSD",
         "insight": {"direction": "Up", "magnitude": 0.0, "confidence": 0.75, "horizon": "1D"},
         "context": {
+            "strategy_version": "1.0.0",
             "asset_class": "crypto",
             "sector": "crypto",
             "industry": "layer1",
@@ -205,6 +206,7 @@ def test_api_entry_only_signal_does_not_collapse_to_zero_score(
         "symbol": "BTCUSD",
         "insight": {"direction": "Up", "magnitude": 0.0, "confidence": 0.75, "horizon": "1D"},
         "context": {
+            "strategy_version": "1.0.0",
             "asset_class": "crypto",
             "sector": "crypto",
             "industry": "layer1",

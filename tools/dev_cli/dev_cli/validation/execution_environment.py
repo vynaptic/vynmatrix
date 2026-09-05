@@ -24,6 +24,7 @@ from dev_cli.validation.evidence import (
     require_descendant,
     resolve_strategy_validation_artifact,
 )
+from lib_common.paper_promotion import PAPER_PROMOTION_IMAGE
 
 _CONTAINER_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CONTAINER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -235,6 +236,11 @@ def _create_execution_attestation(
     )
 
 
+def container_role_repository(name: str) -> str:
+    """Keep the indicator attestation role bound to the consolidated runtime image."""
+    return PAPER_PROMOTION_IMAGE if name == "indicator-runner" else f"vynmatrix/{name}"
+
+
 def _inspect_container_images(
     values: tuple[str, ...],
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -251,7 +257,7 @@ def _inspect_container_images(
         if not _CONTAINER_REFERENCE_RE.fullmatch(reference):
             message = f"container image reference is invalid: {reference!r}"
             raise ValueError(message)
-        expected_repository = f"vynmatrix/{name}"
+        expected_repository = container_role_repository(name)
         if container_repository(reference) != expected_repository:
             message = (
                 f"container image {name} must reference the intended local repository "
@@ -470,6 +476,7 @@ def _normalize_distribution_name(value: str) -> str:
 __all__ = [
     "attest_execution_environment",
     "container_repository",
+    "container_role_repository",
     "installed_wheel_payload_sha256",
     "local_container_image_id",
 ]

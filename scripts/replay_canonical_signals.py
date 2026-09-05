@@ -6,11 +6,12 @@ import argparse
 import asyncio
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "apps" / "execution_engine"))
@@ -35,8 +36,14 @@ from lib_application.db.models import (  # noqa: E402
     LinkedBrokerAccount,
     UserStrategyBinding,
 )
-from lib_application.db.session import create_engine_for_env  # noqa: E402
+from lib_application.db.session import (  # noqa: E402
+    create_engine_for_env,
+    dispose_engine,
+    get_session_factory,
+    tenant_scope,
+)
 from lib_application.outbox import OutboxStore  # noqa: E402
+from lib_application.services.deployment_owner import require_deployment_owner_id  # noqa: E402
 from lib_application.services.instrument_resolution import resolve_instrument  # noqa: E402
 from lib_common.internal_events import BrokerRouteSnapshot  # noqa: E402
 from lib_common.logging import setup_logging  # noqa: E402
@@ -103,9 +110,28 @@ def _validate_cli_safety(args: argparse.Namespace) -> None:
 async def _run(args: argparse.Namespace) -> dict[str, object]:
     _validate_cli_safety(args)
     engine_obj = create_engine_for_env(env="dev")
-    session_factory = sessionmaker(engine_obj, expire_on_commit=False)
+    try:
+        session_factory = get_session_factory(engine=engine_obj)
+        return await _run_with_factory(args, session_factory)
+    finally:
+        dispose_engine(engine_obj)
+
+
+@contextmanager
+def _metadata_scope(session: Session, requested_owner: str) -> Iterator[None]:
+    owner_id = require_deployment_owner_id(session)
+    if requested_owner != owner_id:
+        msg = "Replay --user-id must match the designated deployment owner"
+        raise ValueError(msg)
+    with tenant_scope(session, user_id=owner_id):
+        yield
+
+
+async def _run_with_factory(
+    args: argparse.Namespace, session_factory: sessionmaker[Session]
+) -> dict[str, object]:
     canonical_execution_store = CanonicalExecutionStore(session_factory=session_factory)
-    with session_factory() as session:
+    with session_factory() as session, _metadata_scope(session, str(args.user_id)):
         row = (
             session.query(LinkedBrokerAccount, Broker)
             .join(Broker, LinkedBrokerAccount.broker_id == Broker.broker_id)

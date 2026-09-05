@@ -1,52 +1,45 @@
-# Scaling & hardening roadmap (Phase 3+)
+# Capacity and service boundaries
 
-Deferred architectural options for vynmatrix, starting from a measured local
-paper workload. No cloud footprint, revenue state, capacity result, or deployment
-is claimed by this migration. Each expansion requires concrete workload and
-recovery evidence plus a separate owner decision.
+The supported single-owner runtime uses at most three running containers,
+including PostgreSQL. [DEPLOYMENT.md](DEPLOYMENT.md) defines the split and combined
+layouts. No hosted capacity, recovery result or broker certification is claimed.
 
-> Optimise for tomorrow, not today: do the things that are **cheap now and
-> irreversible/compounding if deferred** (decision provenance — already landed;
-> tenant isolation seam; durability) before the things that are merely a
-> **reversible cost-timing choice** (bigger box, managed services, more replicas).
+## Capacity changes within the budget
 
-## Scale ladder (when → what)
-
-| Trigger | Action | Why it waits |
+| Trigger | Next step | Boundary |
 |---|---|---|
-| **Recovery objectives or real money exceed the self-hosted design** | Select a managed or separately operated PostgreSQL topology on the chosen cloud; verify service-role/RLS controls, PITR, failover, and restore drills before cutover. | No cloud database or verified backup is supplied. Measure recovery objectives and test restore before choosing a topology. |
-| **One box saturates** (~25 strategies, or multi-tenant load) | Shard `indicator-runner` onto its own node (it is the highest-envelope, independently-shardable workload — split `STRATEGY_LIST`) or select another reviewed container platform. | Benchmark the actual workload before sizing a node; any hosted topology still requires deployment-specific control-plane/RLS work. |
-| **Throughput outgrows Postgres NOTIFY** | Introduce a real broker (NATS/Kafka/Redis Streams) for the fan-out legs. | The transactional outbox + `LISTEN/NOTIFY` already gives durable, idempotent, dead-lettered async handoff at current scale; a broker would only duplicate those guarantees and add a stateful service to an oversubscribed box. See `CLAUDE.md` → Event-Driven Data Plane. |
-| **Market-making is funded** | A **separate, co-located, low-latency execution + tick data-plane** — NOT a retrofit of these uvicorn services. | The DB-outbox + HTTP-relay + 60s-poll ingest design is correct for swing/position signals but structurally wrong for sub-millisecond MM order paths. Keep the `ExecutionCommandEvent` contract clean (it already is) so an MM engine can consume the same command stream as a parallel, independently-scaled path. |
+| Worker CPU or memory pressure | Measure selected strategy/feed demand, reduce selection or resize the host; use split application/workers groups | Keep one worker group and explicit `STRATEGY_LIST` |
+| Process connection pressure | Sum pools across every API, feed and strategy child; measure before changing limits | Defaults cap each process at five connections |
+| A containerized IBKR gateway is required | Use the combined `all` group so the gateway can occupy slot three | Gateway image, authentication and operation require separate review |
+| Owner UI is added | Serve its static assets through backend | No additional frontend container |
+| Recovery objectives exceed one host | Review database backups, restore time and a separately operated PostgreSQL option | No failover or managed service is supplied |
 
-## Multi-tenant hardening: PostgreSQL RLS + service roles (H-8)
+PostgreSQL persistence, transactional outbox and idempotent consumers remain the
+handoff mechanism. Redis, extra brokers, replicas and per-strategy containers are
+outside the present topology. A change to that budget requires an explicit new
+design and measured need.
 
-Migration `0052_service_role_rls` defines the runtime authorization boundary:
+## PostgreSQL owner and service boundaries
 
-- `vm_backend`, `vm_scoring`, `vm_execution`, `vm_feedback`, `vm_market_data`,
-  and `vm_indicator` are `NOLOGIN`, `NOBYPASSRLS`, non-owner group roles.
-- Every service authenticates through a distinct `*_login` role inheriting
-  exactly one group. Combining memberships is prohibited because PostgreSQL
-  grants and permissive RLS policies union.
-- Alembic alone uses the owner credential. Runtime containers never receive it.
-- Privileges are command- and table-specific, with no default grants for future
-  objects. Market data exclusively writes prices; indicator exclusively writes
-  watermarks; scoring cannot mutate tenant configuration; execution cannot
-  create broker accounts; feedback is suggestion-only and cannot write prices.
-- Backend transactions set the transaction-local `app.current_tenant` GUC.
-  Backend RLS policies scope direct and account-owned rows, including
-  `managed_secrets` and `mode_performance`. Cross-tenant pipeline services use
-  their narrowly scoped service role rather than a mutable bypass GUC.
+`vm_backend`, `vm_scoring`, `vm_execution`, `vm_feedback`, `vm_market_data` and
+`vm_indicator` remain separate `NOLOGIN`, non-owner, `NOBYPASSRLS` group roles.
+Each interpreter uses its corresponding login and reviewed table/command grants.
+Sharing a container does not combine database memberships. Administrative and
+migration credentials are excluded from runtime groups.
 
-The local stack provisions the six LOGIN roles after migration and starts each
-service with its own URL. Any future deployment must provision the same logins and verify
-exact membership before switching containers. A PostgreSQL integration gate
-must prove allowed operations and denied cross-tenant/service operations with
-the real runtime credentials; SQLite tests cannot validate RLS.
+Backend resolves the one explicitly designated deployment owner. It sets the
+transaction-local owner scope, and PostgreSQL policies reject foreign-owner
+configuration even if a caller forges the former tenant selector. Historical
+user/account IDs and ledger attribution remain intact. Commercial organizations,
+plans, roles and subscriptions are retired only when empty; existing data blocks
+migration pending explicit disposition.
 
-Keep `EXECUTION_ENGINE_ALLOW_LIVE=false` until that PostgreSQL role test, the
-paper end-to-end pipeline, backup restore, and broker-specific certification all
-pass in the target environment.
+The bootstrap lifecycle stops runtime before its one-shot maintenance stage and
+provisions the six exact login memberships after migrations. See
+[DATABASE.md](DATABASE.md) for commands and rollback limits. SQLite tests cannot
+establish PostgreSQL grants, RLS, locking or restore behavior; those require
+isolated PostgreSQL acceptance with the actual roles. Keep paper mode and
+`EXECUTION_ENGINE_ALLOW_LIVE=false` throughout the current scope.
 
 ## Decision provenance (already landed — the irreversible-now piece)
 

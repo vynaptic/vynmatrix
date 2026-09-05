@@ -835,3 +835,52 @@ def test_replay_cli_refuses_operator_shorting_before_database_access() -> None:
 
     with pytest.raises(ValueError, match="cannot grant shorting"):
         asyncio.run(run_replay_cli(args))
+
+
+@pytest.mark.parametrize("requested_owner", ["owner", "foreign"])
+def test_replay_cli_scopes_metadata_and_disposes_on_failure(monkeypatch, requested_owner):
+    from contextlib import contextmanager
+
+    import scripts.replay_canonical_signals as cli
+
+    events = []
+    database_engine = object()
+
+    class StopAfterMetadataError(Exception):
+        pass
+
+    class MetadataSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def query(self, *args):
+            assert events[-1] == "scope:owner"
+            events.append("metadata")
+            raise StopAfterMetadataError
+
+    @contextmanager
+    def scope(session, *, user_id):
+        events.append(f"scope:{user_id}")
+        try:
+            yield
+        finally:
+            events.append("scope-exit")
+
+    monkeypatch.setattr(cli, "create_engine_for_env", lambda **kwargs: database_engine)
+    monkeypatch.setattr(cli, "get_session_factory", lambda **kwargs: MetadataSession)
+    monkeypatch.setattr(cli, "dispose_engine", lambda engine: events.append("dispose"))
+    monkeypatch.setattr(cli, "require_deployment_owner_id", lambda session: "owner")
+    monkeypatch.setattr(cli, "tenant_scope", scope)
+    args = parse_replay_args(
+        ["--user-id", requested_owner, "--broker-account-id", "42", "--symbols", "BTC-USDC"]
+    )
+    with pytest.raises(StopAfterMetadataError if requested_owner == "owner" else ValueError):
+        asyncio.run(run_replay_cli(args))
+    assert events == (
+        ["scope:owner", "metadata", "scope-exit", "dispose"]
+        if requested_owner == "owner"
+        else ["dispose"]
+    )

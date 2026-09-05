@@ -1,4 +1,4 @@
-# Resolved dependency lock for the DigitalOcean services and strategy-validation
+# Resolved dependency lock for the platform runtime and strategy-validation
 # environment. Optional provider extras are locked in their own activation work;
 # they do not belong in this production closure. Every runtime profile is checked
 # against these exact pins by ``vmdev audit``.

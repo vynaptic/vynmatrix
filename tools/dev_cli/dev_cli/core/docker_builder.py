@@ -427,6 +427,28 @@ class DockerBuilder:
             console.print(f"[red]✗ Failed to build {image_name}[/red]")
             raise
 
+    def _configured_dockerfile(self, service: dict[str, Any], *, index: int) -> Path | None:
+        """Validate an explicit composed-image Dockerfile before contacting Docker."""
+        if "dockerfile" not in service:
+            return None
+        declared = service["dockerfile"]
+        if (
+            not isinstance(declared, str)
+            or not declared.strip()
+            or Path(declared).is_absolute()
+            or ".." in Path(declared).parts
+        ):
+            msg = f"services[{index}].dockerfile must be a repository-relative Dockerfile"
+            raise ValueError(msg)
+        dockerfile = (self.root_dir / declared).resolve()
+        if not dockerfile.is_relative_to((self.root_dir / "docker").resolve()):
+            msg = f"services[{index}].dockerfile must stay inside the repository docker directory"
+            raise ValueError(msg)
+        if not dockerfile.is_file():
+            msg = f"Declared Dockerfile does not exist: {declared}"
+            raise FileNotFoundError(msg)
+        return dockerfile
+
     def build_from_containers_config(
         self,
         tag: str = "latest",
@@ -450,16 +472,14 @@ class DockerBuilder:
             msg = f"Containers config must decode to an object: {path}"
             raise TypeError(msg)
 
-        # Pipeline service images (scoring-engine, execution-engine,
-        # feedback-loop-engine, market-data-ingestor, indicator-runner). These
-        # are the artifacts consumed by the DigitalOcean deploy, so the single
-        # ``--from-config`` build path must produce them — otherwise a release
-        # could reference image tags that were never built or pushed.
+        # A composed image need not correspond to one apps/ directory. The
+        # inventory can declare its Dockerfile explicitly while retaining its
+        # logical app identity for build/cache labels and validated wheel inputs.
         services = containers_config.get("services")
         if not isinstance(services, list) or not services:
             msg = f"Containers config must define a non-empty services list: {path}"
             raise ValueError(msg)
-        image_inventory: list[tuple[str, str]] = []
+        image_inventory: list[tuple[str, str, Path | None]] = []
         for index, service in enumerate(services):
             if not isinstance(service, dict):
                 msg = f"services[{index}] must be an object"
@@ -484,12 +504,13 @@ class DockerBuilder:
                     "without a tag or digest"
                 )
                 raise ValueError(msg)
-            image_inventory.append((normalized_app_name, image_repository))
-        app_names = [app_name for app_name, _ in image_inventory]
+            dockerfile = self._configured_dockerfile(service, index=index)
+            image_inventory.append((normalized_app_name, image_repository, dockerfile))
+        app_names = [app_name for app_name, _, _ in image_inventory]
         if len(app_names) != len(set(app_names)):
             msg = f"Containers config contains duplicate service apps: {app_names}"
             raise ValueError(msg)
-        image_repositories = [repository for _, repository in image_inventory]
+        image_repositories = [repository for _, repository, _ in image_inventory]
         if len(image_repositories) != len(set(image_repositories)):
             msg = (
                 "Containers config contains duplicate service image repositories: "
@@ -500,19 +521,20 @@ class DockerBuilder:
         console.print("\n[bold cyan]Building Pipeline Service Images:[/bold cyan]")
         self.validate_wheelhouse()
         self.build_svc_base(cache_backend=cache_backend)
-        for app_name, image_repository in image_inventory:
+        for app_name, image_repository, dockerfile in image_inventory:
             self.build_app(
                 app_name,
                 tag,
                 image_repository=image_repository,
                 cache_backend=cache_backend,
                 validate_wheelhouse=False,
+                **({"dockerfile": dockerfile} if dockerfile is not None else {}),
             )
         current_refs = {
             f"{_SVC_BASE_REPOSITORY}:latest": _SVC_BASE_REPOSITORY,
             **{
                 f"{image_repository}:{tag}": image_repository
-                for _, image_repository in image_inventory
+                for _, image_repository, _ in image_inventory
             },
         }
         self._cleanup_owned_dangling_images(
@@ -528,11 +550,12 @@ class DockerBuilder:
         image_repository: str | None = None,
         cache_backend: CacheBackend | None = None,
         validate_wheelhouse: bool = True,
+        dockerfile: Path | None = None,
     ) -> None:
         """Build Docker image for application."""
         if validate_wheelhouse:
             self.validate_wheelhouse()
-        dockerfile = self.root_dir / "docker" / f"{app_name}.Dockerfile"
+        dockerfile = dockerfile or self.root_dir / "docker" / f"{app_name}.Dockerfile"
         if not dockerfile.is_file():
             msg = f"Dockerfile not found for app {app_name}: {dockerfile}"
             raise FileNotFoundError(msg)

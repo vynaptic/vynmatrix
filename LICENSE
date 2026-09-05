@@ -1,9 +1,90 @@
+Vynmatrix Personal Noncommercial Reciprocity License 1.0
+
 Copyright (c) 2024-2026 VisionMaverick
 
-All rights reserved.
+Canonical source: https://github.com/vynaptic/vynmatrix
 
-This source code is proprietary and confidential. Unauthorized copying,
-distribution, modification, public display, or public performance of this
-proprietary work is a violation of copyright law and is strictly prohibited.
+1. Scope and definitions
 
-For licensing inquiries, contact: info@visionmaverick.com
+"Software" means the source code, documentation, and other material in this
+repository that a copyright holder offers under this license. It excludes
+Third-Party Materials identified in NOTICE or carrying their own notices.
+"Licensor" means each copyright holder that offers Software under this license.
+
+"Personal Noncommercial Use" means use by a natural person for that person's
+own private, educational, research, or hobby purposes, without commercial
+advantage or monetary compensation. It excludes use in connection with a trade,
+business, profession, employer, client, customer, or organization.
+
+"Enhancement" means a modification to, derivative work of, or material addition
+to the Software. It excludes secrets, credentials, private personal
+configuration, and data that the recipient has no right to redistribute.
+
+"External Release" means distribution, publication, sharing, or making an
+Enhancement functionally available for use by anyone outside the modifier's
+personal private environment, including through a network service.
+
+2. License grant
+
+Subject to these terms, each Licensor grants you a worldwide, non-exclusive,
+royalty-free, non-transferable license to use, copy, and modify the Software
+solely for Personal Noncommercial Use. You may redistribute unmodified copies
+for Personal Noncommercial Use if you preserve this license and all copyright,
+attribution, and notice files.
+
+3. Commercial use is prohibited
+
+You may not sell, lease, sublicense, charge for, host for others, provide as a
+service, or otherwise use the Software or an Enhancement for a commercial
+purpose. No commercial license is granted by this document.
+
+4. Enhancement reciprocity
+
+If you make an Enhancement available through an External Release, then within
+30 days after that first release you must:
+
+  a. make the complete corresponding source for that Enhancement publicly
+     available under this license, including the files needed to build and
+     modify it, except excluded secrets and Third-Party Materials; and
+  b. submit a good-faith pull request to the Canonical source above containing
+     the Enhancement or a clear link to its complete corresponding source.
+
+The Canonical source's maintainers may accept, reject, or request changes to a
+pull request. This condition requires submission; it does not require a
+maintainer to merge the contribution. Private Enhancements that are not
+externally released do not trigger this section.
+
+5. Contributions and notices
+
+By submitting an Enhancement to the Canonical source, you represent that you
+have the right to do so and grant the Licensor and recipients a perpetual,
+worldwide, royalty-free license to include and distribute that contribution as
+part of the Software under this license. You must preserve all existing
+copyright, attribution, and NOTICE files and add any notices required for your
+contribution.
+
+6. Third-Party Materials and trademarks
+
+This license grants no rights in Third-Party Materials, trademarks, logos, or
+names. You are responsible for complying with the terms that apply to those
+materials. See NOTICE for known provenance and attribution records.
+
+7. Termination
+
+Your rights under this license terminate automatically if you materially breach
+its terms and do not cure the breach within 30 days after receiving written
+notice from a Licensor. On termination, stop using and distributing the
+Software except to the extent a separate written license permits otherwise.
+
+8. Disclaimer and limitation of liability
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE,
+AND NON-INFRINGEMENT. TO THE MAXIMUM EXTENT PERMITTED BY LAW, NO LICENSOR IS
+LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE SOFTWARE OR
+ITS USE.
+
+9. License classification
+
+This is a source-available license. It is not an Open Source Initiative-approved
+open-source license because it restricts commercial use.

@@ -82,6 +82,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+# Private single-owner onboarding profile; never commit personal owner details.
+owner.local.yaml
 secrets/
 credentials/
 *.key

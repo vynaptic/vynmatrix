@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 from types import ModuleType
@@ -11,7 +10,6 @@ import yaml
 from lib_common.asset_classes import CANONICAL_ASSET_CLASS_VALUES
 
 _ROOT = Path(__file__).resolve().parents[1]
-_SCRIPT = _ROOT / "scripts" / "db" / "bootstrap_scoring.py"
 _INSTRUMENT_CONFIG = _ROOT / "config" / "instruments.yaml"
 _STRATEGY_SCHEMA = _ROOT / "config" / "schemas" / "indicator_strategy_config.schema.json"
 _PRODUCTION_SEED = _ROOT / "docker" / "seed" / "02_seed_data.sql"
@@ -28,20 +26,14 @@ _INFRASTRUCTURE_PERSISTENCE = (
 
 
 def _load_module() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("bootstrap_scoring", _SCRIPT)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from lib_application.services import catalogue
+
+    return catalogue
 
 
-def test_catalogue_loader_does_not_create_schema() -> None:
-    source = _SCRIPT.read_text(encoding="utf-8")
+def test_infrastructure_persistence_does_not_create_schema() -> None:
     persistence_source = _INFRASTRUCTURE_PERSISTENCE.read_text(encoding="utf-8")
 
-    assert "create_all" not in source
-    assert "Base," not in source
     assert "create_all" not in persistence_source
     assert "drop_all" not in persistence_source
 

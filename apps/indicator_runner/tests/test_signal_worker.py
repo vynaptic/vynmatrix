@@ -55,6 +55,7 @@ from lib_application.db.models import (
     OutboxEvent,
     Strategy,
     StrategyRuntimeState,
+    User,
 )
 from lib_application.outbox import OutboxStore
 from lib_data.bars import Bar
@@ -1253,6 +1254,7 @@ def test_main_configures_logging_before_work(monkeypatch, tmp_path) -> None:  # 
 
 
 def test_main_returns_nonzero_for_listener_delivery_failure(
+    session_factory: sessionmaker,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
@@ -1282,10 +1284,19 @@ def test_main_returns_nonzero_for_listener_delivery_failure(
             self.stopped = True
 
     worker = _FailedWorker()
+    with session_factory() as session:
+        session.add(
+            User(
+                user_id="owner",
+                email="owner@example.invalid",
+                base_ccy="USD",
+                is_deployment_owner=True,
+            )
+        )
+        session.commit()
+        engine = session.get_bind()
     monkeypatch.setattr(signal_worker, "setup_logging", lambda _level: None)
-    monkeypatch.setattr(
-        signal_worker, "_build_worker", lambda *_args, **_kwargs: (worker, object())
-    )
+    monkeypatch.setattr(signal_worker, "_build_worker", lambda *_args, **_kwargs: (worker, engine))
     monkeypatch.setattr(signal_worker, "dispose_engine", lambda _engine: None)
     monkeypatch.setattr(signal_worker.os_signal, "signal", lambda *_args: None)
 
@@ -1294,3 +1305,26 @@ def test_main_returns_nonzero_for_listener_delivery_failure(
     assert exit_code == 1
     assert worker.started is True
     assert worker.stopped is True
+
+
+def test_executable_entrypoint_requires_owner_before_starting_worker(
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    from lib_application.services.deployment_owner import DeploymentOwnerError
+
+    worker = _build_worker(session_factory, _RecordingStrategy(), bootstrap_bars=0)
+    with session_factory() as session:
+        engine = session.get_bind()
+    monkeypatch.setattr(
+        signal_worker_module, "_build_worker", lambda *args, **kwargs: (worker, engine)
+    )
+    monkeypatch.setattr(signal_worker_module.os_signal, "signal", lambda *args: None)
+
+    def refuse_unfenced_start() -> None:
+        raise AssertionError("Executable worker started without deployment ownership")
+
+    monkeypatch.setattr(worker, "start", refuse_unfenced_start)
+    with pytest.raises(DeploymentOwnerError, match="active deployment owner"):
+        signal_worker_module.main(["--strategy-path", str(tmp_path)])

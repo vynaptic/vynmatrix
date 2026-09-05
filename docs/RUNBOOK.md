@@ -6,33 +6,45 @@ vynmatrix migration authorizes local paper verification only; do not deploy,
 write live-authority markers, clear live halts, or change live gates. External
 provider details below are dated references and must be rechecked before future use.
 
-This runbook covers the Coinbase spot launch path:
-`indicator_runner -> scoring_engine -> execution_engine -> feedback_loop_engine`, plus
-the primary `market_data_ingestor` and independent `fx-rate-ingestor`.
+This runbook covers the single-owner paper path: selected indicator processes →
+scoring with inline outbox relay → execution → feedback, plus selected feed,
+FX and official-calendar processes. [DEPLOYMENT.md](DEPLOYMENT.md) defines the
+three-container split and two-container combined layouts.
 
 ## Launch Gates
 
-- Review the [local Docker and release boundary](DEPLOYMENT.md). Image publication
-  is manual and opt-in; a tag push is not a deployment.
-- Keep local services on the intended development network. No cloud host is
-  provisioned or approved by this migration.
-- Confirm `API_KEY` is set for service-to-service requests in production.
-- Confirm `ADMIN_API_KEY` is set before using admin endpoints.
-- Confirm `/health`, `/ready`, `/live`, and `/metrics` are reachable for API services.
-- Treat `/ready` as a progress gate, not a process check. Defaults are
-  `SCORING_OUTBOX_MAX_AGE_SECONDS=300`,
-  `INDICATOR_MAX_SIGNAL_BACKLOG_AGE_SECONDS=300`,
-  `INDICATOR_MAX_STRATEGY_LAG_SECONDS=300`, and
-  `EXECUTION_PAPER_ORDER_MAX_LAG_SECONDS=300`. Do not widen one during an
-  incident without identifying the stalled partition.
-- Confirm `fx-rate-ingestor` is supervised independently, and its internal
-  `http://localhost:8004/ready` probe is green. This process must have fresh ECB
-  and Coinbase USDC-EUR observations before cross-currency execution/NAV.
-- Confirm the Coinbase sandbox smoke suite has passed with real sandbox credentials.
-- Treat certification-marker checks as code contracts only; no live authority is supplied.
-- The local `feedback-loop-engine` container repeats one-shot `evaluate`
-  invocations. Inspect database heartbeats for progress; no external systemd
-  timer or production feedback host is configured here.
+- Complete the supported bootstrap/owner procedure in [DATABASE.md](DATABASE.md).
+  The lifecycle stops application and workers before a maintenance job, waits for
+  it to exit, then starts only the configured runtime groups. Do not use wildcard
+  profiles, pgAdmin, or additional one-shot containers alongside running groups.
+- Keep `EXECUTION_MODE=paper` and `EXECUTION_ENGINE_ALLOW_LIVE=false`. Configure
+  exact role URLs, separate service/admin keys and the backend/execution key ring
+  listed in [CONFIGURATION.md](CONFIGURATION.md).
+- Inspect supervisor port `8090`: `/health` means required processes/listeners
+  are alive; `/ready` requires progress from every selected component. Management
+  can remain healthy while owner setup or feeds are unready. `/status` provides
+  component results and `/metrics/<component>` exposes its metrics.
+- Scoring outbox, indicator backlog/lag and durable paper-order lag default to
+  300 seconds. Investigate the stalled partition before changing a bound.
+- When `fx` is selected in `PLATFORM_WORKERS`, inspect its internal `8004/ready`
+  result for fresh ECB/Coinbase observations. Calendar ports are `8005` (IBKR),
+  `8006` (Saxo) and `8008` (NSE); primary/equity feeds use `8003`/`8007`.
+- Feedback is a real supervised daemon on `8002`; readiness requires a recent
+  successful database heartbeat. Its default interval is 300 seconds. There is
+  no repeating shell, external timer or fourth feedback container.
+- Use recorded real data for paper acceptance. A running image or green unit
+  test is not PostgreSQL, restore, paper-soak or broker certification evidence.
+
+```bash
+docker compose --env-file .env -f docker/docker-compose.stack.yml logs --tail 100 application workers
+docker compose --env-file .env -f docker/docker-compose.stack.yml exec -T application \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8090/status').read().decode())"
+```
+
+Only backend and PostgreSQL bind host loopback. For a private remote host, use
+an owner-controlled SSH tunnel to backend. An IBKR gateway remains an explicitly
+reviewed external dependency; a gateway container requires the combined `all`
+layout so it occupies the third slot. No gateway is provisioned here.
 
 ## Broker Certification Order
 
@@ -51,10 +63,10 @@ available, reconciliation, and an account-scoped paper soak before live
 authority is considered. Do not infer certification from the presence of an
 adapter. Interactive Brokers, Saxo Bank, and Zerodha additionally require a
 fresh official exchange/broker schedule before stock onboarding. Enable the
-matching supervised Compose profile (`calendar-ibkr`, `calendar-saxo`, or
+matching supervised `PLATFORM_WORKERS` selection (`calendar-ibkr`, `calendar-saxo`, or
 `calendar-zerodha`) after reviewing its canonical selector list and catalogue
 mapping. It writes through the admin-authenticated backend
-``PUT /market-calendars/{code}`` and exposes readiness on internal port 8005.
+``PUT /market-calendars/{code}`` and exposes readiness on its unique internal port (8005/8006/8008 respectively).
 Scheduled instruments with missing, stale, future-dated, or out-of-coverage
 data fail closed. Crypto is explicitly 24/7, and ``CLOSE`` remains eligible for
 risk reduction. The platform never guesses weekdays, holidays, shortened
@@ -116,126 +128,71 @@ unassigned Reserved IPv4 is billed. [DigitalOcean outbound routing](https://docs
 This egress change is required before Zerodha or Delta India certification, but
 is deliberately not applied to the Coinbase local-paper canary.
 
-## Pre-Migration Database Backup
+## Backup and graceful upgrades
 
-Before production migrations:
+Use the scoped backup/restore and migration procedures in [DATABASE.md](DATABASE.md).
+Record and verify a backup before migration. Keep the previous image and the
+separately recoverable encryption ring; ciphertext alone is not a restorable
+credential store. PostgreSQL persists in `postgres-data`; `.artifacts` is
+read-only to runtime and `Data` is mounted at `/data`.
 
-```bash
-# Cloud-agnostic pg_dump (current self-hosted or a future approved PostgreSQL).
-DATABASE_URL="$DATABASE_URL" \
-scripts/db/pre_migration_backup.sh
-```
+Stop runtime through the supported lifecycle before maintenance. Compose allows
+60 seconds for application/workers to stop, while the supervisor bounds its
+whole-group cleanup to 55 seconds and forwards signals to descendants. A failed
+stage leaves runtime stopped. Review errors and the migration's rollback/data
+limits before retrying; never remove volumes to obtain a clean startup.
 
-Do not run production migrations if the backup command fails. Record the backup file path in the
-deployment notes.
+## Internal administrative API contracts
 
-## Live Trading Halt
+These APIs run inside `application`: execution on `8000`, scoring on `8001`.
+They are not published host ports. An authorized client on that private boundary
+must send the corresponding `EXECUTION_API_KEY` or `SCORING_API_KEY` as
+`X-API-Key`, and `EXECUTION_ADMIN_API_KEY` or `SCORING_ADMIN_API_KEY` as
+`X-Admin-API-Key`. Backend uses its separate `X-Admin-Key` boundary. Never place
+actual keys in command arguments, shared reports or logs.
 
-Check halt state:
+### Trading halt
 
-```bash
-curl -sf \
-  -H "X-API-Key: ${API_KEY}" \
-  -H "X-Admin-API-Key: ${ADMIN_API_KEY}" \
-  "${EXECUTION_ENGINE_URL}/admin/trading-halt"
-```
+`GET /admin/trading-halt` reads execution halt state. An identified operator can
+request a halt with `POST /admin/trading-halt`, `X-Admin-User`, and
+`{"enabled":true,"reason":"operator stop","metadata":{}}`. Preserve incident
+attribution. Clearing a halt requires explicit incident resolution and separate
+authority; it is not a bootstrap or paper-verification step.
 
-Enable global halt:
+### Failed portfolio rebalance resolution
 
-```bash
-curl -sf -X POST \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: ${API_KEY}" \
-  -H "X-Admin-API-Key: ${ADMIN_API_KEY}" \
-  -H "X-Admin-User: ${OPERATOR}" \
-  -d '{"enabled": true, "reason": "operator stop", "metadata": {}}' \
-  "${EXECUTION_ENGINE_URL}/admin/trading-halt"
-```
+An unresolved terminal failed account plan keeps execution readiness red.
+Inspect `GET /admin/rebalance-readiness` and
+`GET /admin/rebalance-plans/{account_plan_id}` for immutable signal, decision,
+order, fill, transition and prior-resolution lineage. After verifying broker
+state and the canonical ledger, an identified operator may append a disposition
+through `POST /admin/rebalance-plans/{account_plan_id}/resolve-failure` using
+`X-Admin-User` and a `resolution_type`, reason and durable evidence references.
 
-Clear halt only after the incident owner confirms broker state, pending orders, and reconciliation
-are healthy:
-
-```bash
-curl -sf -X POST \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: ${API_KEY}" \
-  -H "X-Admin-API-Key: ${ADMIN_API_KEY}" \
-  -H "X-Admin-User: ${OPERATOR}" \
-  -d '{"enabled": false, "reason": "incident resolved", "metadata": {}}' \
-  "${EXECUTION_ENGINE_URL}/admin/trading-halt"
-```
-
-## Failed Portfolio Rebalance Resolution
-
-An unresolved terminal failed account plan keeps execution readiness red. First
-inspect the readiness partition and the plan's immutable signal, decision,
-order, fill, transition, and prior-resolution lineage:
-
-```bash
-curl -sf \
-  -H "X-API-Key: ${API_KEY}" \
-  -H "X-Admin-API-Key: ${ADMIN_API_KEY}" \
-  "${EXECUTION_ENGINE_URL}/admin/rebalance-readiness"
-
-curl -sf \
-  -H "X-API-Key: ${API_KEY}" \
-  -H "X-Admin-API-Key: ${ADMIN_API_KEY}" \
-  "${EXECUTION_ENGINE_URL}/admin/rebalance-plans/${ACCOUNT_PLAN_ID}"
-```
-
-Only after the incident owner verifies broker state, canonical fills,
-positions, cash, and reconciliation may an identified operator append a
-disposition. `evidence` must contain durable incident or artifact references,
-never credentials or secrets:
-
-```bash
-curl -sf -X POST \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: ${API_KEY}" \
-  -H "X-Admin-API-Key: ${ADMIN_API_KEY}" \
-  -H "X-Admin-User: ${OPERATOR}" \
-  -d '{"resolution_type":"reconciled","reason":"broker and canonical ledger reconciled","evidence":{"incident":"INC-0000","artifact":"reconciliation.json"}}' \
-  "${EXECUTION_ENGINE_URL}/admin/rebalance-plans/${ACCOUNT_PLAN_ID}/resolve-failure"
-```
-
-The first `acknowledged`, `reconciled`, or `remediated` disposition removes the
-plan from the unresolved-failure readiness count. It does not alter or restart
-the failed plan. Exact retries deduplicate; later remediation evidence appends
-another immutable record. Confirm both the plan audit and `/ready` after the
-write.
+The first acknowledged, reconciled or remediated disposition removes that plan
+from unresolved-failure readiness. It neither changes nor restarts the failed
+plan. Exact retries deduplicate; later evidence adds an immutable record. Check
+the audit and `/ready` afterward. No credential belongs in evidence.
 
 ## Coinbase Paper-Soak Certification
 
-First verify the acceptance signals programmatically (DEPLOYMENT.md → *Promotion
-acceptance criteria*). This queries the live DB + `ALERT_*` env and exits non-zero
-unless every signal is green, writing a JSON report the marker requires:
+Follow [E2E_VERIFICATION_GUIDE.md](E2E_VERIFICATION_GUIDE.md) for the recorded-data
+campaign, acceptance output and certification boundaries. The platform image
+includes `scripts/check_soak_acceptance.py`; execute it inside the existing
+`application` container with the execution child's scoped environment. Do not
+start a new execution or verification container. For an already authorized
+paper acceptance run, keep output on the host:
 
 ```bash
-# Run inside the deployed money-moving image so the check sees the exact
-# service-role database URL, dependency set, and alert configuration. Keep the
-# output on the host; the execution container's certification mount is read-only.
-docker compose --env-file .env -f docker-compose.droplet.yml \
-  exec -T execution-engine \
-  python /app/scripts/check_soak_acceptance.py --json \
-  > artifacts/coinbase/soak-acceptance.json
+docker compose --env-file .env -f docker/docker-compose.stack.yml exec -T application \
+  python -c 'import os,subprocess,sys; from scripts.platform_processes import build_processes; env=next(p.environment for p in build_processes("application",os.environ) if p.name=="execution"); sys.exit(subprocess.run([sys.executable,"/app/scripts/check_soak_acceptance.py","--json"],env=env,check=False).returncode)' \
+  > .artifacts/coinbase/soak-acceptance.json
 ```
 
-Then write the marker — only after at least 14 paper-soak days, successful sandbox
-smoke evidence, healthy reconciliation, and a **passing** acceptance report (the
-marker refuses a `passed` status while any check is red):
-
-```bash
-python scripts/write_sandbox_certification_marker.py \
-  --commit "$(git rev-parse HEAD)" \
-  --operator "${OPERATOR}" \
-  --symbols "BTC-USDC,ETH-USDC,SOL-USDC" \
-  --paper-window-days 14 \
-  --duplicate-submission-count 0 \
-  --acceptance-report ".artifacts/coinbase/soak-acceptance.json" \
-  --sandbox-smoke-evidence ".artifacts/coinbase/sandbox-smoke.json" \
-  --paper-soak-evidence ".artifacts/coinbase/paper-soak-summary.json" \
-  --reconciliation-summary ".artifacts/coinbase/reconciliation-summary.json"
-```
+A passing marker requires the actual bounded paper window, recorded sandbox
+smoke, reconciliation and passing acceptance evidence. No completed soak,
+PostgreSQL integration or new-image build result is asserted by this document,
+and no live-authority marker is authorized here.
 
 ## Execution Claim State
 
@@ -286,27 +243,12 @@ including an account with no new signal traffic.
 Permanent delivery failures dead-letter immediately; transient failures use
 bounded retry/backoff and dead-letter after the event's maximum attempts. Any
 dead-lettered `execution.commands` event makes scoring/relay readiness false.
-Inspect through the authenticated scoring API:
-
-```bash
-curl -sf \
-  -H "X-Admin-API-Key: ${ADMIN_API_KEY}" \
-  "${SCORING_ENGINE_URL}/admin/outbox/dead-letters?limit=100"
-```
-
-Redrive only after fixing the cause and proving from the broker/order ledger
-that preserving the original economic identity is safe. Use the returned
-`redrive_generation`; a concurrent or stale operator loses the generation
-fence:
-
-```bash
-curl -sf -X POST \
-  -H "Content-Type: application/json" \
-  -H "X-Admin-API-Key: ${ADMIN_API_KEY}" \
-  -H "X-Operator-ID: ${OPERATOR}" \
-  -d '{"reason":"downstream dependency recovered","expected_generation":0}' \
-  "${SCORING_ENGINE_URL}/admin/outbox/dead-letters/${EVENT_ID}/redrive"
-```
+Inspect `GET /admin/outbox/dead-letters?limit=100` through the authenticated
+internal scoring API. After fixing the cause and checking broker/order history,
+redrive through `POST /admin/outbox/dead-letters/{event_id}/redrive` with
+`X-Operator-ID`, a reason, and the returned `expected_generation`. A stale or
+concurrent operator loses the generation fence. The scoped scoring service and
+admin keys above are both required.
 
 Only `execution.commands` is eligible. Redrive preserves the event ID,
 idempotency identity, source event, and payload and appends actor, reason,

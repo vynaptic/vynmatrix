@@ -11,10 +11,16 @@
 #   index         : Index membership label (e.g., SP500, NASDAQ100, CRYPTO100)
 #   settlement_currency: Currency in which price, notional, and P&L settle
 #   market_session_policy: continuous for crypto; scheduled for every other asset
+#   aliases / broker_symbols: explicit compatible references from 02_seed_data.sql.
+# Perpetual/derivative routes require their own concrete contract catalogue entry;
+# the former BTC/ETH spot-to-perpetual seed mappings are deliberately excluded.
+# IBKR/Saxo exact IDs below retain the official-reference identities in that seed.
 instruments:
   # USDC-quoted pairs — the primary pairs for EUR-funded Coinbase accounts.
   # USD pairs remain valid global market-data and broker instruments.
   - symbol: BTCUSDC
+    aliases: [{alias: BTCUSDC, source: seed}]
+    broker_symbols: [{broker_code: coinbase, broker_symbol: BTC-USDC}]
     asset_class: crypto
     settlement_currency: USDC
     market_session_policy: continuous
@@ -22,6 +28,8 @@ instruments:
     industry: layer1
     index: CRYPTO100
   - symbol: ETHUSDC
+    aliases: [{alias: ETHUSDC, source: seed}]
+    broker_symbols: [{broker_code: coinbase, broker_symbol: ETH-USDC}]
     asset_class: crypto
     settlement_currency: USDC
     market_session_policy: continuous
@@ -29,6 +37,8 @@ instruments:
     industry: layer1
     index: CRYPTO100
   - symbol: SOLUSDC
+    aliases: [{alias: SOLUSDC, source: seed}]
+    broker_symbols: [{broker_code: coinbase, broker_symbol: SOL-USDC}]
     asset_class: crypto
     settlement_currency: USDC
     market_session_policy: continuous
@@ -36,6 +46,8 @@ instruments:
     industry: layer1
     index: CRYPTO100
   - symbol: BTCUSD
+    aliases: [{alias: BTCUSD, source: seed}]
+    broker_symbols: [{broker_code: coinbase, broker_symbol: BTC-USD}]
     asset_class: crypto
     settlement_currency: USD
     market_session_policy: continuous
@@ -43,6 +55,8 @@ instruments:
     industry: layer1
     index: CRYPTO100
   - symbol: ETHUSD
+    aliases: [{alias: ETHUSD, source: seed}]
+    broker_symbols: [{broker_code: coinbase, broker_symbol: ETH-USD}]
     asset_class: crypto
     settlement_currency: USD
     market_session_policy: continuous
@@ -50,6 +64,8 @@ instruments:
     industry: layer1
     index: CRYPTO100
   - symbol: SOLUSD
+    aliases: [{alias: SOLUSD, source: seed}]
+    broker_symbols: [{broker_code: coinbase, broker_symbol: SOL-USD}]
     asset_class: crypto
     settlement_currency: USD
     market_session_policy: continuous
@@ -59,6 +75,9 @@ instruments:
   # Observed accounting FX legs. ECB publishes EUR quote rates; Coinbase
   # supplies the traded USDC/EUR leg used for stablecoin conversions.
   - symbol: EUR/USD
+    broker_symbols:
+      - {broker_code: ibkr, broker_symbol: EUR.USD}
+      - {broker_code: saxo, broker_symbol: EURUSD, broker_instrument_id: "21", broker_instrument_type: FxSpot}
     asset_class: fx
     settlement_currency: USD
     market_session_policy: scheduled
@@ -80,6 +99,7 @@ instruments:
     industry: reference_rates
     index: ECB
   - symbol: USDC/EUR
+    broker_symbols: [{broker_code: coinbase, broker_symbol: USDC-EUR}]
     asset_class: fx
     settlement_currency: EUR
     market_session_policy: scheduled
@@ -87,6 +107,7 @@ instruments:
     industry: stablecoin_fx
     index: COINBASE
   - symbol: SPY
+    broker_symbols: [{broker_code: ibkr, broker_symbol: SPY}]
     asset_class: etf
     settlement_currency: USD
     market_session_policy: scheduled
@@ -94,6 +115,7 @@ instruments:
     industry: broad_market_etf
     index: SP500
   - symbol: QQQ
+    broker_symbols: [{broker_code: ibkr, broker_symbol: QQQ}]
     asset_class: etf
     settlement_currency: USD
     market_session_policy: scheduled
@@ -101,6 +123,7 @@ instruments:
     industry: technology_etf
     index: NASDAQ100
   - symbol: AAPL
+    broker_symbols: [{broker_code: ibkr, broker_symbol: AAPL, broker_instrument_id: "265598"}]
     asset_class: equity
     settlement_currency: USD
     market_session_policy: scheduled

@@ -58,13 +58,7 @@ def test_all_revision_ids_fit_alembic_version_column() -> None:
 # Tables we expect to be discoverable from ``Base.metadata`` after the split.
 # A subset is fine — we just want to catch silent drops, not freeze the schema.
 EXPECTED_TABLES_BY_SECTION = {
-    "A_identity": {
-        "orgs",
-        "plans",
-        "users",
-        "user_plan_subscriptions",
-        "user_roles",
-    },
+    "A_identity": {"users"},
     "B_consents": {
         "user_consents",
         "suitability_questionnaires",

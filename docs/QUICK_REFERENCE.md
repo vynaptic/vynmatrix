@@ -2,8 +2,10 @@
 
 Command cheat sheet for local development. Activate the `.venv-dev` tooling/test
 environment from the [setup guide](../README.md#new-developer-onboarding) first.
-GitHub PR and release helpers require separately configured hosting; this local
-migration does not authorize publication, pushing, deployment, or live execution.
+GitHub pull-request helpers target
+[`vynaptic/vynmatrix`](https://github.com/vynaptic/vynmatrix). [LICENSE](../LICENSE)
+limits use to personal, noncommercial purposes; source publication does not
+authorize deployment or live execution.
 
 ---
 
@@ -19,7 +21,7 @@ vmdev build venvs --group=indicator
 
 # Docker - Config-driven service images (recommended)
 vmdev build docker --from-config --tag latest  # Build images declared by containers.yaml
-# The verified indicator strategy wheel is installed into one indicator-runner
+# The verified indicator strategy wheel is installed into the shared platform
 # image; per-strategy image builds are not supported.
 
 # Release naming inspection only (does not tag or publish)
@@ -67,77 +69,54 @@ pre-commit autoupdate
 
 ## Database Management
 
-```bash
-# Start/Stop PostgreSQL
-vmdev db start                    # Start PostgreSQL container
-vmdev db stop                     # Stop PostgreSQL container
-vmdev db status                   # Check status and table counts
-
-# Schema Management
-vmdev db init                     # Initialize schema only
-vmdev db reset                    # Drop/recreate schema + configured instruments
-
-# Connect and Query
-vmdev db connect                  # psql shell (via Docker)
-
-# Backup/Restore
-vmdev db backup                   # Backup to backups/ directory
-vmdev db backup ./my_backup.sql   # Backup to specific file
-vmdev db restore ./backup.sql     # Restore from backup
-
-# Admin UI (optional)
-vmdev db pgadmin                  # Start pgAdmin at localhost:5050
-
-# User Management
-vmdev user add                    # Interactive user creation
-vmdev user add --config users.yaml  # Batch from config file
-vmdev user list                   # List all users
+```text
+vmdev db bootstrap --owner-config owner.local.yaml
+vmdev db catalogue --check
+vmdev db catalogue --apply
+vmdev db catalogue --apply --changes reviewed-changes.yaml
+vmdev user show
+vmdev user update --config owner-update.yaml
+vmdev user account --config account.yaml --secrets-file protected-credentials.json
+vmdev db migrate
+vmdev db roles
+vmdev db status
+vmdev db connect
+vmdev db backup backups/pre-upgrade.dump
+vmdev db restore backups/pre-upgrade.dump
+vmdev db stop
 ```
 
-User configuration must declare `base_currency`; each configured broker account
-must separately declare `broker.base_currency`. Both are canonical uppercase
-currency codes. Paper broker configuration must also declare
-`paper_initial_equity` and `paper_initial_cash`; cash must be between zero and
-equity. The CLI never assumes a currency or account balance.
+The optional `vmdev db activate-canary --strategy-id ID --version SEMVER` is a
+maintenance-only transition for an exact, eligible development canary. It does not
+create bindings or grant paper-promotion/live authority; see
+[Database Reference](DATABASE.md#installation-and-privilege-stages).
 
----
+See [DATABASE.md](DATABASE.md) for the exact identities, expected-value patch
+schema, explicit account adoption, rollback constraints, and secret handling.
+`db start` starts only PostgreSQL. Bootstrap runs migrations and initial inactive
+references; `db migrate` is schema-only. There is no reset, demo-user seed, or
+pgAdmin command.
 
 ## Docker
 
-```bash
-# Build images
+```text
 vmdev build docker --from-config --tag latest
-
-# Images (local namespace: vynmatrix/*)
-docker images | grep vynmatrix
-vmdev clean --docker             # Removes only locally tagged vynmatrix/* images
-
-# Core services (the indicator runner is profile-gated)
-docker compose --env-file .env -f docker/docker-compose.stack.yml up -d
-
-# Prime observed ECB + Coinbase USDC-EUR rates before historical replay
-docker compose --env-file .env -f docker/docker-compose.stack.yml \
-  run --rm --no-deps fx-rate-ingestor \
-  python -m apps.market_data_ingestor.market_data_ingestor.main fx-rates-once
-
-# Mode Selection
-EXECUTION_MODE=paper docker compose --env-file .env -f docker/docker-compose.stack.yml up -d    # Default safe mode
-EXECUTION_MODE=backtest docker compose --env-file .env -f docker/docker-compose.stack.yml up -d # Historical data only
-# Live execution is outside the migration scope; keep the live gate disabled.
-
-# Start the benchmark indicator worker with an explicit allowlist
-STRATEGY_LIST=SwingHighLowPMO \
-docker compose --env-file .env -f docker/docker-compose.stack.yml --profile indicator up -d
-
-# Strategy runner overrides
-RUN_MODE=backtest docker compose --env-file .env -f docker/docker-compose.stack.yml up -d        # Force strategy run mode
+docker image ls vynmatrix/platform
+docker compose --env-file .env -f docker/docker-compose.stack.yml ps
+docker compose --env-file .env -f docker/docker-compose.stack.yml logs --tail 100 application workers
 ```
 
----
+Use `vmdev db bootstrap` for startup/upgrades. With `COMPOSE_PROFILES=workers` and
+`PLATFORM_APPLICATION_GROUP=application`, the runtime is three containers including
+PostgreSQL. Empty profiles with group `all` use two. Do not use wildcard profiles or
+start a fourth maintenance container. Provider selection is `PLATFORM_WORKERS`;
+strategy selection is `STRATEGY_LIST`, both explicit and separate from registration.
+Keep paper execution and the disabled live gate. The
+[E2E guide](E2E_VERIFICATION_GUIDE.md) owns recorded-data and bounded-job commands.
 
 ## Git
 
-The local migration has no configured remote. The hosted PR examples below apply
+Verify the intended personal remote before publishing. The hosted PR examples below apply
 only after the owner establishes the destination and rights; do not run them as
 part of local setup. Inspect `git remote -v` before any hosted operation.
 
@@ -289,7 +268,7 @@ git commit -m "feat: update base strategy"
 vmdev build venvs --validation
 
 # Runtime pipeline validation remains a separate service-boundary check.
-EXECUTION_MODE=paper docker compose --env-file .env -f docker/docker-compose.stack.yml --profile indicator up -d
+vmdev db bootstrap --owner-config owner.local.yaml
 vmdev db connect   # inspect canonical_signals / asset_scores for the strategy
 ```
 

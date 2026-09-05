@@ -1,5 +1,7 @@
 """FastAPI endpoints for the Feedback Loop Engine."""
 
+import os
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -7,8 +9,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from lib_application.db.models import ServiceHeartbeat
+from lib_application.db.session import get_session_factory
 from lib_common.app import create_service_app
+from lib_common.env_utils import parse_int_env
 from lib_common.logging import get_logger
+from lib_strategy.signals.utils import ensure_utc
 
 from .engine import FeedbackLoopEngine
 from .models import EvaluationHorizon
@@ -32,6 +38,23 @@ def _engine_db_ready(engine: FeedbackLoopEngine) -> bool:
         return False
     else:
         return True
+
+
+def _engine_progress_ready(engine: FeedbackLoopEngine, *, max_age_seconds: int) -> bool:
+    """Read the committed run heartbeat; a live HTTP thread is not evaluation progress."""
+    sa_engine = getattr(engine, "_engine", None)
+    if sa_engine is None:
+        return False
+    try:
+        with get_session_factory(engine=sa_engine)() as session:
+            row = session.get(ServiceHeartbeat, "feedback_loop_engine")
+            if row is None or row.last_status != "ok":
+                return False
+            age = (datetime.now(tz=UTC) - ensure_utc(row.last_success_at)).total_seconds()
+            return 0 <= age <= max_age_seconds
+    except SQLAlchemyError:
+        logger.warning("Feedback durable progress readiness probe failed")
+        return False
 
 
 class EvaluationCycleRequest(BaseModel):
@@ -111,11 +134,28 @@ def create_app(
     Returns:
         Configured FastAPI app
     """
+    require_progress = os.getenv("FEEDBACK_RUN_MODE") == "daemon"
+    interval = parse_int_env("EVALUATION_INTERVAL", default=3600, min_value=1, strict=True)
+    progress_max_age = parse_int_env(
+        "FEEDBACK_HEARTBEAT_MAX_AGE_SECONDS",
+        default=interval + max(60, interval // 2),
+        min_value=1,
+        strict=True,
+    )
+
+    def readiness() -> dict[str, bool]:
+        checks = {"database": _engine_db_ready(engine)}
+        if require_progress:
+            checks["evaluation_progress"] = _engine_progress_ready(
+                engine, max_age_seconds=progress_max_age
+            )
+        return checks
+
     app = create_service_app(
         title="Feedback Loop Engine",
         version="0.1.0",
         description="Strategy signal performance monitoring and parameter optimization",
-        readiness_check=lambda: {"database": _engine_db_ready(engine)},
+        readiness_check=readiness,
     )
 
     @app.post("/evaluate", response_model=EvaluationCycleResponse)

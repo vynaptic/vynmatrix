@@ -1,4 +1,8 @@
-"""Live PostgreSQL acceptance for runtime service roles and tenant RLS."""
+"""PostgreSQL acceptance for service roles and designated-owner RLS.
+
+Run before suites that retain a deployment owner. This fixture creates and
+removes only its exact identities; it never adopts or clears installed owners.
+"""
 
 from __future__ import annotations
 
@@ -51,7 +55,15 @@ _PRIVILEGE_EXPECTATIONS = {
     ),
     "vm_market_data_login": (
         ("prices", "INSERT", True),
-        ("strategies", "SELECT", False),
+        # Revision 0086 permits evidence ingestion to read strategy lineage.
+        ("strategies", "SELECT", True),
+        ("strategy_versions", "SELECT", True),
+        ("strategies", "INSERT", False),
+        ("strategies", "UPDATE", False),
+        ("strategies", "DELETE", False),
+        ("strategy_versions", "INSERT", False),
+        ("strategy_versions", "UPDATE", False),
+        ("strategy_versions", "DELETE", False),
     ),
     "vm_indicator_login": (
         ("watermarks", "UPDATE", True),
@@ -93,6 +105,12 @@ def _tenant_rows(admin: Engine) -> Iterator[tuple[str, str, int, int]]:
     own_account = 0
     other_account = 0
     with admin.begin() as connection:
+        assert (
+            connection.scalar(
+                sa.text("SELECT count(*) FROM public.users WHERE is_deployment_owner")
+            )
+            == 0
+        ), "Use an isolated unconfigured database for service-role acceptance"
         broker_id = int(
             connection.execute(
                 sa.text("SELECT broker_id FROM brokers WHERE code = 'saxo'")
@@ -101,10 +119,10 @@ def _tenant_rows(admin: Engine) -> Iterator[tuple[str, str, int, int]]:
         connection.execute(
             sa.text(
                 """
-                INSERT INTO users (user_id, email, base_ccy, status)
+                INSERT INTO users (user_id, email, base_ccy, status, is_deployment_owner)
                 VALUES
-                    (:own_user, :own_email, 'EUR', 'active'),
-                    (:other_user, :other_email, 'INR', 'active')
+                    (:own_user, :own_email, 'EUR', 'active', true),
+                    (:other_user, :other_email, 'INR', 'active', false)
                 """
             ),
             {
@@ -327,15 +345,28 @@ def test_runtime_logins_enforce_privilege_matrix_and_backend_tenant_rls() -> Non
                 "user_strategy_bindings_execution_select",
             }
 
+        with runtime_engines["vm_backend_login"].begin() as connection:
+            assert connection.scalar(sa.text("SELECT public.vm_deployment_owner_id()")) is None
+            connection.execute(
+                sa.text("SELECT set_config('app.current_tenant', :tenant, true)"),
+                {"tenant": "unconfigured-service-role-test"},
+            )
+            for table in ("broker_credentials", "managed_secrets"):
+                assert connection.scalar(sa.text(f"SELECT count(*) FROM public.{table}")) == 0
+
         with (
             _tenant_rows(admin) as (
                 own_user,
-                _other_user,
+                other_user,
                 own_account,
                 other_account,
             ),
             runtime_engines["vm_backend_login"].begin() as connection,
         ):
+            assert connection.scalar(sa.text("SELECT public.vm_deployment_owner_id()")) == own_user
+            connection.execute(sa.text("SELECT set_config('app.current_tenant', '', true)"))
+            for table in ("broker_credentials", "managed_secrets"):
+                assert connection.scalar(sa.text(f"SELECT count(*) FROM public.{table}")) == 0
             connection.execute(
                 sa.text("SELECT set_config('app.current_tenant', :tenant, true)"),
                 {"tenant": own_user},
@@ -399,6 +430,36 @@ def test_runtime_logins_enforce_privilege_matrix_and_backend_tenant_rls() -> Non
             )
             assert own_secret_update.rowcount == 1
             assert cross_tenant_secret_update.rowcount == 0
+
+            # The peer fixture account remains inaccessible even when a
+            # caller forges the old tenant GUC to match that account's user.
+            connection.execute(
+                sa.text("SELECT set_config('app.current_tenant', :tenant, true)"),
+                {"tenant": other_user},
+            )
+            assert connection.scalar(sa.text("SELECT public.vm_deployment_owner_id()")) == own_user
+            for table in ("broker_credentials", "managed_secrets"):
+                assert connection.scalar(sa.text(f"SELECT count(*) FROM public.{table}")) == 0
+            assert (
+                connection.execute(
+                    sa.text("""
+                    UPDATE broker_credentials SET last_rotated_at = CURRENT_TIMESTAMP
+                    WHERE account_id IN (:own_account, :other_account)
+                """),
+                    {"own_account": own_account, "other_account": other_account},
+                ).rowcount
+                == 0
+            )
+            assert (
+                connection.execute(
+                    sa.text("""
+                    UPDATE managed_secrets SET ciphertext = 'must-not-write'
+                    WHERE account_id IN (:own_account, :other_account)
+                """),
+                    {"own_account": own_account, "other_account": other_account},
+                ).rowcount
+                == 0
+            )
     finally:
         for engine in runtime_engines.values():
             engine.dispose()

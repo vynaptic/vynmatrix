@@ -79,8 +79,7 @@ class _StoreInfra(ScoreStore):
         self._asset_score_seq = 0
         self._sector_score_seq = 0
         self._market_score_seq = 0
-        self._bindings_cache: list[ScoringUserBinding] | None = None
-        self._bindings_cache_monotonic = 0.0
+        self._bindings_cache: tuple[str, float, list[ScoringUserBinding]] | None = None
         if bindings_cache_ttl_seconds < 0:
             msg = "bindings_cache_ttl_seconds must be nonnegative"
             raise ValueError(msg)
@@ -92,23 +91,26 @@ class _StoreInfra(ScoreStore):
         self._outbox = OutboxStore(self._session)
         self.supports_canonical_signals = True
 
-    def _cached_bindings(self) -> list[ScoringUserBinding] | None:
-        """Return the cached binding list if still within the TTL, else None."""
-        if self._bindings_cache_ttl_seconds <= 0 or self._bindings_cache is None:
+    def _cached_bindings(self, signature: str) -> list[ScoringUserBinding] | None:
+        """Reuse a projection only after its complete current authority is re-read."""
+        cached = self._bindings_cache
+        if self._bindings_cache_ttl_seconds <= 0 or cached is None:
             return None
-        if time.monotonic() - self._bindings_cache_monotonic >= self._bindings_cache_ttl_seconds:
+        cached_signature, cached_at, bindings = cached
+        if signature != cached_signature:
             return None
-        return self._bindings_cache
+        if time.monotonic() - cached_at >= self._bindings_cache_ttl_seconds:
+            return None
+        return bindings
 
-    def _store_bindings_cache(self, bindings: list[ScoringUserBinding]) -> None:
-        """Cache the freshly-loaded binding list with the current timestamp."""
+    def _store_bindings_cache(self, bindings: list[ScoringUserBinding], *, signature: str) -> None:
+        """Publish one complete projection and authority signature atomically."""
         if self._bindings_cache_ttl_seconds <= 0:
             return
-        self._bindings_cache = bindings
-        self._bindings_cache_monotonic = time.monotonic()
+        self._bindings_cache = (signature, time.monotonic(), bindings)
 
     def invalidate_bindings_cache(self) -> None:
-        """Drop the cached binding list (called after any binding write)."""
+        """Drop the cached binding projection after a binding write."""
         self._bindings_cache = None
 
     @contextmanager

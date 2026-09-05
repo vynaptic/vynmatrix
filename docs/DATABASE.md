@@ -1,106 +1,214 @@
 # Database Reference (PostgreSQL)
 
-Use only isolated local databases for migration verification. Inherited operational
-utilities below are references, not authority to modify any existing live system or
-write a live-certification marker.
+This is the canonical database installation, migration, reference-data, and owner
+lifecycle guide. The schema source is
+[`lib_application.db.models`](../libs/python/lib_application/lib_application/db/models/).
+Use PostgreSQL 16 for the supported stack; SQLite is limited to unit tests.
 
-Single source of truth for platform database setup, schema, migrations, and
-deployment. PostgreSQL is used in every runtime environment.
+## Installation and privilege stages
 
-## Environments & Engines
+Prepare the tooling environment and build the platform image using the applicable
+[macOS/Linux](../SETUP_MAC_LINUX.md) or [Windows](../SETUP_WINDOWS.md) setup guide.
+Configure the explicit URLs and secrets in [.env.example](../.env.example); keep
+`EXECUTION_MODE=paper` and `EXECUTION_ENGINE_ALLOW_LIVE=false`.
 
-- **Local dev:** Docker PostgreSQL (`vmdev db start`).
-- **Local pipeline:** the declared Compose stack bootstraps PostgreSQL 16,
-  migrations, seeds, and distinct service logins. Do not start a second helper
-  database on the same port.
-- **Cloud/runtime migration:** no host, database, backup, or restore evidence is
-  included. A future topology requires separate owner review and verification.
-- **Tests:** SQLite is used in unit tests only; all runtime environments use PostgreSQL.
-- **One engine everywhere** to avoid surprises and keep JSONB/ACID features consistent.
+| Stage | Identity | Commit boundary |
+| --- | --- | --- |
+| Database creation/ownership checks | `ADMIN_DATABASE_URL`, database `postgres` | CREATE DATABASE autocommit |
+| Alembic and owner initialization | `MIGRATION_DATABASE_URL`, target database | Separate migration and owner transactions |
+| Runtime login provisioning | Explicit administrator, target database | All six logins atomically |
+| Initial static references | Verified maintenance/schema owner | Whole catalogue transaction |
+| Explicit development-canary activation | `MIGRATION_DATABASE_URL`, designated owner required | Exact release and audit atomically |
+| Later reference/profile/account changes | `BACKEND_DATABASE_URL`, `vm_backend_login` | One validated request/batch |
 
-## Local Workflow (5 minutes)
+Fresh history includes `0039` and `0052` role DDL. PostgreSQL requires a superuser
+even for their `ALTER ROLE ... NOSUPERUSER` statements. The supported fresh path
+therefore uses the explicitly supplied maintenance administrator as schema owner:
+`ADMIN_DATABASE_URL` and `MIGRATION_DATABASE_URL` normally use the same login and
+password, targeting `postgres` and the application database respectively. A distinct
+maintenance login must already have the required administrator authority; bootstrap
+never elevates or invents it. This requirement comes from
+[PostgreSQL's role implementation](https://github.com/postgres/postgres/blob/REL_16_STABLE/src/backend/commands/user.c#L718).
+Maintenance credentials are absent from application and worker environments.
 
-**macOS/Linux:**
+The six runtime logins each inherit only their matching `vm_*` service group.
+`vm_backend_login` owns the routine CLI/control-plane writes; it cannot designate
+an owner, change identity columns, or update ledger history. PostgreSQL roles are
+cluster-wide: this fixed role inventory is for one deployment per cluster.
 
-```bash
-# Start DB in Docker
-vmdev db start
+Create a private `owner.local.yaml` with your actual profile. This schema example
+contains placeholders that must be replaced:
 
-# Create/upgrade schema
-vmdev db init             # runs alembic upgrade head
-
-# Status / connect
-vmdev db status
-vmdev db connect
-
-# Or use manual script
-./scripts/db/manage_db.sh start
-./scripts/db/manage_db.sh status
+```yaml
+profile:
+  email: "<your email>"
+  base_ccy: "<your accounting currency>"
+  tz: "<your IANA timezone>"
 ```
 
-**Windows (PowerShell):**
+Then run the same command on macOS, Linux, or PowerShell:
 
-```powershell
-# Start DB in Docker
-vmdev db start
-
-# Create/upgrade schema
-vmdev db init             # runs alembic upgrade head
-
-# Status / connect
+```text
+vmdev db bootstrap --owner-config owner.local.yaml
 vmdev db status
-vmdev db connect
-
-# Or use manual script
-.\scripts\db\manage_db.ps1 start
-.\scripts\db\manage_db.ps1 status
 ```
 
-> **💡 Windows Users**: See [SETUP_WINDOWS.md](../SETUP_WINDOWS.md) for PowerShell setup and DB command parity.
+Bootstrap validates input and source references before stopping runtime groups. It
+waits for application/workers to stop, verifies that only PostgreSQL remains,
+starts PostgreSQL if necessary, runs the declared `bootstrap` job, removes that
+job, and then starts the chosen runtime groups. Use `--no-start-runtime` to finish
+maintenance without starting the platform. Neither `--profile '*'` nor arbitrary
+Compose jobs are supported lifecycle entry points.
 
-### Migrations (Alembic)
+The job verifies database ownership/settings, applies the complete Alembic history,
+verifies head, creates missing runtime logins, registers static references, and
+initializes the explicit owner in separate resumable stages. Database creation is
+outside a transaction as required by
+[PostgreSQL](https://www.postgresql.org/docs/16/sql-createdatabase.html).
+A migration/catalogue/onboarding failure leaves runtime stopped and retains the
+completed stages. It never drops/reset-stamps the database or runs demonstration SQL.
 
-- Location: `scripts/db/alembic`
-- Create: `alembic revision -m "message"`
-- Apply: `alembic upgrade head`
-- Current linear head: `0096_model_prior_identity`
-- Auto-run via `vmdev db init` or CI.
+Repeat bootstrap with `profile: {}` to verify the existing designation without
+reapplying old profile values. Supplied values on a repeated initialization must
+match; updates are a separate operation. Existing users require explicit
+`existing_user_id` in the owner document (or `vmdev user init --existing-user-id`).
+This is the sole owner-identity selection exception, under maintenance authority.
+No oldest-user, email-domain, or first-account heuristic is used.
 
-Migrations `0086_equity_factor_evidence`,
-`0087_synchronized_panel_runtime`, `0088_portfolio_rebalances`,
-`0089_account_execution_fence`, `0090_optional_factor_contracts`,
-`0091_dated_security_symbols`, `0092_panel_owner_fence`,
-`0093_factor_risk_exposure`, `0094_backend_control_plane`,
-`0095_binding_total_exposure`, and `0096_model_prior_identity` form one
-fail-closed equity-portfolio chain.
-`0086` adds immutable observation, factor/evidence, and rank ledgers; `0087`
-adds permanent security identity, registered panel-input revisions, and the
-atomic panel decision/state/outbox journal; `0088` adds immutable model
-rebalances and frozen tenant/account plans whose mutable lease, phase, leg
-status, and audit fields support replay-safe paper execution, plus append-only
-operator resolutions for terminal failed plans. Forward-only `0089` preserves
-that deployed `0088` contract while adding the account execution-generation
-ledger, one-way leg targets, terminal account-generation/digest seal, and
-strengthened PostgreSQL guards. Forward-only `0090` adds the six disabled
-optional observation kinds, provider-specific owner-bound personal
-entitlements, and a frozen source-contract registry digest without rewriting
-deployed evidence revisions. Forward-only `0091` adds a validity-dated
-canonical symbol to permanent security identities and rejects overlapping
-identity intervals, allowing ticker renames to retain one catalogue instrument
-while historical panels keep the symbol effective at their cutoff. Migrations
-`0092`–`0095` add owner-fenced panel runtime, factor-risk evidence, backend
-activation controls, and binding-owned gross-exposure ceilings. Convergent
-repair migration `0096` upgrades databases that reached the original `0088`
-shape with a two-column prior-leg reference to the exact four-column
-rebalance/leg/instrument/factor identity; fresh databases already have that
-contract and are unchanged.
-The migrations create least-privilege service
-grants, row-level policies, relational ownership constraints, and
-mutation-protection triggers; they do not activate a strategy or a binding.
+Registration creates inactive strategies and `registered` versions. It creates no
+broker accounts, credentials, bindings, execution selection, risk mandate, or market
+observations. Source presence is never execution authority.
+
+The optional `vmdev db activate-canary --strategy-id ID --version SEMVER` command
+requires a host-reachable maintenance URL and explicit `ENVIRONMENT=dev`,
+`EXECUTION_MODE=paper`, and `EXECUTION_ENGINE_ALLOW_LIVE=false`. The exact registered
+source release must be enabled, restricted to `dev`, and carry the existing
+`E2E_PIPELINE_CANARY_ONLY` governance decision. It transitions that release and its
+parent strategy to active in one audited transaction; identical repeats are no-ops.
+It refuses `deprecated`/`pulled` releases and disabled parents of already-active
+releases. It creates no account, binding, runtime selection, or attestation.
+Swing's permanent exclusion from paper promotion/live remains intact. Follow the
+[recorded-data verification guide](E2E_VERIFICATION_GUIDE.md) for the separate
+account, data and execution authority requirements.
+
+## Routine configuration changes
+
+The database is authoritative for installed owner settings. Source-controlled
+`config/instruments.yaml`, `config/brokers.yaml`, and each existing strategy's
+`config.json` describe reviewed non-secret references. Adapter capabilities still
+come from the implemented broker specifications. Stable keys are strategy ID and
+semver, broker code/environment/region, explicit instrument identity, and the
+owner's unique account `config_key`; numeric IDs are preserved.
+
+Routine host CLI writes require an explicitly supplied `BACKEND_DATABASE_URL` reachable
+from the host (normally the published loopback PostgreSQL port). Container URLs
+use `postgres`; do not copy a container hostname into a host connection or expose
+PostgreSQL publicly. Supply secrets through your environment mechanism, never as
+command arguments. The platform image also includes `python -m dev_cli.main` for
+`exec` use in an existing container.
+
+```text
+vmdev db catalogue --check
+vmdev db catalogue --apply
+vmdev db catalogue --check --strategy-id <existing-source-strategy-id>
+vmdev db catalogue --apply --broker-code <implemented-broker-code>
+vmdev db catalogue --apply --changes reviewed-changes.yaml
+vmdev user show
+vmdev user update --config owner-update.yaml
+vmdev user account --config account.yaml --secrets-file protected-credentials.json
+```
+
+`--check` reads/validates without sequence allocation, audits, or writes. Normal
+`--apply` creates missing rows only. Different installed fields are conflicts;
+absent fields/records never mean overwrite/delete. Existing `registered`, `active`,
+`deprecated`, and `pulled` release states are preserved. Release payload changes
+require a new semver; catalogue updates cannot activate a strategy/version.
+
+Explicit patches use a list of `{kind, key, expected, changes}` objects. Each changed
+field needs its expected current value. Allowed edits are broker display/capability
+metadata (bounded by implemented capabilities), broker environment URLs/rate limits,
+and sector name/description. Instrument identity, financial contract terms,
+tradability, currency and session authority require explicit recataloguing; they
+are not routine metadata patches. URLs cannot embed credentials or query secrets.
+Identical acknowledged patches are no-ops; conflicting updates fail without partial
+writes. A complete batch, its fixed SQL function calls, and audits share one
+transaction and catalogue advisory lock. Bounded retries re-read stable keys/desired
+state after serialization/deadlock/connection failures, including uncertain commits.
+
+Owner profile patches and stable-key account patches also use `expected` and
+`changes`. Account adoption explicitly names an existing account ID belonging to
+the designated owner. Account currency, external identity and opening capital
+cannot change after relevant activity; database guards use the execution account
+exclusion lock. Credentials use a protected file/stdin and existing encrypted
+`set_secret(..., session=...)`; pointer, ciphertext, account and audit changes
+commit together. Rotation remains an explicit operation through the owner API.
+On platforms without POSIX owner-only file checks, including Windows, use
+`--secrets-file -` with input redirected from a protected source; the CLI refuses
+to assume that POSIX mode bits establish Windows file protection.
+
+Repeat `vmdev db roles` verifies supplied existing passwords without replacing them.
+`vmdev db roles --rotate` is the explicit six-password rotation transaction; stop
+runtime and update all six connection URLs before restarting. Back up the external
+secret-key ring separately; a database dump cannot recreate it.
+
+## Existing databases, migrations and rollback
+
+The current linear head is `0104_saxo_capability_flags`; verify it from
+`scripts/db/alembic/versions/`, not a copied command result. Revisions `0099`–`0104`
+add owner designation, safe registrations/reference functions, control-plane guards,
+and guarded commercial-table removal. Historical IDs and migrations remain intact.
+`0104` completes only the exact historical Saxo capability document with two
+explicit false flags. Customized documents remain unchanged and require reviewed
+reconciliation; neither flag grants execution or live certification authority.
+
+For a database whose current schema owner differs from the fresh-install convention,
+configure that exact maintenance identity and use `vmdev db migrate` for schema-only
+upgrade. It stops runtime, verifies ownership, acquires the migration lock, and runs
+Alembic; it neither provisions a new owner nor seeds data. Earlier role migrations
+still require the explicit administrator authority described above. Do not silently
+transfer object ownership or change role attributes to make preflight pass.
+
+Take a protected archive and validate a restore before an existing-data upgrade.
+Inventory pending outbox commands, nonterminal orders/rebalance plans and canonical
+ledger exposure for all preserved users. Owner adoption blocks unresolved foreign
+work and exposure. Non-owner non-SPOT history requires explicit reconciliation/
+disposition; no speculative derivative accounting or position-projection shortcut
+is used. Historical records of the selected owner remain recoverable.
+
+`0103` refuses **before DDL** if `orgs`, `plans`, `user_roles`,
+`user_plan_subscriptions` contain rows or `users.org_id` is non-null. Resolve and
+record disposition/export deliberately; the migration never deletes populated
+commercial data. It preserves all user/account identifiers and trading history.
+Its downgrade recreates empty commercial structures. Earlier downgrades refuse
+loss of a configured owner, stable account keys, or registered versions rather than
+rewriting active state. Do not assume downgrade is a data rollback: restore the
+matched code/database snapshot when a guarded downgrade cannot preserve semantics.
+
+```text
+vmdev db backup backups/pre-upgrade.dump
+vmdev db migrate
+vmdev db restore backups/pre-upgrade.dump
+```
+
+Backup streams a new mode-0600 PostgreSQL custom archive through the existing
+PostgreSQL container; it refuses to overwrite a file. Restore confirms the explicit
+target, stops runtime, restores transactionally with the supplied maintenance owner
+and preserved grants, and leaves runtime stopped for verification. The target and
+required cluster roles must already exist. Keep archives off-host according to your
+recovery needs. Neither operation creates a fourth container.
+
+`vmdev db backup`, `restore`, and `connect` execute PostgreSQL utilities inside
+the existing PostgreSQL container. Their `MIGRATION_DATABASE_URL` must therefore
+target `postgres:5432`, even when the host publishes a different loopback port.
+In contrast, `vmdev db migrate` and `activate-canary` connect from the host and
+require a host-reachable `MIGRATION_DATABASE_URL`; routine owner/catalogue writes
+use a host-reachable `BACKEND_DATABASE_URL`. Scope the appropriate URL through
+your secret environment mechanism for each operation; keep the same intended
+database and role, and never put credentials in command arguments.
 
 ## Schema Overview (tables in `libs/python/lib_application/lib_application/db/models/`)
 
-### Active Pipeline Tables (used in live Strategy → Scoring → Execution → Feedback flow)
+### Active Pipeline Tables (used in the Strategy → Scoring → Execution → Feedback flow)
 
 | Table | Pipeline Stage | Description |
 |-------|---------------|-------------|
@@ -172,7 +280,7 @@ Note that `execution_mode` is not an ORM column; it exists only on the scoring D
 
 ### Supporting Tables (config/reference data)
 
-- **Tenancy & Users:** orgs, users, user_roles, plans, user_plan_subscriptions, user_consents, suitability_questionnaires, user_suitability_responses, feature_flags, user_feature_flags.
+- **Owner and retained historical identities:** users, user_consents, suitability_questionnaires, user_suitability_responses, feature_flags, user_feature_flags.
 - **Broker Connectivity:** brokers, broker_environments, linked_broker_accounts, broker_credentials, managed_secrets.
 - **Instruments & Mapping:** instruments, instrument_aliases,
   instrument_broker_symbols, instrument_sectors, sectors, market_calendars,
@@ -192,7 +300,7 @@ Note that `execution_mode` is not an ORM column; it exists only on the scoring D
   adjustment/missing-data, entitlement, revision, availability, and content
   identity. Historical-validation authority cannot satisfy a paper- or
   live-forward panel.
-  A verified one-shot importer in the existing market-data-ingestor image can
+  A verified one-shot importer in the platform image can
   translate a content-addressed symbolic research bundle into this DB graph,
   deriving identities from local instrument IDs and accepting exact immutable
   replays. Missing source-backed membership availability fails before writes;
@@ -243,12 +351,6 @@ change against real IBKR combo semantics. **Retained deliberately:**
 
 ## Reference and Market Data
 
-`vmdev db init` applies migrations only; it does not create fabricated users,
-broker accounts, credentials, strategies, or signals. `vmdev db reset` also
-bootstraps the source-controlled instrument catalogue from
-`config/instruments.yaml`. The full Compose stack has a separate `db-seed`
-one-shot service for its source-controlled SQL configuration.
-
 ### Observed currency rates
 
 Currency conversion uses the same revision-tracked `prices` store rather than a
@@ -265,18 +367,11 @@ allowed only when both observed legs satisfy the configured freshness window.
 Missing or stale conversions block the affected balance, position, P&L, or NAV
 calculation.
 
-After migrations and catalogue seeding, prime the ledger from the real public
-sources before a historical replay:
-
-```bash
-docker compose --env-file .env -f docker/docker-compose.stack.yml \
-  run --rm --no-deps fx-rate-ingestor \
-  python -m apps.market_data_ingestor.market_data_ingestor.main fx-rates-once
-```
-
-The continuous `fx-rate-ingestor` process then refreshes these observations on
-its configured interval and exposes internal readiness on port `8004`. Its
-source failure is isolated from the primary crypto-candle scheduler.
+Select `fx` in `PLATFORM_WORKERS` to refresh these observations in the workers
+container (or the combined application). The process exposes port `8004` internally.
+Provider failure remains separate from crypto-candle ingestion. Bounded historical
+replay and provenance checks are described once in
+[E2E_VERIFICATION_GUIDE.md](E2E_VERIFICATION_GUIDE.md).
 
 ### Authoritative market sessions
 
@@ -309,120 +404,31 @@ every provider response before its first write, and calls the backend API above.
 An empty selector, incomplete typed mapping, expired credential, stale NSE open
 date, or source/API failure fails closed and lets prior coverage age out.
 
-Enable exactly one writer for a given instrument:
+Enable exactly one calendar writer for a given instrument through `PLATFORM_WORKERS`:
+`calendar-ibkr`, `calendar-saxo`, or `calendar-zerodha`. Their internal ports are
+`8005`, `8006`, and `8008`. Configure the corresponding explicit symbol selectors,
+provider credentials, and typed mappings. A gateway dependency is described in
+[DEPLOYMENT.md](DEPLOYMENT.md); it does not disappear from the container budget.
 
-```bash
-docker compose --env-file .env -f docker/docker-compose.stack.yml \
-  --profile calendar-ibkr up -d market-calendar-ibkr
-```
+The `backfill` job uses the existing market-data implementation and real Coinbase
+history. Invoke it through `scripts.run_platform job backfill` in a running workers
+(or combined) container, with a timeout. It has a local exclusion lock and no
+separate scheduler/container. See the E2E guide for coverage, stale-tail, duplicate
+submission, ledger/FX, and historical-versus-current delivery acceptance.
+Feedback reads provenance-matched persisted candles, never a second synthetic feed.
 
-Use `calendar-saxo` / `market-calendar-saxo` or
-`calendar-zerodha` / `market-calendar-zerodha` for the other sources. Refresh
-must remain inside `EXECUTION_MAX_MARKET_SESSION_AGE_SECONDS`; readiness is
-served internally on port `8005`.
+## Deployment and accounting boundaries
 
-For native-strategy pipeline validation, populate the `prices` table
-with Coinbase candles. Deep historical warmup for daily/swing strategies runs
-as a separate 150-day one-shot (`python -m market_data_ingestor.main backfill`,
-or the `market-data-backfill` Compose service under `--profile backfill`) so it
-cannot stall the live poll loop. The live `market_data_ingestor` then owns only
-its short startup request and 60-second polling. This fixture is not evidence
-that SwingHighLowPMO—or any `READY_FOR_BACKTEST` strategy—is paper/live ready;
-see [Strategy Readiness](STRATEGY_READINESS.md).
+One active designated owner may use multiple explicitly owned broker accounts,
+environments, regions, strategies and currencies. Retained non-owner IDs represent
+historical attribution, never a caller-selectable new execution tenant. Row-level
+policies and the transaction-local scope remain where they protect ownership.
 
-The one-shot retries an empty Coinbase request four times. With the aggregate
-coverage gate enabled, at most one unique retried-empty request window per
-symbol may defer to that final gate; a distinct second empty window aborts the
-run. The gate also requires a recently closed tail candle, because a stale
-several-hour suffix can otherwise be hidden inside 150 days of 95%-complete
-history; that suffix is repaired with a bounded recent pass. Malformed or
-partially rejected candle batches fail closed rather than being classified as a
-venue gap.
+Market sessions, provider entitlements, instrument mappings, contract multipliers,
+fill-time FX and canonical execution-ledger replay remain mandatory. Positions and
+metrics are projections. Normal installation cannot manufacture those authorities.
 
-```bash
-# Populate 150 days in an isolated one-shot, then start continuous polling.
-INGESTOR_SYMBOLS=BTC-USDC \
-INGESTOR_GRANULARITY=ONE_MINUTE INGESTOR_BACKFILL_DAYS=150 \
-docker compose --env-file .env -f docker/docker-compose.stack.yml \
-  --profile backfill run --rm --no-deps market-data-backfill
-docker compose --env-file .env -f docker/docker-compose.stack.yml \
-  up -d market-data-ingestor
-
-docker compose --env-file .env -f docker/docker-compose.stack.yml \
-  run --rm --no-deps execution-engine \
-  python /app/scripts/replay_canonical_signals.py \
-  --user-id demo_user \
-  --broker-account-id 1 \
-  --strategy-id swing_high_low_pmo_v1 \
-  --symbols BTC-USDC \
-  --start-date 2026-07-10 \
-  --end-date 2026-07-16 \
-  --source coinbase_live \
-  --timeframe 15m \
-  --require-minute-data \
-  --no-enable-shorting
-```
-
-This fixed real-history witness contains the Swing LONG at
-`2026-07-14T11:00:00Z` and CLOSE at `2026-07-14T12:45:00Z`. Normal
-scoring/outbox delivery of those old commands must publish a blocked/stale
-result with no order at the execution freshness gate. The explicit canonical
-replay is a separate, local-paper-only accounting proof. It requires one exact
-v1 decision and published execution-command event for the user/account/signal,
-uses the persisted command's policy/score/route as economic authority, requires
-one bounded exact binding, and retains each fill's source price ID/content
-revision. It is not evidence of current-time transport.
-
-Coinbase environment guidance:
-- `sandbox smoke`: use the Advanced Trade sandbox only for auth/request-shape verification
-- `paper soak`: use the local paper broker with live Coinbase market data
-- `live`: use Coinbase Advanced Trade production endpoints only after certification
-
-Feedback reads only completed, provenance-matched candles written by
-`market_data_ingestor`; it does not run a parallel market-data client.
-
-After a successful 14-day paper soak, write the certification marker consumed by the execution-engine live gate:
-
-```bash
-python scripts/write_sandbox_certification_marker.py \
-  --commit "$(git rev-parse HEAD)" \
-  --symbols BTC-USDC,ETH-USDC,SOL-USDC \
-  --paper-window-days 14 \
-  --duplicate-submission-count 0 \
-  --operator your.name \
-  --acceptance-report .artifacts/coinbase/soak-acceptance.json \
-  --sandbox-smoke-evidence .artifacts/coinbase/sandbox-smoke.json \
-  --paper-soak-evidence .artifacts/coinbase/paper-soak-summary.json \
-  --reconciliation-summary .artifacts/coinbase/reconciliation-summary.json
-```
-
-## Cloud Deployment
-
-No cloud database or infrastructure is configured for this migration. The local
-Compose stack is the available runtime reference. Future deployment requires
-separately reviewed ownership, role provisioning, secret delivery, backups,
-restore checks, and rollback. See [DEPLOYMENT.md](DEPLOYMENT.md).
-
-## Data Residency & Security
-
-- One individual `user_id` is one tenant. Broker accounts, credentials,
-  bindings, risk state, orders, positions, P&L, and feedback remain attributable
-  to that user; organization rows are identity metadata, not a shared-desk
-  account-ownership model.
-- Each runtime uses one least-privilege PostgreSQL login plus RLS/service-role
-  policies. Schema-owner credentials are restricted to migration and controlled
-  catalogue jobs.
-- Per-account secrets may be stored only as ciphertext in `managed_secrets`
-  using the externally supplied `SECRETS_MASTER_KEYS` ring; plaintext is never
-  returned by the control plane.
-- Canonical signals, decisions, order/fill lineage, outbox redrive audit, and
-  API audit rows provide the retained operational history for the current
-  personal-use scope.
-
-## Operational Checklist
-
-- `vmdev db start` → `vmdev db init` on fresh clones.
-- Run `alembic upgrade head` on deploy; keep migrations reviewed.
-- Daily off-host `pg_dump` backups enabled for the self-hosted database; perform
-  an isolated restore drill monthly.
-- Keep `DATABASE_URL` set per environment; prefer IAM auth in prod.
+Local/cloud topology, persistence, health checks and upgrade process are canonical in
+[DEPLOYMENT.md](DEPLOYMENT.md). Recorded-data acceptance is canonical in the
+[E2E guide](E2E_VERIFICATION_GUIDE.md). No cloud infrastructure or release is implied
+by successfully running a local bootstrap.

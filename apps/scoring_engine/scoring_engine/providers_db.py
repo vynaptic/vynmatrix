@@ -10,6 +10,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
 from lib_application.db import models as app_models
+from lib_application.db.session import tenant_scope
+from lib_application.services.deployment_owner import (
+    DeploymentOwnerError,
+    require_deployment_owner_id,
+)
 from lib_common.asset_classes import normalize_asset_class
 from lib_common.config_validation import normalize_broker_code
 from lib_common.logging import get_logger
@@ -134,7 +139,12 @@ class DBProfileProvider:
     def __call__(self, user_id: str) -> dict[str, Any]:
         try:
             with self._session_factory() as s:
-                return self._fetch_app_profile(s, user_id)
+                owner_id = require_deployment_owner_id(s)
+                if owner_id != user_id:
+                    message = f"User {user_id} is not the active deployment owner"
+                    raise DeploymentOwnerError(message)
+                with tenant_scope(s, user_id=owner_id):
+                    return self._fetch_app_profile(s, owner_id)
         except (SQLAlchemyError, OSError):
             # DB / connection-level failures only — programming errors propagate.
             logger.exception("Failed to fetch user profile for %s", user_id)
@@ -152,7 +162,6 @@ class DBProfileProvider:
             "tz": user.tz,
             "base_ccy": user.base_ccy,
             "status": user.status,
-            "org_id": user.org_id,
         }
 
         risk_profile = self._resolve_risk_profile(session, user_id)
@@ -311,13 +320,18 @@ class DBStrategyConfigProvider:
     ) -> dict[str, Any]:
         try:
             with self._session_factory() as s:
-                return self._fetch_app_config(
-                    s,
-                    user_id,
-                    strategy_id,
-                    binding_id=binding_id,
-                    broker_account_id=broker_account_id,
-                )
+                owner_id = require_deployment_owner_id(s)
+                if owner_id != user_id:
+                    message = f"User {user_id} is not the active deployment owner"
+                    raise DeploymentOwnerError(message)
+                with tenant_scope(s, user_id=owner_id):
+                    return self._fetch_app_config(
+                        s,
+                        owner_id,
+                        strategy_id,
+                        binding_id=binding_id,
+                        broker_account_id=broker_account_id,
+                    )
         except (SQLAlchemyError, OSError):
             # DB / connection-level failures only — programming errors propagate.
             logger.exception("Failed to fetch strategy config for %s", user_id)

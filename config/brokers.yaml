@@ -1,0 +1,151 @@
+# Non-secret broker reference endpoints, retained from the established SQL seed.
+# Remote capabilities come from lib_infrastructure.brokers.capabilities.
+# The in-process PaperBroker is not a remote adapter; its reference payload is here.
+# Registration grants no accounts, credentials, entitlements or execution authority.
+brokers:
+- code: coinbase
+  name: Coinbase
+  environments:
+  - environment: paper
+    region: US
+    base_urls:
+      rest: https://api-sandbox.coinbase.com
+      ws: null
+    rate_limits:
+      requests_per_second: 10
+  - environment: live
+    region: US
+    base_urls:
+      rest: https://api.coinbase.com
+      ws: wss://advanced-trade-ws.coinbase.com
+    rate_limits:
+      requests_per_second: 10
+- code: deribit
+  name: Deribit
+  environments:
+  - environment: paper
+    region: global
+    base_urls:
+      rest: https://test.deribit.com/api/v2
+      ws: wss://test.deribit.com/ws/api/v2
+    rate_limits:
+      requests_per_second: 20
+  - environment: live
+    region: global
+    base_urls:
+      rest: https://www.deribit.com/api/v2
+      ws: wss://www.deribit.com/ws/api/v2
+    rate_limits:
+      requests_per_second: 20
+- code: delta
+  name: Delta Exchange
+  environments:
+  - environment: paper
+    region: global
+    base_urls:
+      rest: https://testnet-api.delta.exchange
+      ws: wss://testnet-socket.delta.exchange
+    rate_limits:
+      requests_per_second: 20
+  - environment: live
+    region: global
+    base_urls:
+      rest: https://api.delta.exchange
+      ws: wss://socket.delta.exchange
+    rate_limits:
+      requests_per_second: 20
+  - environment: paper
+    region: india
+    base_urls:
+      rest: https://cdn-ind.testnet.deltaex.org
+      ws: null
+    rate_limits:
+      requests_per_second: 20
+  - environment: live
+    region: india
+    base_urls:
+      rest: https://api.india.delta.exchange
+      ws: null
+    rate_limits:
+      requests_per_second: 20
+- code: ibkr
+  name: Interactive Brokers
+  environments:
+  - environment: paper
+    region: US
+    base_urls:
+      rest: https://api.ibkr.com/v1/portal
+      gateway: https://localhost:5000
+    rate_limits:
+      requests_per_second: 50
+  - environment: live
+    region: US
+    base_urls:
+      rest: https://api.ibkr.com/v1/portal
+      gateway: https://localhost:5000
+    rate_limits:
+      requests_per_second: 50
+- code: zerodha
+  name: Zerodha
+  environments:
+  - environment: paper
+    region: IN
+    base_urls:
+      rest: https://api.kite.trade
+    rate_limits:
+      requests_per_second: 3
+  - environment: live
+    region: IN
+    base_urls:
+      rest: https://api.kite.trade
+    rate_limits:
+      requests_per_second: 3
+- code: paper
+  name: Paper (local simulator)
+  environments:
+  - environment: paper
+    region: global
+    base_urls:
+      transport: in_process
+    rate_limits: {}
+  capabilities:
+    asset_classes:
+    - crypto
+    - equity
+    - etf
+    - futures
+    - options
+    - fx
+    - commodities
+    order_types:
+    - market
+    - limit
+    - stop
+    features:
+    - spot
+    - margin
+    - futures
+    - options
+    regions:
+    - global
+    exact_fill_retrieval: true
+    live_certification_implemented: false
+- code: saxo
+  name: Saxo Bank
+  environments:
+  - environment: paper
+    region: global
+    base_urls:
+      rest: https://gateway.saxobank.com/sim/openapi
+      ws: wss://sim-streaming.saxobank.com/sim/oapi/streaming/ws
+    rate_limits:
+      requests_per_minute: 120
+      orders_per_second: 1
+  - environment: live
+    region: global
+    base_urls:
+      rest: https://gateway.saxobank.com/openapi
+      ws: wss://live-streaming.saxobank.com/oapi/streaming/ws
+    rate_limits:
+      requests_per_minute: 120
+      orders_per_second: 1

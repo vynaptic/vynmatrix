@@ -237,10 +237,9 @@ CANONICAL_SESSION_PATH = "libs/python/lib_application/lib_application/db/session
 #: Allow-listed call sites that legitimately fall outside the canonical
 #: session helper (test rigs, migrations, vendored packages).
 SESSION_DRIFT_ALLOWLIST = {
-    # Alembic env + bootstrap scripts must construct an engine before any
+    # Alembic must construct an engine before any
     # canonical helper exists.
     "scripts/db/alembic/env.py",
-    "scripts/db/bootstrap_scoring.py",
     # One-shot drift diagnostic: builds a throwaway migration-built DB and
     # compares it to the models; cannot use the app session factory.
     "scripts/db/check_schema_drift.py",
@@ -277,11 +276,7 @@ DOCKERFILE_FROM_RE = re.compile(r"^\s*FROM\s+(\S+)", re.MULTILINE)
 DOCKERFILE_ARG_RE = re.compile(r"^\s*ARG\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\S+)", re.MULTILINE)
 RUNTIME_REQUIREMENTS_PATHS = (
     "docker/requirements-svc-base.txt",
-    "docker/requirements-scoring.txt",
-    "docker/requirements-execution.txt",
-    "docker/requirements-feedback-loop.txt",
-    "docker/requirements-market-data.txt",
-    "docker/requirements-indicator-runner.txt",
+    "docker/requirements-platform.txt",
 )
 RUNTIME_CONSTRAINTS_PATH = "docker/constraints.txt"
 RUNTIME_SETUP_GLOBS = (

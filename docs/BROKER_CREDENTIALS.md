@@ -14,15 +14,15 @@ market-data credential paths.
 
 ## The two credential boundaries
 
-Shared market-data access and tenant trading access are independent:
+Shared market-data access and the designated owner’s account trading access are independent:
 
 | Path | What it does | Where creds live | Permission needed |
 |------|--------------|------------------|-------------------|
 | **Market data** | Fetch candles for isolated warmup/backfill and live polling | Dedicated platform feed env vars (or an authenticated IBKR gateway); public venues need none | **View / market-data entitlement** |
-| **Trading** | Place and track orders for one selected user account | Per-broker-account **JSON secret** referenced by `broker_credentials.secret_ref` | **Trade** |
+| **Trading** | Place and track orders for one exact owner account | Per-broker-account **JSON secret** referenced by `broker_credentials.secret_ref` | **Trade** |
 
 For Coinbase, both paths use the **Coinbase Advanced Trade API** with **CDP
-keys** (ES256 JWT auth — not the legacy HMAC key/secret/passphrase). Prefer
+keys** (JWT authentication, not the legacy HMAC key/secret/passphrase). Prefer
 separate least-privilege keys. Zerodha uses
 `ZERODHA_MARKET_DATA_API_KEY`/`ZERODHA_MARKET_DATA_ACCESS_TOKEN`; Saxo uses
 `SAXO_MARKET_DATA_ACCESS_TOKEN`, its RFC3339 expiry, and optional AccountKey.
@@ -82,29 +82,33 @@ For ECDSA, the normalizer (`normalize_coinbase_private_key`) converts the `\n`
 back to real newlines at load time. Ed25519 secrets are plain base64 — no
 escaping needed.
 
-The local stack already forwards these to the market-data ingestor and execution
-engine:
+The platform launcher forwards these optional Coinbase feed credentials only
+to the selected market-data process. Execution resolves account-scoped encrypted
+credentials separately; it does not inherit shared feed keys. Public Coinbase
+candles do not require a trading key.
+
+Select `market-data` in `PLATFORM_WORKERS` and configure exact `INGESTOR_SYMBOLS`
+after reviewing the source catalogue. Start or restart through the owner/database
+lifecycle in [DATABASE.md](DATABASE.md). Inspect the existing worker group
+(`application` instead of `workers` for the combined layout):
 
 ```bash
-docker compose --env-file .env -f docker/docker-compose.stack.yml up -d
+docker compose --env-file .env -f docker/docker-compose.stack.yml logs --tail 100 workers
 ```
 
-Verify market-data auth works (no more 401):
-
-```bash
-docker compose --env-file .env -f docker/docker-compose.stack.yml logs market-data-ingestor 2>&1 | grep -i "ingestion cycle complete"
-```
+Check component readiness for fresh source observations; absence of an auth
+error alone does not establish complete or timely data.
 
 ---
 
 ## 3. Configure — future hosted environments
 
-No hosted runtime is configured by this migration. The retained
-`config/deployment/{staging,production}.yaml` files declare environment-backed
-secret names, not a provisioned service. A future owner must separately review
-secret delivery and inject values into the exact consuming process. Keep
-account-scoped execution credentials separate from market-data credentials;
-never copy a previous operator's environment or credential store.
+No hosted runtime is provisioned. The private single-host baseline uses the
+same platform image and two/three-container layouts as local setup; backend
+binds loopback and can be reached through an owner-controlled SSH tunnel.
+[DEPLOYMENT.md](DEPLOYMENT.md) defines that boundary. Inject secret values only
+into the consuming process through the declared allowlists. Do not reuse an
+inherited operator environment or copy trading credentials into feed settings.
 
 ---
 
@@ -133,10 +137,10 @@ across multiple secrets or add unowned fields to the document.
   for an account whose Coinbase credential format uses it.
 - Deribit requires `api_key` and `api_secret`; `subaccount` is optional.
 - Every linked `paper` account requires an empty credential object because
-  normal tenant paper execution always uses the deterministic in-process
+  normal owner paper execution always uses the deterministic in-process
   broker. Its explicit initial equity and cash belong to the linked account,
   not a secret. Exchange sandboxes use isolated certification workflows rather
-  than tenant credential state.
+  than owner credential state.
 
 Credential validity does not imply live certification. Live routing also
 requires an order-scoped broker trade resource that supplies the stable venue
@@ -186,16 +190,18 @@ account, and never disables TLS verification for live execution. The account
 owner must complete IBKR's interactive Client Portal authentication and
 reauthentication outside the execution process. IBKR documents the retail Client
 Portal Gateway as a local-machine process and warns that operating it on a
-different machine from the API client is unsupported. A DigitalOcean route must
-therefore not be assumed from a successful workstation session.
+different machine from the API client is unsupported. A remote-host route must therefore not be assumed from a successful workstation
+session. The gateway is an explicit dependency with its own authentication
+lifecycle. If separately approved as a container, it uses the third slot and the
+platform must use the combined `all` group. An external owner-operated gateway
+also requires an explicit URL and TLS configuration; the stack provisions neither.
 
 IBKR execution resolves a positive-integer conid from the selected account's
 `instrument_broker_symbols.broker_instrument_id`; symbol search and first-result
 selection are forbidden. The adapter calls the documented `/tickle` boundary
 before order submission after the cached health window, and an expired,
-disconnected, or unauthenticated brokerage session fails closed. The canonical
-seed contains only IBKR's officially documented AAPL conid (`265598`); every
-other conid must come from reviewed IBKR reference data.
+disconnected, or unauthenticated brokerage session fails closed. Every conid must come from reviewed IBKR reference data; a historical fixture
+or source catalogue row does not grant account trading authority.
 
 Zerodha requires the application pair plus the current daily Kite session:
 
@@ -247,18 +253,23 @@ resolves the selected linked account's broker mapping from
 `broker_instrument_type`; option orders additionally require an explicit
 open/close intent. These are instrument-catalogue facts, not credential
 defaults, and execution blocks before broker connection when the mapping is
-absent. The canonical seed includes only Saxo's publicly documented EURUSD
-mapping (`UIC=21`, `AssetType=FxSpot`); other instruments must be onboarded
-from authoritative Saxo reference data. Outstanding pre-trade disclaimers
+absent. Every instrument must be onboarded from authoritative Saxo reference data;
+a historical fixture mapping does not grant account trading authority. Outstanding pre-trade disclaimers
 block automated placement, and the adapter never accepts them on a user's
 behalf.
 
 Create a linked account with
-`POST /users/{user_id}/broker-accounts`. Rotate any credential with
-`PUT /users/{user_id}/broker-accounts/{account_id}/credentials`; rotation is a
+`POST /broker-accounts`. Rotate any credential with
+`PUT /broker-accounts/{account_id}/credentials`; rotation is a
 complete replacement, never a partial patch. Both endpoints require the backend
 operator key and return only the account/secret reference and expiry metadata,
 never plaintext.
+
+The API resolves the designated owner; caller-provided `user_id` selectors are
+rejected. Accounts require a stable owner-relative `config_key`; retrying the same
+key preserves the account identity. The CLI and API share validation and atomic
+credential writes. Owner designation and account adoption are explicit operations
+described in [DATABASE.md](DATABASE.md).
 
 Each linked account also has a required `base_ccy`. A strategy binding selects
 one concrete `broker_account_id`; that account identity and currency remain
@@ -284,98 +295,65 @@ semantics. Missing or inconsistent terms and non-linear (inverse or quanto)
 contracts fail closed. The generic paper model does not invent exchange-specific
 funding charges or liquidation prices.
 
-The `secret_ref` is resolved at execution time by a **provider-agnostic** secrets
-backend — no cloud is assumed. Select it with `SECRETS_BACKEND`:
+The `secret_ref` is resolved at execution time through the encrypted database
+secrets provider. In the composed runtime the launcher fixes `SECRETS_BACKEND=db`
+and gives `SECRETS_MASTER_KEYS` only to backend and execution child processes.
+The key ring is mandatory at application startup; no fallback to global broker
+environment credentials is used. Other provider implementations remain library
+facilities, not alternative Compose account stores.
 
-| `SECRETS_BACKEND` | Backend | Use |
-|---|---|---|
-| `env` (backend local default) | `EnvSecretsProvider` — env var `BROKER_CREDS_{REF}` (e.g. `BROKER_CREDS_COINBASE_LIVE_MAIN`) holds the JSON; read-only through the API | local inspection |
-| `db` | `DbSecretsProvider` — JSON stored **encrypted at rest** in the `managed_secrets` table, encrypted with the newest key and decrypted by any key in `SECRETS_MASTER_KEYS` | **explicitly configured runtimes** |
-| `composite` | DB (if `SECRETS_MASTER_KEYS` is set) then env | dev fallback |
+### Encrypted account storage
 
-### Encrypted account storage: the `db` backend
+`DbSecretsProvider` stores each account’s JSON encrypted in `managed_secrets`,
+keyed by an account-owned reference. `SECRETS_MASTER_KEYS` is a newest-first
+Fernet key ring: writes use the first key and reads accept every configured key.
+Keep its recovery material separate from database backups. No key is supplied
+in [`.env.example`](../.env.example), and no new account needs an image rebuild.
 
-DO has no managed secrets API, and per-user env vars don't scale (a new tenant
-would need a redeploy). The `db` backend stores each account's JSON **encrypted**
-in Postgres, keyed by an account-owned `secret_ref`, using an ordered Fernet key
-ring:
+Use `vmdev user account` with a reviewed account config and a separate protected
+secrets file, or the authenticated backend account endpoints. Do not put secret
+values in command arguments or account outputs. Paper accounts use the local
+paper broker and accept no exchange credentials. Account onboarding requires
+explicit currency and initial paper cash/equity; it does not activate trading.
 
-```bash
-# 1. Generate the initial key (store as a DO secret / Droplet .env, never commit):
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-
-# 2. On every DB-secret reader/writer (execution engine and backend API), set:
-SECRETS_BACKEND=db
-SECRETS_MASTER_KEYS=<the key from step 1>
-
-# 3. Onboard a user's broker keys (encrypt + upsert into managed_secrets):
-python scripts/manage_broker_secret.py set \
-  --account-id <linked_broker_account_id> \
-  --secret-ref "users/<user_id>/broker-accounts/<linked_broker_account_id>" \
-  --api-key "$COINBASE_API_KEY" --api-secret "$COINBASE_API_SECRET"
-```
-
-Only the key-ring environment variable is deployed; per-user credentials remain
-encrypted in the DB and are added with a row insert — **no redeploy per tenant**.
-Keys are ordered newest first: new writes use the first key, while reads accept
-every configured key.
+Backend uses `BACKEND_ADMIN_API_KEY` as `X-Admin-Key`. Scoring/execution admin
+keys protect different services and cannot substitute for it. Runtime database
+URLs use the six `vm_*_login` identities; administrator and migration URLs stay
+outside those processes. Fresh bootstrap runs historical role DDL that requires
+an already provisioned PostgreSQL superuser. The default uses `trader` for both
+maintenance stages with separate administrator-database and target-database
+URLs. This never grants runtime superuser authority. See
+[DATABASE.md](DATABASE.md) for exact maintenance and host-connection procedures.
 
 ### Rotate the encryption master key
 
-Rotation is explicit so reads remain side-effect free and each account can be
-audited. Generate a new key, prepend it to the existing ring, deploy that ring to
-every DB-secrets reader, and then re-encrypt each registered credential:
+Rotation is explicit and account-scoped. Generate a new key into the protected
+key store, prepend it to the existing ring, and restart backend/execution through
+the supported lifecycle so every reader accepts both keys. Use the existing
+`scripts/manage_broker_secret.py rotate` and `check` maintenance utility for each
+registered account/reference with the reviewed database connection; it does not
+require an additional container. The utility updates ciphertext and
+`broker_credentials.last_rotated_at` atomically and does not return plaintext.
 
-```bash
-SECRETS_MASTER_KEYS=<new_key>,<previous_key>
+After every active credential has been re-encrypted and all readers use the new
+ring, remove the previous key and restart through the same lifecycle. Retain the
+keys needed by retained backups under the operator’s recovery policy. Never drop
+an old key while current ciphertext still requires it. `SECRETS_MASTER_KEYS` is
+the only supported key configuration; the singular name is rejected.
 
-python scripts/manage_broker_secret.py rotate \
-  --account-id <linked_broker_account_id> \
-  --secret-ref "users/<user_id>/broker-accounts/<linked_broker_account_id>"
-
-python scripts/manage_broker_secret.py check \
-  --account-id <linked_broker_account_id> \
-  --secret-ref "users/<user_id>/broker-accounts/<linked_broker_account_id>"
-```
-
-`rotate` updates the ciphertext and `broker_credentials.last_rotated_at` in one
-transaction and never returns or prints plaintext. After every active
-`broker_credentials` row has `last_rotated_at` at or after the recorded rollout
-start and every service uses the new ring, remove the previous key and redeploy.
-Never remove an old key before all ciphertext and all readers have moved.
-
-`SECRETS_MASTER_KEYS` is the only supported key configuration. The companion
-Any future deployment must inject that plural, newest-first ring; the removed
-singular `SECRETS_MASTER_KEY` name is intentionally rejected.
-
-- **Local backend reads:** leave `SECRETS_BACKEND` unset. The backend uses
-  `EnvSecretsProvider`, so binding and broker-account reads remain available.
-  Broker-account onboarding and credential rotation return 503 without changing
-  database state because env variables are not a safe per-request write surface.
-- **Local credential writes and execution:** set `SECRETS_BACKEND=db` and
-  `SECRETS_MASTER_KEYS` to use the account-scoped encrypted store against local
-  Postgres. The execution-engine Compose service deliberately defaults to `db`;
-  it must resolve the same persisted `secret_ref` values and key ring as the
-  backend rather than silently switching to process environment credentials.
-- Every tenant-linked `environment="paper"` account executes through the local
-  in-process paper broker and carries no exchange credential. Coinbase sandbox
-  and Saxo SIM are separate, operator-run certification workflows; they are not
-  tenant paper routes.
-- Saxo `environment="live"` uses
-  `gateway.saxobank.com/openapi`. Certification uses
-  `gateway.saxobank.com/sim/openapi` with a distinct SIM application and token;
-  a credential or host from one environment is never reused in the other.
-
-> Live trading also requires `EXECUTION_MODE=live` **and**
-> `EXECUTION_ENGINE_ALLOW_LIVE=true`; both default to off so nothing trades real
-> money by accident.
+Every owner-linked paper account uses the in-process paper broker. Coinbase
+sandbox and Saxo SIM are separate certification workflows and cannot be treated
+as real-data paper acceptance. Saxo live and SIM hosts and credentials remain
+separate. The platform launcher fixes `EXECUTION_MODE=paper` and
+`EXECUTION_ENGINE_ALLOW_LIVE=false`; this documentation does not grant authority
+to change those gates.
 
 ---
 
 ## Security
 
-- **Never commit** keys. `.env` and `*.pem` are gitignored; prod injects them as
-  env vars (Droplet `.env` / App Platform `SECRET` env).
+- **Never commit** keys. Keep `.env`, protected credential files and encryption
+  recovery material outside source control; inject only the scoped values.
 - **Least privilege:** a `View`-only key for market data; add `Trade` only for the
   live account. Never enable `Transfer`/withdrawal.
 - **IP-allowlist** production keys; **rotate** by minting a new CDP key and

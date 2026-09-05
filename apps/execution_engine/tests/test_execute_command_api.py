@@ -85,6 +85,7 @@ def test_execute_command_endpoint_accepts_versioned_event() -> None:
             signal_id="sig-exec-1",
             strategy_id="swing_high_low_pmo_v1",
             strategy_type="indicator",
+            strategy_version="1.2.3",
             symbol="BTCUSD",
             action="long",
             confidence=0.95,
@@ -136,6 +137,7 @@ def test_execute_command_endpoint_accepts_versioned_event() -> None:
     body = response.json()
     assert body["status"] == "ok"
     assert body["event_id"] == command.event_id
+    assert engine.received["signal"].strategy_version == "1.2.3"
     assert engine.received["user_id"] == "user-42"
     assert engine.received["score_context"]["recommended_mode"] == "spot"
     assert engine.received["profile"]["_broker_route_snapshot"]["broker_environment"] == "paper"

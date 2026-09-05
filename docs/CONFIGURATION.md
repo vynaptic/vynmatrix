@@ -31,17 +31,17 @@ only the local Compose topology; no external infrastructure repository is assume
 |---|---|
 | Local runtime values | `.env` passed to `docker/docker-compose.stack.yml` |
 | Local role-specific database URLs | `docker/docker-compose.stack.yml`; future deployment ownership is unconfigured |
-| Per-user broker account and binding configuration | `apps/backend` |
+| Designated owner profile, broker accounts and bindings | Shared owner services used by `apps/backend` and `vmdev user` |
 | Per-account broker ciphertext | `managed_secrets`, encrypted through `SECRETS_MASTER_KEYS` |
 | Tradable instrument identity and broker aliases | `config/instruments.yaml` plus database migrations/bootstrap |
-| Observed currency-conversion inputs | `fx-rate-ingestor`: official ECB EUR reference rates plus Coinbase USDC-EUR candles persisted in `prices` |
+| Observed currency-conversion inputs | Selected `fx` worker: official ECB EUR reference rates plus Coinbase USDC-EUR candles persisted in `prices` |
 | Strategy behavior | the selected strategy's source-controlled `config.json` |
 | Point-in-time equity evidence | Immutable provider lineage, observations, factor/rank snapshots, and registered strategy panel inputs; entitlement and `data_use_scope` are part of the content identity |
 | Portfolio rebalance authority | Tenant-neutral model rebalance from the completed panel decision, then one frozen user/binding/broker-account plan evaluated by scoring and leased by execution |
 | Exact paper strategy authority | evidence-hashed `paper_strategy_promotion.json`, mounted read-only into indicator and scoring; never live authority |
 | Versioned feedback baseline | immutable `strategy_versions.default_params`, registered from that release's validated strategy parameters |
 | Build dependencies, component group labels, and images | `config/build.yaml`, `config/containers.yaml`, `docker/constraints.txt` |
-| Repository review routing | `.github/CODEOWNERS` is an onboarding template until maintainers are designated |
+| Repository review routing | `.github/CODEOWNERS` routes default pull-request review to `@vynaptic`; GitHub protects `main` separately |
 
 **Dependency version authority is two-tier.** Abstract ranges live in each component's
 `setup.py` (`install_requires`); the production lock is `docker/constraints.txt`. `vmdev
@@ -52,18 +52,79 @@ in both places, never only in the lock.
 The scoring, execution, and indicator runtimes consume configuration snapshots;
 they do not own parallel user-binding or instrument write APIs.
 
+## Process groups and credential inputs
+
+Compose runs `application` plus the `workers` profile by default configuration
+(`COMPOSE_PROFILES=workers`, `PLATFORM_APPLICATION_GROUP=application`). For the
+two-container layout, clear `COMPOSE_PROFILES` and set the application group to
+`all`. PostgreSQL counts toward the limit of three running containers. A separately
+approved gateway container requires the combined layout. Use [DATABASE.md](DATABASE.md)
+for the lifecycle: bootstrap stops both groups before its maintenance one-shot;
+raw wildcard profiles or concurrent `compose run` jobs bypass that bound.
+
+| Process | Parent input mapped to child `DATABASE_URL` | Internal port |
+|---|---|---:|
+| Backend | `BACKEND_DATABASE_URL` / `vm_backend_login` | 8081 |
+| Scoring, inline relay | `SCORING_DATABASE_URL` / `vm_scoring_login` | 8001 |
+| Execution | `EXECUTION_DATABASE_URL` / `vm_execution_login` | 8000 |
+| Feedback daemon | `FEEDBACK_DATABASE_URL` / `vm_feedback_login` | 8002 |
+| Primary market feed | `MARKET_DATA_DATABASE_URL` / `vm_market_data_login` | 8003 |
+| FX | Same market-data role | 8004 |
+| IBKR / Saxo / NSE calendars | Same market-data role | 8005 / 8006 / 8008 |
+| Equity feed | Same market-data role | 8007 |
+| Indicator supervisor | `INDICATOR_DATABASE_URL` / `vm_indicator_login` | 8080 |
+| Platform supervisor | No database connection | 8090 |
+
+Only backend and PostgreSQL publish host ports, both on `127.0.0.1`. Child
+interpreters receive explicit allowlists. API service inputs are
+`BACKEND_ADMIN_API_KEY`, `SCORING_API_KEY`, `EXECUTION_API_KEY`,
+`SCORING_ADMIN_API_KEY` and `EXECUTION_ADMIN_API_KEY`; all five must differ
+from each other and from any supplied worker service key.
+Scoring/execution receive only their own admin key as `ADMIN_API_KEY`, while
+service keys map to `API_KEY`. Backend uses `X-Admin-Key`; scoring/execution
+admin endpoints additionally require `X-Admin-API-Key`. Feedback and selected
+market workers require `FEEDBACK_API_KEY` and `MARKET_DATA_API_KEY` respectively.
+Use distinct keys for all boundaries. The inline relay receives the execution
+service key; indicator receives only the scoring service key.
+
+Application children require full role URLs; generic `DATABASE_URL`,
+`DB_USER`/`DB_PASSWORD`, administrator/migration URLs and PostgreSQL credential
+variables are forbidden in runtime groups. Compose keeps maintenance inputs
+out of their environment. `ADMIN_DATABASE_URL` targets the `postgres` database;
+`MIGRATION_DATABASE_URL` names an explicit non-`vm_` maintenance login and target
+database on the same server. Fresh historical migrations require a PostgreSQL
+superuser because they alter role attributes. The default uses the same `trader`
+login/password for both maintenance stages; a different login must already have
+that authority. Nothing grants elevated rights automatically. Six
+`VM_<ROLE>_DB_PASSWORD` inputs provision the
+six runtime logins during maintenance only. Container URLs use `postgres:5432`;
+see the database guide for explicit host-command URL overrides.
+
+Backend and execution alone receive `SECRETS_MASTER_KEYS`; the launcher fixes
+`SECRETS_BACKEND=db`, `BACKEND_ALLOW_ANON=false`, `EXECUTION_MODE=paper`,
+`RUN_MODE=paper` and `EXECUTION_ENGINE_ALLOW_LIVE=false`. Application startup
+requires the key ring even before owner account onboarding. Other children do
+not inherit it. No global broker trading keys or caller-selected owner are
+accepted as execution authority.
+
+Feedback always runs in `workers`/`all`. `PLATFORM_WORKERS` selects only
+`market-data,equity,fx,calendar-ibkr,calendar-saxo,calendar-zerodha`; empty means
+none of those. `STRATEGY_LIST` is independently explicit and empty skips the
+indicator runner. Selection does not replace strategy/version/binding gates.
+
 ## Startup snapshots and validation
 
-`execution-engine`, `scoring-engine`, the indicator supervisor, and each
+Execution, scoring, the indicator supervisor, and each
 indicator worker call their validated configuration loader once at the process
 composition root. The resulting immutable startup configuration is injected
 into long-lived collaborators. Changing an environment variable after
 construction does not alter routing, gating, deduplication, circuit-breaker,
 scoring, binding-cache, relay, strategy selection, child-process credentials,
-or worker catch-up behavior; deploy a new process to apply a configuration
-change.
+or worker catch-up behavior; restart through the supported lifecycle to apply
+a configuration change.
 
-Present but malformed numeric and boolean values fail startup. The canonical
+Optional empty Compose settings are omitted from child environments so dynamic
+defaults apply. Present malformed numeric and boolean values fail startup. The canonical
 parsers in `lib_common.env_utils` own bounds and accepted boolean spellings;
 services must not reinterpret values locally. `vmdev audit` checks direct
 environment calls as well as values reached through mapping aliases and local
@@ -88,13 +149,12 @@ Compose uses bounded `json-file` logging for every declared service.
 `DOCKER_LOG_MAX_SIZE` and `DOCKER_LOG_MAX_FILES` default to `10m` and `3`;
 increasing them requires an explicit local disk budget review.
 
-Continuously supervised application containers use
-`APP_STOP_GRACE_PERIOD=60s`. The shared shutdown coordinator gives tracked
-operations up to 30 seconds to drain and enforces one monotonic 45-second total
-budget across that drain and all cleanup handlers. The external window must
-also cover services with broker, database, or strategy-child cleanup. Docker's
-implicit 10-second stop window can interrupt a correct shutdown after durable
-work has stopped but before resource cleanup finishes.
+Compose uses a fixed 60-second application/worker stop grace period. The platform
+supervisor forwards termination, reaps process groups, retries required children
+at most three times with bounded backoff, and bounds whole-group shutdown to
+55 seconds. Each component still uses its own drain and cleanup coordinator.
+A required process that exhausts retries ends its group; partial failure is not
+silently reported as a healthy runtime.
 
 The feedback optimizer never reads a mutable filesystem configuration. It uses
 the exact active `strat_ver_id` attached to the signal and its persisted
@@ -106,20 +166,18 @@ missing, mismatched, invalid, or non-adjustable snapshot suppresses feedback.
 
 - `EXECUTION_MODE=paper` and `EXECUTION_ENGINE_ALLOW_LIVE=false` remain set
   throughout local development and migration verification. No live authority is supplied.
-- `API_KEY`, `ADMIN_API_KEY`, and `BACKEND_ADMIN_API_KEY` are distinct
-  boundaries. The backend is an operator/BFF surface until an end-user OIDC
-  provider is selected.
+- The scoped service/admin keys above protect different boundaries. Backend
+  resolves the designated owner and rejects caller-supplied user identity.
 - Each service receives its own least-privilege database login. Pipeline
   services must not connect as the schema owner or PostgreSQL superuser.
-- Every deployed service must receive an explicit `DATABASE_URL`. Component URL
-  assembly also requires an explicit `DB_USER`; runtime images never choose a
-  database identity.
+- Every selected child receives its explicit role URL from the launcher. Runtime
+  groups do not assemble credentials from administrator variables.
 - Alembic is the unconditional PostgreSQL schema authority; application
   `create_all` is restricted to isolated SQLite unit stores.
 - `SECRETS_BACKEND=db` requires a newest-first comma-separated
   `SECRETS_MASTER_KEYS` ring. Key rotation is an explicit account-scoped
   operation; repository history rewriting does not rotate exposed credentials.
-  Backend and execution containers receive the same backend and ring because
+  Backend and execution child processes receive the same backend and ring because
   backend writes account credentials and execution resolves their `secret_ref`.
 - A binding names one concrete `broker_account_id`. That identity is preserved
   through decision, outbox command, order, fill, position, P&L, and feedback.
@@ -151,12 +209,22 @@ missing, mismatched, invalid, or non-adjustable snapshot suppresses feedback.
 
 ## Progress readiness and runtime SLOs
 
+The platform supervisor serves `/health` (required processes/listeners alive),
+`/ready` (all selected component progress checks), `/status` and `/metrics` on
+port 8090. `/metrics/<component>` proxies that component's metrics separately.
+Initial owner setup or unavailable selected feeds can keep trading unready while
+management stays healthy. Feedback readiness checks its durable successful
+heartbeat: `EVALUATION_INTERVAL` defaults to 300 seconds;
+`FEEDBACK_HEARTBEAT_MAX_AGE_SECONDS` defaults to interval plus the larger of
+60 seconds and half the interval. An absent, stale, failed or future heartbeat
+is not ready.
+
 Process liveness is necessary but is not trading readiness. The current
 low-volume defaults are deliberately loose five-minute bounds:
 
 | Variable | Default | Readiness contract |
 |---|---:|---|
-| `SCORING_OUTBOX_MAX_AGE_SECONDS` | `300` | Scoring and the standalone relay are unready when an `execution.commands` or `execution.rebalance.commands` event is older than this or any such event is dead-lettered. |
+| `SCORING_OUTBOX_MAX_AGE_SECONDS` | `300` | Scoring and its inline relay are unready when an `execution.commands` or `execution.rebalance.commands` event is older than this or any such event is dead-lettered. |
 | `INDICATOR_MAX_SIGNAL_BACKLOG_AGE_SECONDS` | `300` | The indicator parent is unready when a selected child's durable signal envelope is older than this or its partition contains a dead letter. |
 | `INDICATOR_MAX_STRATEGY_LAG_SECONDS` | `300` | The indicator parent is unready when a selected strategy watermark trails the latest required complete source bar beyond this bound. |
 | `INDICATOR_PANEL_DATA_USE_SCOPE` | unset | Required for a synchronized panel worker and must be exactly `paper_forward`; historical-validation revisions are never runtime inputs. |
@@ -222,7 +290,7 @@ be selected for a `paper_forward` panel. Scoring accepts operational rebalance
 batches only for `paper_forward`, and execution remains paper-only with
 `EXECUTION_ENGINE_ALLOW_LIVE=false`.
 
-The existing market-data-ingestor image owns the transactional research import
+The market-data entrypoint in the platform image owns the transactional research import
 boundary; no additional service or image is declared. The factor materializer
 emits exactly one provider-neutral symbolic `database_evidence_bundle` in its
 content-addressed manifest. `sp500-research-import` requires
@@ -232,13 +300,10 @@ into the catalogue: the importer resolves
 permanent security keys locally, derives DB identities and hashes, admits only
 exact immutable replays, and rolls back the whole graph on any failure.
 
-The strategy process co-resides in the existing `indicator-runner` image with
-other selected indicator strategies; scoring, execution, and feedback remain
-shared services. Promotion therefore requires aggregate runner CPU/memory,
-database-pool, child-health, and service-SLO qualification, not a strategy-
-specific image. The equity feed is a profile-gated second instance of the
-declared `market-data-ingestor` image because each ingestor process owns one
-configured source.
+The strategy process runs within the selected worker group. Promotion requires
+aggregate CPU/memory, database-pool, child-health and service-SLO qualification.
+Select `equity` in `PLATFORM_WORKERS` for a separate equity interpreter in the
+same container; each ingestor process owns one configured source.
 
 Do not represent this command as a successful import for the current EODHD
 six-year reconstruction. Its component-history rows contain effective dates
@@ -250,7 +315,7 @@ future source-qualified bundle may be imported through the declared container
 with the artifact root mounted read-only; changing a scope label or using
 retrieval time as historical availability is not permitted.
 
-The existing profile-gated equity ingestor can additionally persist EODHD US
+The explicitly selected equity ingestor can additionally persist EODHD US
 extended delayed quotes for paper execution. Set
 `EODHD_DELAYED_QUOTES_ENABLED=true` only with the exact active personal owner in
 `SP500_RESEARCH_OWNER_USER_ID`; the delayed batch is restricted to the
@@ -281,11 +346,12 @@ prevents a 500-name delayed-quote universe from refetching unchanged daily bars
 on every quote tick; both paths still share the credential-safe quota circuit,
 catalogue identity, and readiness boundary.
 
-The existing market-data-ingestor image also provides one explicit
-`quality-compounder-once` command. The profile-gated
-`quality-compounder-panel` service invokes it after an external scheduler has
-observed the final official XNYS session of a quarter. The command rechecks the
-official consecutive-session boundary and is a no-op unless
+The platform image provides the existing `quality-compounder-once` entrypoint.
+Invoke it through `python -m scripts.run_platform job quality-compounder` with
+`compose exec` in the existing worker group. The launcher bounds time and
+prevents same-job overlap; no scheduler or panel container is declared. An
+operator selects the run after the final official XNYS quarter session. The
+command rechecks the consecutive-session boundary and requires
 `QUALITY_COMPOUNDER_PANELS_ENABLED=true`.
 
 An enabled run requires `EODHD_API_TOKEN`, `EDGAR_USER_AGENT`, the exact personal
@@ -319,7 +385,7 @@ compile-official-sessions`. Record its printed SHA-256, mount the artifact read-
 `QUALITY_COMPOUNDER_OFFICIAL_SESSION_SHA256` values and accepts only canonical
 compiler bytes; an incompatible existing XNYS calendar fails closed.
 
-Provision equities through the same profile with the generic
+Provision equities through a separately reviewed maintenance invocation of the generic
 `equity-catalogue-import` command. Its content-pinned canonical JSON must be
 sorted by canonical symbol and provide each exact USD scheduled equity,
 reviewed exchange and tick size, reviewed positive whole-share `lot_size`, and
@@ -328,17 +394,13 @@ creates a calendar: the official `XNYS` calendar and seeded `ibkr` broker must
 already exist. It creates missing rows or fills only null catalogue fields;
 any conflicting non-null value or conId assignment fails the transaction.
 
-Set `EQUITY_CATALOGUE_ARTIFACT` and `EQUITY_CATALOGUE_SHA256`, then invoke:
-
-```bash
-docker compose -f docker/docker-compose.stack.yml --profile quality-compounder run --rm \
-  quality-compounder-panel python -m apps.market_data_ingestor.market_data_ingestor.main \
-  equity-catalogue-import
-```
-
-`EQUITY_CATALOGUE_DRY_RUN` defaults to `true`. Review the deterministic plan,
-then set it to `false` for the atomic apply. Reapplying the same artifact is an
-exact no-op replay.
+Set `EQUITY_CATALOGUE_ARTIFACT` and `EQUITY_CATALOGUE_SHA256` for the existing
+market-data entrypoint. This is a maintenance import, not a Compose service or
+normal bootstrap seed. Use the reviewed maintenance role/stage described in
+[DATABASE.md](DATABASE.md); runtime market-data credentials do not grant catalogue
+DDL or owner designation. `EQUITY_CATALOGUE_DRY_RUN` defaults to `true`; review
+the deterministic plan before an explicit atomic apply. No import command here
+constitutes provider-data or PostgreSQL acceptance evidence.
 
 ## Venue candle feeds
 
@@ -372,23 +434,26 @@ UIC across AssetTypes.
 | `saxo_simulation` | Same explicit Saxo mapping and credentials, persisted only as simulation provenance |
 
 Authenticated venue feeds use dedicated platform market-data credentials
-(`ZERODHA_MARKET_DATA_*` or `SAXO_MARKET_DATA_*`). They must not reuse any
-tenant's account-scoped execution secret.
+(`ZERODHA_MARKET_DATA_*` or `SAXO_MARKET_DATA_*`). They must not reuse the owner's
+account-scoped execution secret.
 
-The live poller and the isolated `market-data-backfill` one-shot share this
+The live poller and the explicit bounded `run_platform job backfill` share this
 exact source/catalogue/provider boundary. `INGESTOR_SYMBOLS` always selects
-canonical instruments; the one-shot resolves the same broker symbol, conid,
+canonical instruments; the job resolves the same broker symbol, conid,
 instrument token, or UIC/AssetType and persists only the provider's intrinsic
 source tag. It never fetches Coinbase data on behalf of another source or
 rewrites provenance. Public Deribit and Delta feeds need no credential;
 Coinbase credentials are optional, IBKR requires an authenticated gateway,
 and Zerodha/Saxo use the dedicated feed credentials above. Missing identity,
-credential, coverage, or recent venue data fails the one-shot.
+credential, coverage, or recent venue data fails the job.
 
 `INGESTOR_BACKFILL_MINUTES` belongs to the live poller's bounded startup
-request. `INGESTOR_BACKFILL_DAYS` belongs only to the separately supervised
-`market-data-backfill` profile, whose independent process and connection pool
-cannot stall live polling. Continuous crypto history requires 95% total
+request. `INGESTOR_BACKFILL_DAYS` belongs to the explicit historical job run with
+`python -m scripts.run_platform job backfill --timeout-seconds 3600` through
+`compose exec -T workers` (`application` in the `all` layout). It has its own
+process and connection pool within the existing group; host CPU, memory and
+database capacity are still shared with live polling. There is no backfill
+container profile or hidden scheduler. Continuous crypto history requires 95% total
 coverage and a current tail. Session-based assets use a conservative 15%
 wall-clock floor plus a candle within the last seven days so nights, weekends,
 and holidays are not misclassified as venue failures; the execution session
@@ -399,18 +464,18 @@ aggregate gates instead of retrying every overnight/weekend window.
 ## Official market-session writers
 
 IBKR, Saxo, and Zerodha non-crypto routes remain blocked until one supervised
-writer owns each canonical instrument. The three Compose profiles reuse the
-market-data image and backend admin boundary:
+writer owns each canonical instrument. Select these processes through
+`PLATFORM_WORKERS` within the existing worker group:
 
-| Profile / service | Official source | Required configuration |
+| Worker selection | Official source | Required configuration |
 |---|---|---|
-| `calendar-ibkr` / `market-calendar-ibkr` | IBKR `GET /contract/trading-schedule` regular `liquid_hours` | `IBKR_MARKET_CALENDAR_SYMBOLS`, authenticated `IBKR_GATEWAY_URL`, and a pinned `IBKR_CA_CERT` for non-loopback gateways |
-| `calendar-saxo` / `market-calendar-saxo` | Saxo live trading schedule; `AutomatedTrading` only | `SAXO_MARKET_CALENDAR_SYMBOLS`, current `SAXO_MARKET_DATA_ACCESS_TOKEN`, and its RFC3339 expiry |
-| `calendar-zerodha` / `market-calendar-zerodha` | NSE `/api/marketStatus` exact segment state | `ZERODHA_MARKET_CALENDAR_SYMBOLS`, exact `ZERODHA_MARKET_CALENDAR_NSE_MARKET`, 30–300 second lease |
+| `calendar-ibkr` | IBKR `GET /contract/trading-schedule` regular `liquid_hours` | `IBKR_MARKET_CALENDAR_SYMBOLS`, authenticated `IBKR_GATEWAY_URL`, and a pinned `IBKR_CA_CERT` for non-loopback gateways |
+| `calendar-saxo` | Saxo live trading schedule; `AutomatedTrading` only | `SAXO_MARKET_CALENDAR_SYMBOLS`, current `SAXO_MARKET_DATA_ACCESS_TOKEN`, and its RFC3339 expiry |
+| `calendar-zerodha` | NSE `/api/marketStatus` exact segment state | `ZERODHA_MARKET_CALENDAR_SYMBOLS`, exact `ZERODHA_MARKET_CALENDAR_NSE_MARKET`, 30–300 second lease |
 
 Selector variables contain canonical symbols only. Exact conids, UIC/AssetType
 pairs, and Kite tokens come from the shared broker catalogue. The processes use
-the read-only market-data database role for that resolution and
+the market-data database role to read those identities and
 `MARKET_CALENDAR_ADMIN_API_KEY` (in Compose, the existing
 `BACKEND_ADMIN_API_KEY`) only for the backend PUT. Never enable two writers for
 the same instrument. Empty selectors, incomplete mappings, expired credentials,
@@ -432,7 +497,7 @@ silently manufacture midpoint candles.
 
 ## Observed FX process
 
-`fx-rate-ingestor` reuses the market-data image but runs independently from the
+The selected `fx` worker runs in its own interpreter, independently from the
 crypto-candle scheduler. It stores daily `EUR/USD`, `EUR/GBP`, and `EUR/INR`
 reference observations from the ECB and hourly traded `USDC/EUR` candles from
 Coinbase. Crosses are derived at read time through EUR with both source legs
@@ -440,16 +505,15 @@ fresh at the requested timestamp.
 
 | Variable | Default | Owner / constraint |
 |---|---:|---|
-| `FX_RATE_CURRENCIES` | `USD,GBP,INR` | FX ingestor; non-EUR ECB quote currencies required by active tenants |
+| `FX_RATE_CURRENCIES` | `USD,GBP,INR` | FX ingestor; non-EUR ECB quote currencies required by the owner accounts |
 | `FX_RATE_HISTORY_DAYS` | `90` | FX ingestor; accepted range `1..90` |
 | `FX_RATE_POLL_INTERVAL_SEC` | `21600` | FX ingestor; accepted range `60..86400` |
 | `FX_RATE_COINBASE_PRODUCT` | `USDC-EUR` | FX ingestor; intentionally rejects any other product |
 | `EXECUTION_FX_MAX_AGE_SECONDS` | `259200` | execution; accepted range `60..604800` |
 
 The FX process exposes internal `/health`, `/ready`, and `/live` endpoints on
-port `8004`. Production deployment must supervise and health-check it separately
-so an ECB/Coinbase FX-source outage cannot stall primary market-data ingestion.
+port `8004`. The platform supervisor tracks it separately so FX-source failure
+is visible independently of primary market-data ingestion.
 
-No hosting or identity provider is provisioned by this migration. Do not expose
-the tenant configuration API directly to end users until an OIDC issuer and
-verified user-identity mapping are chosen.
+No hosting or public authentication provider is provisioned. The owner API is
+bound to loopback; use an owner-controlled SSH tunnel for a private remote host.

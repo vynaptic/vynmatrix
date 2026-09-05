@@ -20,6 +20,10 @@ from lib_application.db.models import (
     StrategyRuntimeState,
 )
 from lib_application.outbox import OutboxBacklogSnapshot, OutboxStore, backlog_age_seconds
+from lib_application.services.deployment_owner import (
+    DeploymentOwnerError,
+    require_deployment_owner_id,
+)
 from lib_application.services.equity_rank_snapshots import persist_equity_rank_snapshot
 from lib_application.services.price_ingestion_service import PriceIngestionService
 from lib_application.services.strategy_panel_sessions import (
@@ -681,12 +685,24 @@ class StrategyRuntimeStore:
         )
         return runtime
 
+    def require_panel_owner_on_session(self, session: Session) -> str:
+        """Fence executable panel work without rewriting stored entitlement evidence."""
+        try:
+            owner_id = require_deployment_owner_id(session)
+        except DeploymentOwnerError as exc:
+            raise ModelStateContractError(str(exc)) from exc
+        if self.identity.require_panel_binding().entitlement_owner_user_id != owner_id:
+            message = "Panel entitlement owner is not the active deployment owner"
+            raise ModelStateContractError(message)
+        return owner_id
+
     def _lock_runtime_on_session(
         self,
         session: Session,
         *,
         strategy: PureSignalStrategy,
     ) -> StrategyRuntimeState:
+        self.require_panel_owner_on_session(session)
         runtime = session.scalar(
             select(StrategyRuntimeState)
             .where(StrategyRuntimeState.worker_id == self.identity.worker_id)

@@ -89,6 +89,7 @@ class LinkedBrokerAccount(Base):
     environment: Mapped[str] = mapped_column(String(20), nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     external_ref: Mapped[str | None] = mapped_column(String(255))
+    config_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
     base_ccy: Mapped[str] = mapped_column(
         String(10),
         nullable=False,
@@ -107,6 +108,11 @@ class LinkedBrokerAccount(Base):
 
     __table_args__ = (
         CheckConstraint("environment IN ('paper', 'live')", name="ck_account_env"),
+        CheckConstraint(
+            "config_key IS NULL OR length(trim(config_key, ' \t\n\r\v\f')) > 0",
+            name="ck_account_config_key",
+        ),
+        UniqueConstraint("user_id", "config_key", name="uq_account_owner_config_key"),
         CheckConstraint("status IN ('connected', 'revoked', 'error')", name="ck_account_status"),
         CheckConstraint(
             "base_ccy = upper(trim(base_ccy)) AND length(base_ccy) BETWEEN 3 AND 10",

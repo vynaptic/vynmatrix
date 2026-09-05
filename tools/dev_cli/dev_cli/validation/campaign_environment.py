@@ -23,6 +23,7 @@ from dev_cli.validation.campaign_contracts import (
 from dev_cli.validation.evidence import file_sha256
 from dev_cli.validation.execution_environment import (
     container_repository,
+    container_role_repository,
     installed_vmdev_payload,
     installed_wheel_payload_sha256,
     local_container_image_id,
@@ -296,7 +297,7 @@ class CampaignEnvironmentMixin(CampaignMixinContract):
             str(name): str(reference) for name, reference in raw_references.items()
         }
         for name, reference in container_references.items():
-            expected_repository = f"vynmatrix/{name}"
+            expected_repository = container_role_repository(name)
             if (
                 not _CONTAINER_REFERENCE_RE.fullmatch(reference)
                 or self._container_repository(reference) != expected_repository
@@ -414,6 +415,11 @@ class CampaignEnvironmentMixin(CampaignMixinContract):
         ):
             message = "frozen installed strategy core changed or disappeared"
             raise RuntimeError(message)
+        self._require_frozen_container_references(installed)
+        return installed
+
+    def _require_frozen_container_references(self, installed: Mapping[str, Any]) -> None:
+        """A preserved image digest cannot authorize a retired runtime repository."""
         container_digests = self._mapping(installed, "container_image_digests")
         container_references = self._mapping(installed, "container_image_references")
         if (
@@ -422,7 +428,15 @@ class CampaignEnvironmentMixin(CampaignMixinContract):
         ):
             message = "frozen container references and digests are incomplete"
             raise RuntimeError(message)
-        return installed
+        for name, reference in container_references.items():
+            expected_repository = container_role_repository(str(name))
+            if (
+                not isinstance(reference, str)
+                or not _CONTAINER_REFERENCE_RE.fullmatch(reference)
+                or self._container_repository(reference) != expected_repository
+            ):
+                message = f"frozen container image {name} does not use {expected_repository}"
+                raise RuntimeError(message)
 
     def _git_output(self, args: list[str]) -> str:
         completed = subprocess.run(

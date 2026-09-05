@@ -34,6 +34,7 @@ class TestGap12CloseFlatMapping:
         store, engine = self._make_store_and_engine(provision_scoring_catalogue)
         now = dt.datetime.now(tz=dt.UTC)
         signal = Signal(
+            strategy_version="1.0.0",
             strategy_id="test_exit",
             strategy_type="indicator",
             symbol="BTCUSD",
@@ -56,6 +57,7 @@ class TestGap12CloseFlatMapping:
         store, engine = self._make_store_and_engine(provision_scoring_catalogue)
         now = dt.datetime.now(tz=dt.UTC)
         signal = Signal(
+            strategy_version="1.0.0",
             strategy_id="test_long",
             strategy_type="indicator",
             symbol="BTCUSD",
@@ -75,6 +77,7 @@ class TestGap12CloseFlatMapping:
         store, engine = self._make_store_and_engine(provision_scoring_catalogue)
         now = dt.datetime.now(tz=dt.UTC)
         signal = Signal(
+            strategy_version="1.0.0",
             strategy_id="test_short",
             strategy_type="indicator",
             symbol="BTCUSD",
@@ -94,6 +97,7 @@ class TestGap12CloseFlatMapping:
         store, engine = self._make_store_and_engine(provision_scoring_catalogue)
         now = dt.datetime.now(tz=dt.UTC)
         signal = Signal(
+            strategy_version="1.0.0",
             strategy_id="test_hold",
             strategy_type="indicator",
             symbol="BTCUSD",

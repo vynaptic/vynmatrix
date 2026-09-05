@@ -28,6 +28,7 @@ def _payload(strategy_id: str, ts: dt.datetime) -> dict[str, Any]:
         "symbol": "BTCUSD",
         "insight": {"direction": "Up", "magnitude": 0.5, "confidence": 0.9, "horizon": "1D"},
         "context": {
+            "strategy_version": "1.0.0",
             "asset_class": "crypto",
             "sector": "crypto",
             "industry": "layer1",

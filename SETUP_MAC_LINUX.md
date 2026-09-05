@@ -1,9 +1,10 @@
 # vynmatrix Setup (macOS/Linux)
 
 This guide prepares an isolated local development and paper-test environment.
-For the other platform, use the [Windows guide](SETUP_WINDOWS.md). The source is not yet open-source:
-[LICENSE](LICENSE) is unchanged and the license/rights decision is pending.
-These steps do not publish the repository or authorize deployment or live orders.
+For the other platform, use the [Windows guide](SETUP_WINDOWS.md). The source is
+available under [LICENSE](LICENSE) for personal, noncommercial use; see
+[NOTICE](NOTICE) for attribution and third-party-material boundaries. These steps
+do not authorize deployment or live orders.
 
 ## 1. Prerequisites
 
@@ -19,19 +20,15 @@ On macOS use your installed Python 3.11 or pyenv; on Linux install Python 3.11 a
 
 ## 2. Open the source
 
-For this local migration, open the prepared `vynmatrix` directory. Remote access
-is not required for local setup. After maintainers designate and publish a
-repository, the configurable clone form is:
+Clone the canonical repository:
 
 ```bash
-GITHUB_OWNER=YOUR_GITHUB_OWNER
-git clone "https://github.com/${GITHUB_OWNER}/vynmatrix.git"
+git clone https://github.com/vynaptic/vynmatrix.git
 cd vynmatrix
 ```
 
-`YOUR_GITHUB_OWNER` is a placeholder, not an existing account or organization.
-Do not run the clone command until that destination is established. A source
-archive can be tested, but Git hook installation requires an initialized checkout.
+A source archive can be tested, but Git hook installation requires an initialized
+checkout.
 
 ## 3. Create the tooling and test environment
 
@@ -39,7 +36,7 @@ archive can be tested, but Git hook installation requires an initialized checkou
 python3.11 -m venv .venv-dev
 source .venv-dev/bin/activate
 python --version
-python -m pip install --constraint docker/constraints.txt --requirement docker/requirements-svc-base.txt --requirement docker/requirements-scoring.txt --requirement docker/requirements-indicator-runner.txt --requirement docker/requirements-market-data.txt --editable tools/dev_cli pytest pytest-cov pre-commit mypy ruff types-PyYAML build psutil jsonschema
+python -m pip install --constraint docker/constraints.txt --requirement docker/requirements-svc-base.txt --requirement docker/requirements-platform.txt --editable tools/dev_cli pytest pytest-cov pre-commit mypy ruff types-PyYAML build psutil jsonschema
 make setup
 pre-commit install-hooks
 vmdev --version
@@ -91,66 +88,53 @@ package source, then rebuild affected environments or images.
 test -f .env || cp .env.example .env
 ```
 
-Edit `.env` locally. Never commit it or copy personal/runtime state from another
-checkout. Use fresh local values for `DB_PASSWORD`, `API_KEY`, `ADMIN_API_KEY`,
-and `BACKEND_ADMIN_API_KEY`; the backend fails closed without its admin key.
-Leave `BACKEND_ALLOW_ANON=false`. Optional pgAdmin needs its own local password.
+Edit `.env` locally using [.env.example](.env.example). Supply actual private
+maintenance/runtime passwords, role-specific URLs, distinct API/admin keys, and
+the encryption key ring. Keep `EXECUTION_MODE=paper`,
+`EXECUTION_ENGINE_ALLOW_LIVE=false`, `COMPOSE_PROFILES=workers`, and
+`PLATFORM_APPLICATION_GROUP=application`. Optional provider and strategy selectors
+start empty; no broker connection or execution authority is invented.
 
-Keep these execution settings:
+The administrator URL targets `postgres`; the migration URL targets your application
+database on the same server. Complete historical migrations require explicit
+maintenance administrator authority. Runtime uses only the six service-role logins.
+Use `postgres` as the hostname inside Compose and an explicit loopback URL for
+host-side database commands. See [docs/DATABASE.md](docs/DATABASE.md) for the
+canonical input/role contracts and [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
+for process settings.
 
-```dotenv
-ENVIRONMENT=dev
-EXECUTION_MODE=paper
-EXECUTION_ENGINE_ALLOW_LIVE=false
-EXECUTION_USE_LOCAL_PAPER_BROKER=true
-```
+## 7. Build and bootstrap the local Docker stack
 
-For Compose, leave `DATABASE_URL` and per-service database URLs unset so the
-stack provisions its declared database and least-privilege service logins.
-Use the Compose service addresses `http://execution-engine:8000` for
-`EXEC_ENGINE_URL` and `http://scoring-engine:8001` for `SIGNAL_API_URL`, or leave
-those overrides unset. A container's `localhost` points to itself.
-
-The default crypto/FX ingestors contact public market-data endpoints; paper
-mode prevents live execution but does not mean offline operation. Keep optional
-broker/calendar/equity profiles disabled until their required credentials and
-catalogue data are separately configured. Configuration details are in
-[docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-
-## 7. Build and start the local Docker stack
+Prepare `owner.local.yaml` using your actual email, accounting currency and timezone
+as specified in the [database guide](docs/DATABASE.md#installation-and-privilege-stages).
+Then run:
 
 ```bash
 docker info
 vmdev build docker --from-config --tag latest
-docker image ls vynmatrix/indicator-runner
-docker compose --env-file .env -f docker/docker-compose.stack.yml up -d
-docker compose --env-file .env -f docker/docker-compose.stack.yml ps
+docker image ls vynmatrix/platform
+vmdev db bootstrap --owner-config owner.local.yaml
+vmdev db status
 ```
 
-The stack bootstraps PostgreSQL migrations, seeds, and service roles before
-starting dependent services. Do not also start the separate `vmdev db start`
-database on the same port: that helper is an alternative for host-side database
-work, not a prerequisite for this Compose stack.
+The supported lifecycle runs PostgreSQL plus one maintenance job, removes the job,
+then starts application/workers: **three running containers including PostgreSQL**.
+The alternative `PLATFORM_APPLICATION_GROUP=all` with empty `COMPOSE_PROFILES`
+uses two. The bootstrap validates input before side effects, preserves existing
+settings and passwords, and stops on ownership, migration or reference conflicts.
+`vmdev db start` starts this same PostgreSQL service only; there is no second stack.
 
-The default stack runs scoring, execution, feedback, backend, market data, and
-observed FX. It starts no indicator worker. To select the development canary:
+Strategies register inactive with non-executable `registered` releases. Follow the
+[readiness inventory](docs/STRATEGY_READINESS.md) and existing eligibility/activation
+controls before adding an explicit `STRATEGY_LIST`. Configured provider workers
+contact real external data sources; paper mode is not an offline mode. No signal or
+fill is guaranteed by a successful startup. The
+[paper E2E guide](docs/E2E_VERIFICATION_GUIDE.md) defines the recorded-data proof.
 
-```bash
-STRATEGY_LIST=SwingHighLowPMO \
-docker compose --env-file .env -f docker/docker-compose.stack.yml --profile indicator up -d
-docker compose --env-file .env -f docker/docker-compose.stack.yml logs --tail 100 indicator-runner
-```
-
-`SwingHighLowPMO` is the enabled development-only strategy in source. Image
-presence and a running container do not prove readiness: real historical warmup,
-fresh bars, source lineage, bindings, and account authority are separate gates.
-No signal or fill is guaranteed at startup. Follow the
-[paper E2E guide](docs/E2E_VERIFICATION_GUIDE.md) for the full recorded-data proof.
-
-Stop the local stack without deleting its volumes when finished:
+Stop the platform gracefully while preserving its volume:
 
 ```bash
-docker compose --env-file .env -f docker/docker-compose.stack.yml down
+vmdev db stop
 ```
 
 ## 8. Daily workflow and troubleshooting

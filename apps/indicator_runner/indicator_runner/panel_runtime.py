@@ -73,6 +73,8 @@ class SynchronizedPanelRuntime:
     def start(self) -> int:
         """Restore the model journal and finish any crash-prepared panel."""
 
+        with self._session_factory() as session:
+            self._runtime_store.require_panel_owner_on_session(session)
         if not self._strategy._is_initialized:
             self._strategy.initialize()
             self._strategy._is_initialized = True
@@ -152,6 +154,7 @@ class SynchronizedPanelRuntime:
             raise ModelStateContractError(msg)
         binding = self._runtime_store.identity.require_panel_binding()
         with self._session_factory() as session:
+            self._runtime_store.require_panel_owner_on_session(session)
             consumed = exists().where(
                 StrategyPanelDecision.worker_id == self._runtime_store.identity.worker_id,
                 StrategyPanelDecision.strategy_input_sha256

@@ -33,6 +33,7 @@ def _store_and_engine(provision_scoring_catalogue) -> tuple[AppScoreStore, Score
 
 def _signal(ext_id: str) -> Signal:
     return Signal(
+        strategy_version="1.0.0",
         strategy_id="test_strategy_v1",
         strategy_type="indicator",
         symbol="BTCUSD",

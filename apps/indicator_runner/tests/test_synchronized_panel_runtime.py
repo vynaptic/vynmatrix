@@ -422,6 +422,7 @@ def _seed_catalog(session_factory: SessionMaker) -> None:
             User(
                 user_id=_OWNER_USER_ID,
                 email="panel-runtime-owner@example.test",
+                is_deployment_owner=True,
                 base_ccy="USD",
             )
         )
@@ -1004,14 +1005,11 @@ def test_paper_poll_is_exact_owner_and_never_consumes_historical_validation(
         assert decisions[0].status == "expired"
         assert decisions[0].entitlement_owner_user_id == _OWNER_USER_ID
 
-    other.runtime.start()
-    assert other.runtime.poll_input_revisions(limit=10) == 0
+    with pytest.raises(ModelStateContractError, match="deployment owner"):
+        other.runtime.start()
     with session_factory() as session:
         decisions = list(session.scalars(select(StrategyPanelDecision)))
-        assert {row.entitlement_owner_user_id for row in decisions} == {
-            _OWNER_USER_ID,
-            _OTHER_OWNER_USER_ID,
-        }
+        assert {row.entitlement_owner_user_id for row in decisions} == {_OWNER_USER_ID}
         assert {row.status for row in decisions} == {"expired"}
         historical_sha = canonical_json_hash(
             owner.strategy.serialize_panel_input(_panel_input(policy=_HISTORICAL_POLICY))
@@ -1261,3 +1259,18 @@ def test_postgres_concurrent_submission_replay_correction_and_restart_acceptance
             state = session.get(StrategyRuntimeState, _WORKER_ID)
             assert state is not None
             assert state.generation == 3
+
+
+def test_panel_owner_revocation_blocks_new_work_without_rewriting_history(
+    session_factory: SessionMaker,
+) -> None:
+    harness = _build_harness(session_factory)
+    harness.runtime.start()
+    with session_factory() as session:
+        session.get(User, _OWNER_USER_ID).is_deployment_owner = False
+        session.commit()
+    with pytest.raises(ModelStateContractError, match="deployment owner"):
+        harness.runtime.poll_input_revisions()
+    with session_factory() as session:
+        assert _count(session, StrategyPanelDecision) == 0
+        assert _count(session, StrategyRuntimeState) == 1

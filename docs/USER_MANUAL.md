@@ -2,11 +2,12 @@
 
 > **Purpose**: Architecture and code walkthrough for contributors
 > **Scope**: Independent local migration; no inherited deployment or certification
-> **Repository**: vynmatrix (hosting owner not yet configured)
+> **Repository**: [vynaptic/vynmatrix](https://github.com/vynaptic/vynmatrix)
 
-The project is not yet open-source: [LICENSE](../LICENSE) remains unchanged and
-a license/rights decision is pending. Examples describe local paper development;
-none authorize publishing, deployment, or changing a live-order gate.
+The source is available under [LICENSE](../LICENSE) for personal, noncommercial
+use. It is not an OSI-approved open-source license; [NOTICE](../NOTICE) records
+retained attribution and third-party-material boundaries. Examples describe local
+paper development; none authorize deployment or changing a live-order gate.
 
 ---
 
@@ -31,7 +32,8 @@ none authorize publishing, deployment, or changing a live-order gate.
 
 ## 1. Executive Summary
 
-**vynmatrix** contains a **signal-only** strategy architecture that:
+**vynmatrix** is a self-hosted platform for one designated owner, with independent
+broker accounts, regions, currencies and strategies. Its **signal-only** architecture:
 
 - **Generates trading signals** from the reviewed indicator fleet
 - **Scores signals** through three stages: canonical scoring view, meta-labeling, and ensemble aggregation
@@ -93,7 +95,7 @@ before entries. A strategy still cannot place or route an order directly.
 - **Pipeline-aware scoring engine**: `/api/v1/signals` accepts the canonical
   strategy insight payload, derives the scoring view adapter, runs meta-label +
   ensemble, and persists scores with components.
-- **PostgreSQL-first**: Dev via Docker (`vmdev db start`), migrations in `scripts/db/alembic`, consolidated doc in `docs/DATABASE.md`.
+- **PostgreSQL-first**: Dev via Docker (`vmdev db bootstrap`), migrations in `scripts/db/alembic`, consolidated doc in `docs/DATABASE.md`.
 - **Feedback loop**: The feedback loop hooks to signal performance, tracks consecutive-wrong predictions, and emits parameter-adjustment suggestions. Approval is an audit decision; accepted changes are promoted through source control, validation, image build, and deployment.
 
 ### Data Flow
@@ -621,7 +623,7 @@ Infrastructure layer with broker adapters and persistence.
 > **Mode**: Signal-only (no direct execution)
 
 Selected indicator strategies run as processes inside the single
-`indicator-runner` image (`vynmatrix/indicator-runner`), governed jointly
+platform image (`vynmatrix/platform`), governed jointly
 by `STRATEGY_LIST`, `enabled`, and `environments`. Ordinary bar-driven
 strategies are fed from the `prices` table:
 `market_data_ingestor` polls the explicitly configured venue/canonical mapping
@@ -1045,8 +1047,12 @@ execution handoff, P&L, and feedback records in Postgres (see
 | `vmdev clean --docker` | Explicitly remove local `vynmatrix/*` images only | |
 | `vmdev run app --name=X` | Run app locally | `vmdev run app --name=scoring_engine` |
 | `vmdev db start` | Start PostgreSQL | |
-| `vmdev db init` | Run migrations | |
-| `vmdev db status` | Show migration status | |
+| `vmdev db bootstrap --owner-config owner.local.yaml` | Resumable installation | |
+| `vmdev db migrate` | Existing schema-only upgrade | |
+| `vmdev db catalogue --check` | Preview reference differences | |
+| `vmdev db catalogue --apply` | Register inactive references | |
+| `vmdev user show` | Read the designated owner | |
+| `vmdev db status` | Show Compose service status | |
 | `vmdev strategy attest-correctness NAME` | Freeze exact reviewed source/package/fixture bytes and typed pre-outcome findings | |
 | `vmdev strategy attest NAME` | Pin installed wheels, strategy payloads, interpreter, and image digests | |
 | `vmdev strategy measure-data-parity NAME` | Hash-attest registered Coinbase public 1m-to-1d parity windows | |
@@ -1106,7 +1112,7 @@ vmdev strategy measure-data-parity STRATEGY
 vmdev strategy measure-costs STRATEGY
 vmdev strategy attest-correctness STRATEGY --file ID=PATH
 vmdev strategy attest STRATEGY \
-  --container-image indicator-runner=vynmatrix/indicator-runner:latest
+  --container-image indicator-runner=vynmatrix/platform:latest
 vmdev strategy validate STRATEGY --freeze-only [REGISTERED_EVIDENCE_OPTIONS]
 ```
 
@@ -1186,7 +1192,7 @@ strategies:
       dependencies:
         - lib_indicators
       owner_team: quant
-      docker: false  # source ships in the indicator-runner service image
+      docker: false  # source ships in the shared platform image
 
 apps:
   build_type: venv_docker
@@ -1210,7 +1216,7 @@ apps:
 
 | Script | Purpose | Usage |
 |--------|---------|-------|
-| [replay_canonical_signals.py](../scripts/replay_canonical_signals.py) | Explicitly replay an exact published decision/command against real `prices` through local-paper execution/accounting | `docker compose --env-file .env -f docker/docker-compose.stack.yml run --rm --no-deps execution-engine python /app/scripts/replay_canonical_signals.py --user-id user_001 --broker-account-id 1 --strategy-id swing_high_low_pmo_v1 --symbols BTC-USDC --timeframe 15m` |
+| [replay_canonical_signals.py](../scripts/replay_canonical_signals.py) | Explicitly replay an exact published decision/command against real `prices` through local-paper execution/accounting | See the exact owner/account-scoped command in [E2E_VERIFICATION_GUIDE.md](E2E_VERIFICATION_GUIDE.md) |
 | [write_paper_promotion_manifest.py](../scripts/write_paper_promotion_manifest.py) | Hash one exact single-instrument or synchronized-portfolio config, image, model/instrument scope, account/binding/broker, and durable runtime evidence set consumed by both paper gates | The single-instrument config/scope/broker remain inferred by default. Synchronized portfolios add the pre-start model configuration digest and one reviewed instrument allowlist artifact. Output always denies live authority. |
 | [write_sandbox_certification_marker.py](../scripts/write_sandbox_certification_marker.py) | Write the evidence-backed certification marker required before live mode | See the complete, current command in [RUNBOOK.md](RUNBOOK.md#coinbase-paper-soak-certification); `--status passed` alone is invalid. |
 
@@ -1224,36 +1230,24 @@ apps:
 - Research backtests run through the production `vmdev strategy` validation
   workflow and persist their registered evidence in the validation result store.
 
-### Database Scripts
+### Database Lifecycle
 
-| Script | Purpose |
-|--------|---------|
-| [scripts/db/alembic/](../scripts/db/alembic/) | Alembic migrations |
-| [scripts/db/bootstrap_scoring.py](../scripts/db/bootstrap_scoring.py) | Seed instruments into an Alembic-managed schema |
+The canonical workflow is [DATABASE.md](DATABASE.md). Existing `vmdev db` and
+`vmdev user` groups cover bootstrap, schema-only upgrade, inactive registration,
+expected-value updates, owner/account adoption and protected backup/restore.
+Administration, migration, reference seeding and user-specific onboarding remain
+separate privilege/transaction stages. There is no reset or SQL demo seed on the
+installation path.
 
-Notes:
-- `vmdev db init` applies migrations only. `vmdev db reset` additionally loads
-  the source-controlled instrument catalogue through `bootstrap_scoring.py`; it
-  does not create schema objects, users, broker accounts, credentials,
-  strategies, or signals. Catalogue loading fails unless Alembic has already
-  established the required tables.
-- Asset-class policy and filters use the canonical values `crypto`, `equity`,
-  `etf`, `index`, `futures`, `options`, `fx`, and `commodities`. Cash-index
-  instruments such as `NIFTY50` and `BANKNIFTY` may feed strategies and scoring
-  but cannot be submitted to a broker. Select a separately catalogued futures
-  or options contract when execution is intended.
-- Trusted schedule ingestion uses the admin-authenticated backend
-  `PUT /market-calendars/{code}`. Omitting an instrument from a replacement
-  detaches it so new exposure fails closed; see
-  [Database Reference](DATABASE.md#authoritative-market-sessions).
-- The supervised IBKR, Saxo-live, and Zerodha/NSE writers are opt-in Compose
-  profiles (`calendar-ibkr`, `calendar-saxo`, `calendar-zerodha`). Their selector
-  variables contain canonical symbols; exact venue identity is loaded from the
-  broker catalogue. Enable only one writer per instrument.
+Asset class values remain canonical. Cash indices cannot be submitted to a broker;
+select a separately catalogued tradable contract with explicit multiplier, currency
+and venue identity. Market-calendar writers are selected with `PLATFORM_WORKERS`,
+not container profiles. They use the authenticated `PUT /market-calendars/{code}`
+backend boundary and exactly one provider per instrument.
 
 ### Cross-Platform Script Parity
 
-All critical shell scripts have PowerShell equivalents:
+The setup guides identify platform-specific syntax; database commands are shared:
 
 | Task | macOS/Linux | Windows |
 |------|-------------|---------|
@@ -1261,7 +1255,7 @@ All critical shell scripts have PowerShell equivalents:
 | Create dev venv | `./scripts/venv/create_dev_venv.sh` | `.\scripts\venv\create_dev_venv.ps1` |
 | Activate dev venv | `source .venv-dev/bin/activate` | `.\.venv-dev\Scripts\Activate.ps1` |
 | Diagnose env | `./scripts/diagnose_environments.sh` | `.\scripts\diagnose_environments.ps1` |
-| DB lifecycle | `./scripts/db/manage_db.sh <cmd>` | `.\scripts\db\manage_db.ps1 <cmd>` |
+| DB lifecycle | `vmdev db --help` | `vmdev db --help` |
 
 #### Migration Files
 
@@ -1281,55 +1275,46 @@ All critical shell scripts have PowerShell equivalents:
 
 ## 11. Docker Infrastructure (docker/)
 
-### Docker Files
+The canonical topology and operations are in [DEPLOYMENT.md](DEPLOYMENT.md).
+[platform_runtime.Dockerfile](../docker/platform_runtime.Dockerfile) packages all
+existing runtime applications plus `vmdev` into `vynmatrix/platform`. The six library
+wheels and indicator wheel retain their build/freshness checks. Pinned dependencies
+come from the shared base and `requirements-platform.txt`; no package is installed
+when a container starts.
 
-| File | Purpose |
-|------|---------|
-| [docker/scoring_engine.Dockerfile](../docker/scoring_engine.Dockerfile) | Scoring engine image |
-| [docker/execution_engine.Dockerfile](../docker/execution_engine.Dockerfile) | Execution engine image |
-| [docker/seed/02_seed_data.sql](../docker/seed/02_seed_data.sql) | Seed strategies, instruments, aliases (applied post-schema by the `db-seed` stack service) |
+`config/containers.yaml` owns the build inventory. The application container runs
+backend, scoring with inline transactional-outbox relay, and execution as supervised
+processes. Workers runs feedback plus selected providers and indicators. PostgreSQL
+is the third container. The combined application/workers layout uses two containers;
+images/build stages are not counted as running containers.
 
-### Service Images (Config-Driven)
-
-- **Indicator strategies** all run in the single `indicator-runner` image
-  (`vynmatrix/indicator-runner`); the deployable set is governed by
-  `STRATEGY_LIST`.
-- All five service images derive from the constraints-pinned, multi-stage
-  `vynmatrix/svc-base`. Service builder stages add only their exact local
-  wheels and declared extras, verify the closure with `pip check`, then copy it
-  into a clean runtime stage.
-- The service inventory remains `config/containers.yaml`. `vmdev` rejects a
-  Docker build when a configured wheel is missing or stale relative to source
-  or packaging metadata.
-
-**Build flow:**
-
-```bash
+```text
 vmdev build libs
 vmdev build strategies
 vmdev build docker --from-config --tag latest
 ```
 
----
+The immutable validation role name `indicator-runner` remains in attestation input;
+its actual image reference is now `vynmatrix/platform`. Old image evidence cannot
+authorize the changed release image. Source presence does not activate a strategy.
 
 ## 12. Database Schema
 
 - **Canonical doc**: [docs/DATABASE.md](DATABASE.md)
 - **Models**: [libs/python/lib_application/lib_application/db/models/](../libs/python/lib_application/lib_application/db/models/)
-- **Migrations**: `scripts/db/alembic` (run with `vmdev db init` or `alembic upgrade head`)
-- **Local DB**: `vmdev db start` + `vmdev db init`. In the full stack
-  (`docker-compose.stack.yml`), `docker/init-db/` runs at Postgres boot for
-  **extensions only**. The `db-seed` one-shot waits for `db-migrate` to complete
-  successfully, then applies `docker/seed/*.sql`; it does not depend on scoring
-  engine health.
+- **Migrations**: complete Alembic history through guarded `0103`; use `vmdev db bootstrap`
+  for installation or `vmdev db migrate` for an existing schema-only upgrade.
+- **Local DB**: one canonical Compose PostgreSQL service. Bootstrap validates ownership,
+  migrates, registers inactive references, and initializes one explicit owner. It runs
+  no demonstration users/accounts/SQL seeds. See the database guide for rollback guards.
 
 Key domains (see DATABASE.md for table lists):
-- Tenancy/users, brokers/credentials
+- Designated owner and preserved historical users, brokers/credentials
 - Instruments + aliases
 - Strategies/versions/coverage
 - Signals & scoring (`canonical_signals`, `asset_scores`, `sector_scores`, `market_scores`)
 - Point-in-time equity evidence, synchronized panel decisions/ranks, model
-  rebalances, and tenant/account plans
+  rebalances, and owner/account plans
 - Execution (orders/executions/positions, `execution_logs`, `execution_metrics`)
 - Feedback/backtests (signal performance, parameter feedback, backtest_results)
 
@@ -1338,12 +1323,10 @@ Key domains (see DATABASE.md for table lists):
 Each table below is defined in `libs/python/lib_application/lib_application/db/models/` and used by the
 scoring + execution pipelines.
 
-#### A) Core Tenancy & Users
-- `orgs`: Tenants/organizations (B2B or multi-org support).
-- `users`: End users (retail customers).
-- `user_roles`: User roles for access control.
-- `plans`: Commercial plans/entitlements.
-- `user_plan_subscriptions`: User plan subscriptions.
+#### A) Owner and historical identity
+- `users`: one active designated deployment owner, plus preserved historical IDs.
+- Commercial organizations, subscriptions, plans and user-role rows are removed by
+  `0103` only after its empty-data guards pass. Account/execution ownership survives.
 
 #### B) Legal, Consents & Suitability
 - `user_consents`: User consents and disclosures.
@@ -1487,65 +1470,16 @@ or liquidation prices.
 
 ### Local Full-Stack Compose
 
-For end-to-end validation, use the production-parity compose stack:
+Start through `vmdev db bootstrap --owner-config owner.local.yaml` after following
+[DATABASE.md](DATABASE.md). The lifecycle stops runtime before its maintenance job,
+then starts the selected two- or three-container layout. It rejects wildcard profiles
+and unexpected running services. `STRATEGY_LIST` and `PLATFORM_WORKERS` are explicit
+process selections; registered strategies and owner/account controls remain separate.
 
-```bash
-docker compose --env-file .env -f docker/docker-compose.stack.yml up -d
-```
-
-By default, this starts the database bootstrap chain and the runtime control/data
-plane. The wheel-installed indicator worker is started explicitly with the
-`indicator` profile and an exact `STRATEGY_LIST`.
-
-It launches:
-- PostgreSQL plus migration, service-role, and source-controlled seed one-shots
-- scoring, execution, feedback, primary market-data, backend, and the independent
-  observed-FX process (the latter reuses the market-data image on internal port
-  `8004`)
-- `indicator-runner` only when the `indicator` profile is selected
-
-The default operational bounds are
-`SCORING_OUTBOX_MAX_AGE_SECONDS=300`,
-`INDICATOR_MAX_SIGNAL_BACKLOG_AGE_SECONDS=300`,
-`INDICATOR_MAX_STRATEGY_LAG_SECONDS=300`, and
-`EXECUTION_PAPER_ORDER_MAX_LAG_SECONDS=300`. A service may be alive while
-`/ready` is false because a durable partition has stopped advancing; inspect
-the corresponding metrics before restarting it.
-
-**Mode Configuration**:
-
-The stack supports three execution modes via environment variables:
-
-```bash
-# Paper mode (default - safe for development)
-EXECUTION_MODE=paper docker compose --env-file .env -f docker/docker-compose.stack.yml up -d
-
-# Backtest mode (signals from historical data only)
-EXECUTION_MODE=backtest docker compose --env-file .env -f docker/docker-compose.stack.yml up -d
-
-# Live execution remains disabled for this migration and local verification.
-```
-
-**Start Specific Strategy Services (Profiles)**:
-
-```bash
-# Start the indicator-runner with an explicit benchmark allowlist
-STRATEGY_LIST=SwingHighLowPMO \
-docker compose --env-file .env -f docker/docker-compose.stack.yml --profile indicator up -d
-```
-
-Strategy runner overrides (strategy containers fall back to `EXECUTION_MODE` when `RUN_MODE` is unset):
-
-```bash
-# Override strategy run mode without changing execution engine mode
-RUN_MODE=backtest docker compose --env-file .env -f docker/docker-compose.stack.yml up -d
-
-```
-
-Service images are built via `vmdev build docker --from-config --tag latest`;
-the compose stack uses the corresponding `vynmatrix/*:latest` images.
-
----
+Keep `EXECUTION_MODE=paper`, `RUN_MODE=paper` and `EXECUTION_ENGINE_ALLOW_LIVE=false`.
+Historical campaigns use the established separate validation environment rather
+than changing the runtime's execution mode. Component progress health is aggregated
+by the supervisor; a live process may correctly report unconfigured/stale readiness.
 
 ## 13. Dependency Graph
 
@@ -1611,7 +1545,7 @@ equity source lineage + observations + factor snapshots
   → completed strategy_panel_decision + rank + state + audit
   → signals.rebalances.submit
   → immutable model_rebalance
-  → tenant/account_rebalance_plan + execution.rebalance.commands
+  → owner/account_rebalance_plan + execution.rebalance.commands
   → exit/reduce phases confirmed before entry phase
   → canonical orders/fills/positions/P&L/NAV/feedback
 ```
@@ -1678,8 +1612,8 @@ docker compose --env-file .env -f docker/docker-compose.stack.yml exec -T postgr
   "SELECT run_id FROM canonical_signals LIMIT 1"
 
 # Search all engine logs
-docker compose --env-file .env -f docker/docker-compose.stack.yml logs scoring-engine 2>&1 | grep "<run_id>"
-docker compose --env-file .env -f docker/docker-compose.stack.yml logs execution-engine 2>&1 | grep "<run_id>"
+docker compose --env-file .env -f docker/docker-compose.stack.yml logs application 2>&1 | grep "<run_id>"
+docker compose --env-file .env -f docker/docker-compose.stack.yml logs application 2>&1 | grep "<run_id>"
 ```
 
 For the full step-by-step guide with real data examples, see **[E2E_VERIFICATION_GUIDE.md](E2E_VERIFICATION_GUIDE.md)**.

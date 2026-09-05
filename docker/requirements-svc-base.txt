@@ -1,9 +1,8 @@
 # Shared third-party closure required by every production service wheel.
-# The local platform wheels are installed without dependency resolution in each
-# service-specific builder stage; ``pip check`` then proves this base plus that
-# service's extras satisfy their metadata. Keeping the genuinely shared closure
-# here gives all five images one reusable layer without making provider-specific
-# integrations or unused analytics libraries mandatory.
+# The local platform wheels are installed without dependency resolution in the
+# platform builder stage; ``pip check`` then proves this base plus the platform
+# extras satisfy their metadata. Keeping the shared closure here preserves a
+# reusable base layer while the platform profile carries its additional needs.
 fastapi==0.140.0
 # uvicorn with only the perf extras production uses: uvloop + httptools.
 # [standard] also drags watchfiles (--reload dev mode) and websockets,

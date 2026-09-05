@@ -1,33 +1,163 @@
-# Local core stack; indicator workers are enabled only through the indicator profile
-# Usage: docker compose --env-file .env -f docker/docker-compose.stack.yml up -d
-#
-# IMPORTANT: pass `--env-file .env` (repo-root) explicitly. With `-f docker/...`
-# compose resolves the default env file against docker/ (the compose file's
-# directory), NOT the repo root — without the flag every ${VAR:-default}
-# (credentials included) silently falls back to its default.
-#
-# Mode configuration:
-#   EXECUTION_MODE=backtest|paper|live (default: paper)
-#   EXECUTION_ENGINE_ALLOW_LIVE=true|false (default: false) - required for live mode
-#   RUN_MODE=backtest|paper|live (default: EXECUTION_MODE)
-#
-# Example:
-#   EXECUTION_MODE=paper docker compose --env-file .env -f docker/docker-compose.stack.yml up -d
-#   STRATEGY_LIST=SwingHighLowPMO docker compose --env-file .env -f docker/docker-compose.stack.yml --profile indicator up -d
+# Single-owner paper stack. Build only with vmdev build docker --from-config.
+# Bootstrap/upgrade is driven by vmdev db bootstrap; it stops application/workers
+# before running the explicit maintenance job. Never use --profile '*' up.
+# Split: COMPOSE_PROFILES=workers, PLATFORM_APPLICATION_GROUP=application.
+# Combined: no workers profile, PLATFORM_APPLICATION_GROUP=all.
+# Both layouts use the same application service identity; no extra all service.
+# Always pass --env-file .env from the repository root.
+name: vynmatrix
 
 x-common-env: &common-env
   ENV: ${ENV:-dev}
   ENVIRONMENT: ${ENVIRONMENT:-dev}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
-  # JSON logs so a shipper can extract structured fields (run_id, symbol, ...).
   LOG_FORMAT: ${LOG_FORMAT:-json}
-  # One process-local pool budget. Explicit service-role DATABASE_URL values
-  # receive these same controls; the combined capacity must not exceed budget.
   DB_POOL_SIZE: ${DB_POOL_SIZE:-3}
   DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
   DB_POOL_TIMEOUT_SECONDS: ${DB_POOL_TIMEOUT_SECONDS:-10}
   DB_POOL_RECYCLE_SECONDS: ${DB_POOL_RECYCLE_SECONDS:-1800}
   DB_POOL_CONNECTION_BUDGET: ${DB_POOL_CONNECTION_BUDGET:-5}
+  EXECUTION_MODE: paper
+  EXECUTION_ENGINE_ALLOW_LIVE: 'false'
+  RUN_MODE: paper
+  PLATFORM_HEALTH_PORT: '8090'
+  PLATFORM_APPLICATION_GROUP: ${PLATFORM_APPLICATION_GROUP:-application}
+
+x-api-env: &api-env
+  ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-}
+  ALERT_EMAIL_PASSWORD: ${ALERT_EMAIL_PASSWORD:-}
+  ALERT_EMAIL_SMTP_HOST: ${ALERT_EMAIL_SMTP_HOST:-}
+  ALERT_EMAIL_SMTP_PORT: ${ALERT_EMAIL_SMTP_PORT:-587}
+  ALERT_EMAIL_TLS: ${ALERT_EMAIL_TLS:-true}
+  ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+  ALERT_EMAIL_USERNAME: ${ALERT_EMAIL_USERNAME:-}
+  ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
+  ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
+  ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+  EVENT_BUS_PUBLISH_TOPICS: ${EVENT_BUS_PUBLISH_TOPICS:-signals.ingested,signals.scored,execution.results,feedback.ready}
+  EXECUTION_ALERTS_ENABLED: ${EXECUTION_ALERTS_ENABLED:-true}
+  EXECUTION_ALERT_ENVIRONMENTS: ${EXECUTION_ALERT_ENVIRONMENTS:-live}
+  EXECUTION_CIRCUIT_BREAKER_COOLDOWN_SEC: ${EXECUTION_CIRCUIT_BREAKER_COOLDOWN_SEC:-900}
+  EXECUTION_CIRCUIT_BREAKER_THRESHOLD: ${EXECUTION_CIRCUIT_BREAKER_THRESHOLD:-3}
+  EXECUTION_CIRCUIT_BREAKER_WINDOW_SEC: ${EXECUTION_CIRCUIT_BREAKER_WINDOW_SEC:-300}
+  EXECUTION_DEDUP_ALLOW_STALE_EXECUTING_RECLAIM: ${EXECUTION_DEDUP_ALLOW_STALE_EXECUTING_RECLAIM:-false}
+  EXECUTION_DEDUP_TTL_SECONDS: ${EXECUTION_DEDUP_TTL_SECONDS:-3600}
+  EXECUTION_FX_MAX_AGE_SECONDS: ${EXECUTION_FX_MAX_AGE_SECONDS:-259200}
+  EXECUTION_MAX_ACCOUNT_STATE_AGE_SECONDS: ${EXECUTION_MAX_ACCOUNT_STATE_AGE_SECONDS:-60}
+  EXECUTION_MAX_DELAYED_PAPER_MARKET_DATA_AGE_SECONDS: ${EXECUTION_MAX_DELAYED_PAPER_MARKET_DATA_AGE_SECONDS:-1800}
+  EXECUTION_MAX_MARKET_DATA_AGE_SECONDS: ${EXECUTION_MAX_MARKET_DATA_AGE_SECONDS:-60}
+  EXECUTION_MAX_MARKET_SESSION_AGE_SECONDS: ${EXECUTION_MAX_MARKET_SESSION_AGE_SECONDS:-3600}
+  EXECUTION_MAX_SIGNAL_AGE_SECONDS: ${EXECUTION_MAX_SIGNAL_AGE_SECONDS:-300}
+  EXECUTION_PAPER_ORDER_MAX_LAG_SECONDS: ${EXECUTION_PAPER_ORDER_MAX_LAG_SECONDS:-300}
+  EXECUTION_RECON_POSITION_DRIFT_TOLERANCE: ${EXECUTION_RECON_POSITION_DRIFT_TOLERANCE:-0.000001}
+  EXECUTION_REQUIRE_MARKET_DATA_FOR_LIVE: ${EXECUTION_REQUIRE_MARKET_DATA_FOR_LIVE:-true}
+  EXECUTION_RISK_GUARD_ENABLED: ${EXECUTION_RISK_GUARD_ENABLED:-true}
+  EXECUTION_SHORT_ELIGIBLE_ASSET_CLASSES: ${EXECUTION_SHORT_ELIGIBLE_ASSET_CLASSES:-}
+  HALF_LIFE_BARS: ${HALF_LIFE_BARS:-20}
+  PAPER_BROKER_COMMISSION_PCT: ${PAPER_BROKER_COMMISSION_PCT:-0.001}
+  PAPER_BROKER_SLIPPAGE_PCT: ${PAPER_BROKER_SLIPPAGE_PCT:-0.001}
+  SCORE_WEIGHTS: ${SCORE_WEIGHTS:-}
+  SCORING_BINDINGS_CACHE_TTL_SECONDS: ${SCORING_BINDINGS_CACHE_TTL_SECONDS:-5}
+  SCORING_CROSS_STRATEGY_ENSEMBLE: ${SCORING_CROSS_STRATEGY_ENSEMBLE:-false}
+  SCORING_FACTOR_LOOKBACK: ${SCORING_FACTOR_LOOKBACK:-20}
+  SCORING_FACTOR_WEIGHTS: ${SCORING_FACTOR_WEIGHTS:-}
+  SCORING_FACTOR_WINSORIZE_Z: ${SCORING_FACTOR_WINSORIZE_Z:-3.0}
+  SCORING_MARKET_CONTEXT_BY_ASSET_CLASS: '{"equity":{"source":"eodhd","timeframe":"1d","window":20,"max_age_seconds":432000}}'
+  SCORING_MARKET_CONTEXT_MAX_AGE_SECONDS: ${SCORING_MARKET_CONTEXT_MAX_AGE_SECONDS:-3600}
+  SCORING_MARKET_CONTEXT_SOURCE: ${SCORING_MARKET_CONTEXT_SOURCE:-coinbase_live}
+  SCORING_MARKET_CONTEXT_TIMEFRAME: ${SCORING_MARKET_CONTEXT_TIMEFRAME:-1m}
+  SCORING_MARKET_CONTEXT_WINDOW: ${SCORING_MARKET_CONTEXT_WINDOW:-20}
+  SCORING_MAX_SIBLINGS: ${SCORING_MAX_SIBLINGS:-16}
+  SCORING_MULTI_FACTOR_ENABLED: ${SCORING_MULTI_FACTOR_ENABLED:-false}
+  SCORING_OUTBOX_BATCH_SIZE: ${SCORING_OUTBOX_BATCH_SIZE:-100}
+  SCORING_OUTBOX_LEASE_SEC: ${SCORING_OUTBOX_LEASE_SEC:-60}
+  SCORING_OUTBOX_MAX_AGE_SECONDS: ${SCORING_OUTBOX_MAX_AGE_SECONDS:-300}
+  SCORING_OUTBOX_POLL_SEC: ${SCORING_OUTBOX_POLL_SEC:-2}
+  SCORING_OUTBOX_TOPICS: ${SCORING_OUTBOX_TOPICS:-execution.commands,execution.rebalance.commands,signals.ingested,signals.scored,execution.results,feedback.ready}
+  SCORING_PAPER_PROMOTION_MANIFEST: /app/.artifacts/paper_strategy_promotion.json
+  SCORING_PERSIST_DECISION_CONTEXT: ${SCORING_PERSIST_DECISION_CONTEXT:-true}
+  SCORING_SIBLING_FRESHNESS_SECONDS: ${SCORING_SIBLING_FRESHNESS_SECONDS:-3600}
+  VM_DEPLOY_IMAGE_TAG: ${VM_DEPLOY_IMAGE_TAG:-latest}
+  BACKEND_DATABASE_URL: ${BACKEND_DATABASE_URL:-}
+  SCORING_DATABASE_URL: ${SCORING_DATABASE_URL:-}
+  EXECUTION_DATABASE_URL: ${EXECUTION_DATABASE_URL:-}
+  BACKEND_ADMIN_API_KEY: ${BACKEND_ADMIN_API_KEY:-}
+  SCORING_API_KEY: ${SCORING_API_KEY:-}
+  EXECUTION_API_KEY: ${EXECUTION_API_KEY:-}
+  SCORING_ADMIN_API_KEY: ${SCORING_ADMIN_API_KEY:-}
+  EXECUTION_ADMIN_API_KEY: ${EXECUTION_ADMIN_API_KEY:-}
+  SECRETS_MASTER_KEYS: ${SECRETS_MASTER_KEYS:-}
+
+x-worker-env: &worker-env
+  COINBASE_API_KEY: ${COINBASE_API_KEY:-}
+  COINBASE_API_SECRET: ${COINBASE_API_SECRET:-}
+  EDGAR_USER_AGENT: ${EDGAR_USER_AGENT:-}
+  EODHD_API_TOKEN: ${EODHD_API_TOKEN:-}
+  EODHD_DAILY_QUOTA_MIN_COOLDOWN_SEC: ${EODHD_DAILY_QUOTA_MIN_COOLDOWN_SEC:-900}
+  EODHD_DELAYED_QUOTES_ENABLED: ${EODHD_DELAYED_QUOTES_ENABLED:-false}
+  EQUITY_CATALOGUE_ARTIFACT: ${EQUITY_CATALOGUE_ARTIFACT:-}
+  EQUITY_CATALOGUE_DRY_RUN: ${EQUITY_CATALOGUE_DRY_RUN:-true}
+  EQUITY_CATALOGUE_SHA256: ${EQUITY_CATALOGUE_SHA256:-}
+  EVALUATION_INTERVAL: ${EVALUATION_INTERVAL:-300}
+  FEEDBACK_EVALUATION_HORIZONS: ${FEEDBACK_EVALUATION_HORIZONS:-}
+  FEEDBACK_HEARTBEAT_MAX_AGE_SECONDS: ${FEEDBACK_HEARTBEAT_MAX_AGE_SECONDS:-}
+  FEEDBACK_PRICE_MAX_STALENESS_DAYS: ${FEEDBACK_PRICE_MAX_STALENESS_DAYS:-}
+  FX_RATE_CURRENCIES: ${FX_RATE_CURRENCIES:-USD,GBP,INR}
+  FX_RATE_HISTORY_DAYS: ${FX_RATE_HISTORY_DAYS:-90}
+  FX_RATE_POLL_INTERVAL_SEC: ${FX_RATE_POLL_INTERVAL_SEC:-21600}
+  IBKR_CA_CERT: ${IBKR_CA_CERT:-}
+  IBKR_GATEWAY_URL: ${IBKR_GATEWAY_URL:-}
+  INDICATOR_MAX_SIGNAL_BACKLOG_AGE_SECONDS: ${INDICATOR_MAX_SIGNAL_BACKLOG_AGE_SECONDS:-300}
+  INDICATOR_MAX_STRATEGY_LAG_SECONDS: ${INDICATOR_MAX_STRATEGY_LAG_SECONDS:-300}
+  INDICATOR_MIN_BAR_COVERAGE: ${INDICATOR_MIN_BAR_COVERAGE:-0.95}
+  INDICATOR_PANEL_ACTIVATION_CUTOFF: ${INDICATOR_PANEL_ACTIVATION_CUTOFF:-}
+  INDICATOR_PANEL_DATA_USE_SCOPE: ${INDICATOR_PANEL_DATA_USE_SCOPE:-}
+  INDICATOR_PANEL_ENTITLEMENT_OWNER_USER_ID: ${INDICATOR_PANEL_ENTITLEMENT_OWNER_USER_ID:-}
+  INDICATOR_PAPER_PROMOTION_MANIFEST: /app/.artifacts/paper_strategy_promotion.json
+  INGESTOR_BACKFILL_DAYS: ${INGESTOR_BACKFILL_DAYS:-}
+  INGESTOR_BACKFILL_MINUTES: ${INGESTOR_BACKFILL_MINUTES:-180}
+  INGESTOR_CANDLE_POLL_INTERVAL_SEC: ${INGESTOR_CANDLE_POLL_INTERVAL_SEC:-}
+  INGESTOR_GRANULARITY: ${INGESTOR_GRANULARITY:-ONE_MINUTE}
+  INGESTOR_NOTIFY_CHANNEL: ${INGESTOR_NOTIFY_CHANNEL:-new_market_data}
+  INGESTOR_POLL_INTERVAL_SEC: ${INGESTOR_POLL_INTERVAL_SEC:-60}
+  INGESTOR_SOURCE: ${INGESTOR_SOURCE:-coinbase_live}
+  INGESTOR_STALENESS_THRESHOLD_SEC: ${INGESTOR_STALENESS_THRESHOLD_SEC:-}
+  INGESTOR_SYMBOLS: ${INGESTOR_SYMBOLS:-}
+  QUALITY_COMPOUNDER_ENTITLEMENT_OWNER_USER_ID: ${QUALITY_COMPOUNDER_ENTITLEMENT_OWNER_USER_ID:-}
+  QUALITY_COMPOUNDER_OFFICIAL_SESSION_ARTIFACT: ${QUALITY_COMPOUNDER_OFFICIAL_SESSION_ARTIFACT:-}
+  QUALITY_COMPOUNDER_OFFICIAL_SESSION_SHA256: ${QUALITY_COMPOUNDER_OFFICIAL_SESSION_SHA256:-}
+  QUALITY_COMPOUNDER_PANELS_ENABLED: ${QUALITY_COMPOUNDER_PANELS_ENABLED:-false}
+  QUALITY_COMPOUNDER_ROUND_TRIP_COMMISSION_BPS: ${QUALITY_COMPOUNDER_ROUND_TRIP_COMMISSION_BPS:-}
+  SAXO_MARKET_DATA_ACCESS_TOKEN: ${SAXO_MARKET_DATA_ACCESS_TOKEN:-}
+  SAXO_MARKET_DATA_ACCESS_TOKEN_EXPIRES_AT: ${SAXO_MARKET_DATA_ACCESS_TOKEN_EXPIRES_AT:-}
+  SAXO_MARKET_DATA_ACCOUNT_KEY: ${SAXO_MARKET_DATA_ACCOUNT_KEY:-}
+  SIGNAL_CATCHUP_BATCH_SIZE: ${SIGNAL_CATCHUP_BATCH_SIZE:-5000}
+  SP500_RESEARCH_OWNER_USER_ID: ${SP500_RESEARCH_OWNER_USER_ID:-}
+  STRATEGY_LIST: ${STRATEGY_LIST:-}
+  VM_DEPLOY_IMAGE_TAG: ${VM_DEPLOY_IMAGE_TAG:-latest}
+  WRONG_THRESHOLD: ${WRONG_THRESHOLD:-2}
+  ZERODHA_MARKET_DATA_ACCESS_TOKEN: ${ZERODHA_MARKET_DATA_ACCESS_TOKEN:-}
+  ZERODHA_MARKET_DATA_API_KEY: ${ZERODHA_MARKET_DATA_API_KEY:-}
+  FEEDBACK_DATABASE_URL: ${FEEDBACK_DATABASE_URL:-}
+  MARKET_DATA_DATABASE_URL: ${MARKET_DATA_DATABASE_URL:-}
+  INDICATOR_DATABASE_URL: ${INDICATOR_DATABASE_URL:-}
+  FEEDBACK_API_KEY: ${FEEDBACK_API_KEY:-}
+  MARKET_DATA_API_KEY: ${MARKET_DATA_API_KEY:-}
+  SCORING_API_KEY: ${SCORING_API_KEY:-}
+  BACKEND_ADMIN_API_KEY: ${BACKEND_ADMIN_API_KEY:-}
+  PLATFORM_WORKERS: ${PLATFORM_WORKERS:-}
+  EQUITY_INGESTOR_SYMBOLS: ${EQUITY_INGESTOR_SYMBOLS:-}
+  EQUITY_INGESTOR_POLL_INTERVAL_SEC: ${EQUITY_INGESTOR_POLL_INTERVAL_SEC:-300}
+  EQUITY_INGESTOR_CANDLE_POLL_INTERVAL_SEC: ${EQUITY_INGESTOR_CANDLE_POLL_INTERVAL_SEC:-3600}
+  EQUITY_INGESTOR_STALENESS_THRESHOLD_SEC: ${EQUITY_INGESTOR_STALENESS_THRESHOLD_SEC:-350000}
+  IBKR_MARKET_CALENDAR_SYMBOLS: ${IBKR_MARKET_CALENDAR_SYMBOLS:-}
+  IBKR_MARKET_CALENDAR_POLL_INTERVAL_SEC: ${IBKR_MARKET_CALENDAR_POLL_INTERVAL_SEC:-300}
+  SAXO_MARKET_CALENDAR_SYMBOLS: ${SAXO_MARKET_CALENDAR_SYMBOLS:-}
+  SAXO_MARKET_CALENDAR_POLL_INTERVAL_SEC: ${SAXO_MARKET_CALENDAR_POLL_INTERVAL_SEC:-300}
+  ZERODHA_MARKET_CALENDAR_SYMBOLS: ${ZERODHA_MARKET_CALENDAR_SYMBOLS:-}
+  ZERODHA_MARKET_CALENDAR_POLL_INTERVAL_SEC: ${ZERODHA_MARKET_CALENDAR_POLL_INTERVAL_SEC:-30}
+  ZERODHA_MARKET_CALENDAR_NSE_MARKET: ${ZERODHA_MARKET_CALENDAR_NSE_MARKET:-Capital Market}
+  ZERODHA_MARKET_CALENDAR_NSE_LEASE_SECONDS: ${ZERODHA_MARKET_CALENDAR_NSE_LEASE_SECONDS:-120}
 
 x-bounded-logging: &bounded-logging
   driver: json-file
@@ -35,773 +165,98 @@ x-bounded-logging: &bounded-logging
     max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
     max-file: ${DOCKER_LOG_MAX_FILES:-3}
 
-x-mode-env: &mode-env
-  EXECUTION_MODE: ${EXECUTION_MODE:-paper}
-  EXECUTION_ENGINE_ALLOW_LIVE: ${EXECUTION_ENGINE_ALLOW_LIVE:-false}
-
-x-strategy-env: &strategy-env
-  <<: [*common-env, *mode-env]
-  SIGNAL_API_URL: ${SIGNAL_API_URL:-http://scoring-engine:8001}
-  EXEC_ENGINE_URL: ${EXEC_ENGINE_URL:-http://execution-engine:8000}
-  RUN_MODE: ${RUN_MODE:-}
-
-x-strategy-service: &strategy-service
-  environment:
-    <<: *strategy-env
+x-runtime: &runtime
+  image: vynmatrix/platform:${VM_DEPLOY_IMAGE_TAG:-latest}
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 60s
+  networks: [vm]
+  logging: *bounded-logging
   volumes:
     - ../Data:/data
-  depends_on:
-    scoring-engine:
-      condition: service_healthy
-  networks:
-    - vm
-  restart: unless-stopped
-
-x-market-calendar-env: &market-calendar-env
-  <<: *common-env
-  DATABASE_URL: ${MARKET_DATA_DATABASE_URL:-postgresql://vm_market_data_login:${VM_MARKET_DATA_DB_PASSWORD:-vm_market_data_local}@postgres:5432/${DB_NAME:-vm_trading}}
-  MARKET_CALENDAR_API_URL: http://backend:8081
-  MARKET_CALENDAR_ADMIN_API_KEY: ${BACKEND_ADMIN_API_KEY:-}
-  HOST: 0.0.0.0
-  PORT: "8005"
-
-x-market-calendar-service: &market-calendar-service
-  image: vynmatrix/market-data-ingestor:latest
-  command: ["python", "-m", "apps.market_data_ingestor.market_data_ingestor.main", "market-calendars"]
-  depends_on:
-    backend:
-      condition: service_healthy
-    db-runtime-roles:
-      condition: service_completed_successfully
-  expose:
-    - "8005"
-  networks:
-    - vm
-  logging: *bounded-logging
-  restart: unless-stopped
-  stop_grace_period: ${APP_STOP_GRACE_PERIOD:-60s}
+    - ../.artifacts:/app/.artifacts:ro
   healthcheck:
-    test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8005/ready')\""]
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
     interval: 30s
-    timeout: 5s
+    timeout: 10s
     retries: 3
-    start_period: 20s
-
-# Images are built ONLY by `vmdev build docker --from-config` (the single
-# build path): it validates the wheelhouse fail-closed and stamps ownership
-# labels. Compose deliberately carries no build: blocks — a missing image
-# here should fail fast and point you at vmdev, not silently rebuild stale.
-# Isolate resources from other checkouts; override with COMPOSE_PROJECT_NAME or -p.
-name: vynmatrix
+    start_period: 90s
 
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ${DB_NAME:-vm_trading}
+      POSTGRES_DB: postgres
       POSTGRES_USER: ${DB_USER:-trader}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-vm_trading_secure_2024}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Configure DB_PASSWORD before starting PostgreSQL}
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init-db:/docker-entrypoint-initdb.d:ro
-    networks:
-      - vm
+    networks: [vm]
     logging: *bounded-logging
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-trader} -d ${DB_NAME:-vm_trading}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-trader} -d postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
     restart: unless-stopped
 
-  # One-shot schema migration (alembic = single source of record). Runs
-  # `alembic upgrade head` BEFORE any service starts, so the schema reaches head —
-  # INCLUDING the outbox / market-data NOTIFY triggers and column-level ALTERs
-  # (e.g. asset_scores.external_signal_id, SC-6) that the app's create_all() does
-  # NOT install. Reuses the scoring-engine image, which bakes alembic + scripts/db
-  # + docker/seed for exactly this purpose. Seeding is the separate db-seed step
-  # below (live ./seed mount so dev edits apply without an image rebuild), so this
-  # runs migrate-only (SEED=false). On a pre-alembic volume (built by the old
-  # create_all path, no alembic_version row) a one-time `down -v` is required —
-  # see docs/E2E_VERIFICATION_GUIDE.md.
-  db-migrate:
-    image: vynmatrix/scoring-engine:latest
+  application:
+    <<: *runtime
+    command: ["python", "-m", "scripts.run_platform", "${PLATFORM_APPLICATION_GROUP:-application}"]
     environment:
-      <<: *common-env
-      DATABASE_URL: ${DATABASE_URL:-postgresql://${DB_USER:-trader}:${DB_PASSWORD:-vm_trading_secure_2024}@postgres:5432/${DB_NAME:-vm_trading}}
-      SEED: "false"
+      # The union supports the all variant with this same container identity.
+      # The launcher passes only the selected role's allowlist to each process.
+      <<: [*common-env, *api-env, *worker-env]
     depends_on:
       postgres:
         condition: service_healthy
-    networks:
-      - vm
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8081}:8081"
+
+  workers:
+    <<: *runtime
+    profiles: ["workers"]
+    command: ["python", "-m", "scripts.run_platform", "workers"]
+    environment:
+      <<: [*common-env, *worker-env]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      application:
+        condition: service_healthy
+
+  # This job has no automatic runtime dependents. vmdev stops both groups first;
+  # an exited bootstrap occupies no runtime slot and is removed by compose run.
+  bootstrap:
+    image: vynmatrix/platform:${VM_DEPLOY_IMAGE_TAG:-latest}
+    profiles: ["maintenance"]
+    init: true
+    command: ["python", "-m", "dev_cli.main", "db", "bootstrap", "--inside-container"]
+    environment:
+      EXECUTION_MODE: paper
+      EXECUTION_ENGINE_ALLOW_LIVE: "false"
+      ADMIN_DATABASE_URL: ${ADMIN_DATABASE_URL:-}
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:-}
+      VM_DEPLOY_IMAGE_TAG: ${VM_DEPLOY_IMAGE_TAG:-latest}
+      VM_BACKEND_DB_PASSWORD: ${VM_BACKEND_DB_PASSWORD:-}
+      VM_SCORING_DB_PASSWORD: ${VM_SCORING_DB_PASSWORD:-}
+      VM_EXECUTION_DB_PASSWORD: ${VM_EXECUTION_DB_PASSWORD:-}
+      VM_FEEDBACK_DB_PASSWORD: ${VM_FEEDBACK_DB_PASSWORD:-}
+      VM_MARKET_DATA_DB_PASSWORD: ${VM_MARKET_DATA_DB_PASSWORD:-}
+      VM_INDICATOR_DB_PASSWORD: ${VM_INDICATOR_DB_PASSWORD:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [vm]
     logging: *bounded-logging
     restart: "no"
-    command: ["bash", "scripts/db/migrate_and_seed.sh"]
-
-  # Create LOGIN roles only after Alembic has established the NOLOGIN service
-  # groups and their grants. An external database must provision equivalent
-  # service logins before runtime services start.
-  db-runtime-roles:
-    image: postgres:16-alpine
-    environment:
-      PGHOST: postgres
-      PGPORT: "5432"
-      PGUSER: ${DB_USER:-trader}
-      PGPASSWORD: ${DB_PASSWORD:-vm_trading_secure_2024}
-      PGDATABASE: ${DB_NAME:-vm_trading}
-      VM_BACKEND_DB_PASSWORD: ${VM_BACKEND_DB_PASSWORD:-vm_backend_local}
-      VM_SCORING_DB_PASSWORD: ${VM_SCORING_DB_PASSWORD:-vm_scoring_local}
-      VM_EXECUTION_DB_PASSWORD: ${VM_EXECUTION_DB_PASSWORD:-vm_execution_local}
-      VM_FEEDBACK_DB_PASSWORD: ${VM_FEEDBACK_DB_PASSWORD:-vm_feedback_local}
-      VM_MARKET_DATA_DB_PASSWORD: ${VM_MARKET_DATA_DB_PASSWORD:-vm_market_data_local}
-      VM_INDICATOR_DB_PASSWORD: ${VM_INDICATOR_DB_PASSWORD:-vm_indicator_local}
-    volumes:
-      - ./provision-runtime-roles.sh:/usr/local/bin/provision-runtime-roles.sh:ro
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-    networks:
-      - vm
-    logging: *bounded-logging
-    restart: "no"
-    command: ["sh", "/usr/local/bin/provision-runtime-roles.sh"]
-
-  scoring-engine:
-    image: vynmatrix/scoring-engine:latest
-    environment:
-      <<: [*common-env, *mode-env]
-      DATABASE_URL: ${SCORING_DATABASE_URL:-postgresql://vm_scoring_login:${VM_SCORING_DB_PASSWORD:-vm_scoring_local}@postgres:5432/${DB_NAME:-vm_trading}}
-      API_KEY: ${API_KEY:-}
-      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
-      EXEC_ENGINE_URL: ${EXEC_ENGINE_URL:-http://execution-engine:8000}
-      EXEC_ENGINE_API_KEY: ${EXEC_ENGINE_API_KEY:-${API_KEY:-}}
-      VM_DEPLOY_IMAGE_TAG: ${VM_DEPLOY_IMAGE_TAG:-local}
-      SCORING_PAPER_PROMOTION_MANIFEST: /app/.artifacts/paper_strategy_promotion.json
-      HALF_LIFE_BARS: ${HALF_LIFE_BARS:-20}
-      SCORE_WEIGHTS: ${SCORE_WEIGHTS:-}
-      SCORING_PERSIST_DECISION_CONTEXT: ${SCORING_PERSIST_DECISION_CONTEXT:-true}
-      SCORING_BINDINGS_CACHE_TTL_SECONDS: ${SCORING_BINDINGS_CACHE_TTL_SECONDS:-5}
-      # alembic (db-migrate) owns the schema; do not let create_all mask drift.
-      # Run the relay in-process by default. The standalone relay is opt-in
-      # through its profile. Row-locked claims and idempotent consumers permit
-      # both relays to run together. To use only the standalone process, set
-      # this false and add `--profile standalone-relay`.
-      SCORING_OUTBOX_RELAY_INLINE: ${SCORING_OUTBOX_RELAY_INLINE:-true}
-      SCORING_OUTBOX_TOPICS: ${SCORING_OUTBOX_TOPICS:-execution.commands,execution.rebalance.commands,signals.ingested,signals.scored,execution.results,feedback.ready}
-      EVENT_BUS_PUBLISH_TOPICS: ${EVENT_BUS_PUBLISH_TOPICS:-signals.ingested,signals.scored,execution.results,feedback.ready}
-      SCORING_OUTBOX_POLL_SEC: ${SCORING_OUTBOX_POLL_SEC:-2}
-      SCORING_OUTBOX_BATCH_SIZE: ${SCORING_OUTBOX_BATCH_SIZE:-100}
-      SCORING_OUTBOX_LEASE_SEC: ${SCORING_OUTBOX_LEASE_SEC:-60}
-      SCORING_OUTBOX_MAX_AGE_SECONDS: ${SCORING_OUTBOX_MAX_AGE_SECONDS:-300}
-      # SC-asset cross-strategy ensemble gating score. DEFAULT OFF — do not flip
-      # until the flag-on execution-dispatch hardening (direction-conflict
-      # handling) lands; single-strategy behaviour is identical with it off.
-      SCORING_CROSS_STRATEGY_ENSEMBLE: ${SCORING_CROSS_STRATEGY_ENSEMBLE:-false}
-      SCORING_SIBLING_FRESHNESS_SECONDS: ${SCORING_SIBLING_FRESHNESS_SECONDS:-3600}
-      SCORING_MAX_SIBLINGS: ${SCORING_MAX_SIBLINGS:-16}
-      # Layer-2 context is always derived point-in-time from this exact persisted
-      # feed. Missing, invalid, or stale history produces a non-actionable score.
-      SCORING_MARKET_CONTEXT_SOURCE: ${SCORING_MARKET_CONTEXT_SOURCE:-coinbase_live}
-      SCORING_MARKET_CONTEXT_TIMEFRAME: ${SCORING_MARKET_CONTEXT_TIMEFRAME:-1m}
-      SCORING_MARKET_CONTEXT_WINDOW: ${SCORING_MARKET_CONTEXT_WINDOW:-20}
-      SCORING_MARKET_CONTEXT_MAX_AGE_SECONDS: ${SCORING_MARKET_CONTEXT_MAX_AGE_SECONDS:-3600}
-      # Per-asset-class feed routing: equities score against the persisted
-      # EODHD daily bars (max_age 5 days spans weekends/holidays) while the
-      # default above keeps serving crypto. Same fail-closed semantics per feed.
-      SCORING_MARKET_CONTEXT_BY_ASSET_CLASS: '{"equity":{"source":"eodhd","timeframe":"1d","window":20,"max_age_seconds":432000}}'
-      # Q3 multi-factor asset scoring. DEFAULT OFF — flipping it re-scales the
-      # gating score, so treat it like SCORING_CROSS_STRATEGY_ENSEMBLE.
-      SCORING_MULTI_FACTOR_ENABLED: ${SCORING_MULTI_FACTOR_ENABLED:-false}
-      SCORING_FACTOR_WEIGHTS: ${SCORING_FACTOR_WEIGHTS:-}
-      SCORING_FACTOR_LOOKBACK: ${SCORING_FACTOR_LOOKBACK:-20}
-      SCORING_FACTOR_WINSORIZE_Z: ${SCORING_FACTOR_WINSORIZE_Z:-3.0}
-      HOST: 0.0.0.0
-      PORT: 8001
-    volumes:
-      - ../.artifacts:/app/.artifacts:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
-      db-runtime-roles:
-        condition: service_completed_successfully
-    ports:
-      - "8001:8001"
-    networks:
-      - vm
-    logging: *bounded-logging
+    stop_grace_period: 60s
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    restart: unless-stopped
-    stop_grace_period: ${APP_STOP_GRACE_PERIOD:-60s}
-
-  # Optional standalone outbox relay, independently supervised so delivery can
-  # continue through a scoring-engine restart. Claims are owner-fenced and
-  # consumers are idempotent under at-least-once delivery. Enable with
-  # `--profile standalone-relay`; set SCORING_OUTBOX_RELAY_INLINE=false if this
-  # process should be the only relay.
-  scoring-outbox-relay:
-    image: vynmatrix/scoring-engine:latest
-    profiles: ["standalone-relay"]
-    environment:
-      <<: [*common-env, *mode-env]
-      DATABASE_URL: ${SCORING_DATABASE_URL:-postgresql://vm_scoring_login:${VM_SCORING_DB_PASSWORD:-vm_scoring_local}@postgres:5432/${DB_NAME:-vm_trading}}
-      API_KEY: ${API_KEY:-}
-      EXEC_ENGINE_URL: ${EXEC_ENGINE_URL:-http://execution-engine:8000}
-      EXEC_ENGINE_API_KEY: ${EXEC_ENGINE_API_KEY:-${API_KEY:-}}
-      SCORING_OUTBOX_TOPICS: ${SCORING_OUTBOX_TOPICS:-execution.commands,execution.rebalance.commands,signals.ingested,signals.scored,execution.results,feedback.ready}
-      EVENT_BUS_PUBLISH_TOPICS: ${EVENT_BUS_PUBLISH_TOPICS:-signals.ingested,signals.scored,execution.results,feedback.ready}
-      SCORING_OUTBOX_POLL_SEC: ${SCORING_OUTBOX_POLL_SEC:-2}
-      SCORING_OUTBOX_BATCH_SIZE: ${SCORING_OUTBOX_BATCH_SIZE:-100}
-      SCORING_OUTBOX_LEASE_SEC: ${SCORING_OUTBOX_LEASE_SEC:-60}
-      SCORING_OUTBOX_MAX_AGE_SECONDS: ${SCORING_OUTBOX_MAX_AGE_SECONDS:-300}
-      HOST: 0.0.0.0
-      PORT: "8004"
-    command: ["python", "-m", "apps.scoring_engine.scoring_engine.main", "relay"]
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-      db-runtime-roles:
-        condition: service_completed_successfully
-      execution-engine:
-        condition: service_healthy
-    ports:
-      - "8004:8004"
-    networks:
-      - vm
-    logging: *bounded-logging
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8004/health')\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    restart: unless-stopped
-    stop_grace_period: ${APP_STOP_GRACE_PERIOD:-60s}
-
-  # One-shot database seeder. Runs AFTER db-migrate has built the schema at head,
-  # then applies the seed SQL (instruments, aliases, strategies, the e2e users +
-  # bindings) from the live ./seed mount (so dev edits apply without an image
-  # rebuild). The seed files are idempotent (ON CONFLICT / NOT EXISTS), so
-  # re-running on every `up` is safe.
-  db-seed:
-    image: postgres:16-alpine
-    environment:
-      PGHOST: postgres
-      PGPORT: "5432"
-      PGUSER: ${DB_USER:-trader}
-      PGPASSWORD: ${DB_PASSWORD:-vm_trading_secure_2024}
-      PGDATABASE: ${DB_NAME:-vm_trading}
-    volumes:
-      - ./seed:/seed:ro
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-    networks:
-      - vm
-    logging: *bounded-logging
-    restart: "no"
-    command:
-      - sh
-      - -ec
-      - |
-        echo "[db-seed] schema ready; applying seed files in order"
-        for f in /seed/*.sql; do
-          echo "[db-seed] applying $$f"
-          psql -v ON_ERROR_STOP=1 -f "$$f"
-        done
-        echo "[db-seed] seed complete"
-
-  execution-engine:
-    image: vynmatrix/execution-engine:latest
-    environment:
-      <<: [*common-env, *mode-env]
-      DATABASE_URL: ${EXECUTION_DATABASE_URL:-postgresql://vm_execution_login:${VM_EXECUTION_DB_PASSWORD:-vm_execution_local}@postgres:5432/${DB_NAME:-vm_trading}}
-      API_KEY: ${API_KEY:-}
-      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
-      # Must match the backend onboarding surface: execution resolves each
-      # linked account's secret_ref through the same encrypted key ring.
-      # Execution defaults to the account-scoped DB store in every deployment;
-      # production explicitly supplies the same SECRETS_MASTER_KEYS as backend.
-      SECRETS_BACKEND: ${SECRETS_BACKEND:-db}
-      SECRETS_MASTER_KEYS: ${SECRETS_MASTER_KEYS:-}
-      EXECUTION_USE_LOCAL_PAPER_BROKER: ${EXECUTION_USE_LOCAL_PAPER_BROKER:-true}
-      PAPER_BROKER_SLIPPAGE_PCT: ${PAPER_BROKER_SLIPPAGE_PCT:-0.001}
-      PAPER_BROKER_COMMISSION_PCT: ${PAPER_BROKER_COMMISSION_PCT:-0.001}
-      EXECUTION_PAPER_ORDER_MAX_LAG_SECONDS: ${EXECUTION_PAPER_ORDER_MAX_LAG_SECONDS:-300}
-      EXECUTION_DEDUP_TTL_SECONDS: ${EXECUTION_DEDUP_TTL_SECONDS:-3600}
-      EXECUTION_DEDUP_ALLOW_STALE_EXECUTING_RECLAIM: ${EXECUTION_DEDUP_ALLOW_STALE_EXECUTING_RECLAIM:-false}
-      EXECUTION_DEDUP_USE_MEMORY_ONLY: ${EXECUTION_DEDUP_USE_MEMORY_ONLY:-false}
-      EXECUTION_CIRCUIT_BREAKER_THRESHOLD: ${EXECUTION_CIRCUIT_BREAKER_THRESHOLD:-3}
-      EXECUTION_CIRCUIT_BREAKER_WINDOW_SEC: ${EXECUTION_CIRCUIT_BREAKER_WINDOW_SEC:-300}
-      EXECUTION_CIRCUIT_BREAKER_COOLDOWN_SEC: ${EXECUTION_CIRCUIT_BREAKER_COOLDOWN_SEC:-900}
-      EXECUTION_RISK_GUARD_ENABLED: ${EXECUTION_RISK_GUARD_ENABLED:-true}
-      EXECUTION_REQUIRE_MARKET_DATA_FOR_LIVE: ${EXECUTION_REQUIRE_MARKET_DATA_FOR_LIVE:-true}
-      # Env-backend development override: secret_ref "coinbase-live-main"
-      # resolves to this JSON variable. DB-backed deployments ignore it.
-      BROKER_CREDS_COINBASE_LIVE_MAIN: ${BROKER_CREDS_COINBASE_LIVE_MAIN:-}
-      # Operational alerting on by default; it stays a no-op until an ALERT_* sink
-      # is configured, then breaker/reconciliation alerts are delivered. These
-      # credentials belong only in the execution container.
-      EXECUTION_ALERTS_ENABLED: ${EXECUTION_ALERTS_ENABLED:-true}
-      EXECUTION_ALERT_ENVIRONMENTS: ${EXECUTION_ALERT_ENVIRONMENTS:-live}
-      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
-      ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
-      ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
-      ALERT_EMAIL_SMTP_HOST: ${ALERT_EMAIL_SMTP_HOST:-}
-      ALERT_EMAIL_SMTP_PORT: ${ALERT_EMAIL_SMTP_PORT:-587}
-      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-}
-      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
-      ALERT_EMAIL_USERNAME: ${ALERT_EMAIL_USERNAME:-}
-      ALERT_EMAIL_PASSWORD: ${ALERT_EMAIL_PASSWORD:-}
-      ALERT_EMAIL_TLS: ${ALERT_EMAIL_TLS:-true}
-      # Q2 shorting dim 4: comma-separated asset classes eligible to be shorted.
-      # Empty (default) = no asset-class restriction; spot stays long-only via the
-      # broker/mode dimension regardless. Set e.g. "crypto" once non-spot modes are
-      # enabled to restrict shorting to specific asset classes.
-      EXECUTION_SHORT_ELIGIBLE_ASSET_CLASSES: ${EXECUTION_SHORT_ELIGIBLE_ASSET_CLASSES:-}
-      EXECUTION_FX_MAX_AGE_SECONDS: ${EXECUTION_FX_MAX_AGE_SECONDS:-259200}
-      EXECUTION_MAX_SIGNAL_AGE_SECONDS: ${EXECUTION_MAX_SIGNAL_AGE_SECONDS:-300}
-      # Live freshness gate ceiling. Default 60s equals the market-data ingest cadence,
-      # so live orders often just-miss; raise it (e.g. 300) for live where the 60s
-      # cadence would otherwise block every order as stale_market_data.
-      EXECUTION_MAX_MARKET_DATA_AGE_SECONDS: ${EXECUTION_MAX_MARKET_DATA_AGE_SECONDS:-60}
-      EXECUTION_MAX_DELAYED_PAPER_MARKET_DATA_AGE_SECONDS: ${EXECUTION_MAX_DELAYED_PAPER_MARKET_DATA_AGE_SECONDS:-1800}
-      EXECUTION_MAX_ACCOUNT_STATE_AGE_SECONDS: ${EXECUTION_MAX_ACCOUNT_STATE_AGE_SECONDS:-60}
-      EXECUTION_MAX_MARKET_SESSION_AGE_SECONDS: ${EXECUTION_MAX_MARKET_SESSION_AGE_SECONDS:-3600}
-      EXECUTION_RECON_POSITION_DRIFT_TOLERANCE: ${EXECUTION_RECON_POSITION_DRIFT_TOLERANCE:-0.000001}
-      HOST: 0.0.0.0
-      PORT: 8000
-    depends_on:
-      postgres:
-        condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
-      db-runtime-roles:
-        condition: service_completed_successfully
-    ports:
-      - "8000:8000"
-    networks:
-      - vm
-    logging: *bounded-logging
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    restart: unless-stopped
-    stop_grace_period: ${APP_STOP_GRACE_PERIOD:-60s}
-
-  # Feedback runs one-shot `evaluate` cycles every FEEDBACK_EVAL_INTERVAL_SEC
-  # by default, with a fresh process each time. Set FEEDBACK_RUN_MODE=daemon for
-  # a continuous worker. Scheduled-mode liveness is the DB service_heartbeats
-  # row written every cycle (run_evaluation_cycle).
-  feedback-loop-engine:
-    image: vynmatrix/feedback-loop-engine:latest
-    environment:
-      <<: *common-env
-      DATABASE_URL: ${FEEDBACK_DATABASE_URL:-postgresql://vm_feedback_login:${VM_FEEDBACK_DB_PASSWORD:-vm_feedback_local}@postgres:5432/${DB_NAME:-vm_trading}}
-      HOST: 0.0.0.0
-      PORT: 8002
-      WRONG_THRESHOLD: ${WRONG_THRESHOLD:-2}
-      # daemon-mode (FEEDBACK_RUN_MODE=daemon) loop interval; scheduled-mode sleeps
-      # FEEDBACK_EVAL_INTERVAL_SEC between one-shot `evaluate` runs (default 300s).
-      EVALUATION_INTERVAL: ${EVALUATION_INTERVAL:-3600}
-      FEEDBACK_RUN_MODE: ${FEEDBACK_RUN_MODE:-scheduled}
-      FEEDBACK_EVAL_INTERVAL_SEC: ${FEEDBACK_EVAL_INTERVAL_SEC:-300}
-    command:
-      - sh
-      - -c
-      - |
-        if [ "$${FEEDBACK_RUN_MODE:-scheduled}" = "daemon" ]; then
-          exec python -m apps.feedback_loop_engine.feedback_loop_engine.main daemon
-        fi
-        echo "[feedback] scheduled mode: one-shot 'evaluate' every $${FEEDBACK_EVAL_INTERVAL_SEC:-300}s"
-        while true; do
-          python -m apps.feedback_loop_engine.feedback_loop_engine.main evaluate || true
-          sleep "$${FEEDBACK_EVAL_INTERVAL_SEC:-300}"
-        done
-    depends_on:
-      postgres:
-        condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
-      db-runtime-roles:
-        condition: service_completed_successfully
-    ports:
-      - "8002:8002"
-    networks:
-      - vm
-    logging: *bounded-logging
-    # No HTTP healthcheck: in the default scheduled mode the one-shot `evaluate`
-    # serves no /health endpoint (liveness = the DB service_heartbeats row, which the
-    # soak acceptance gate reads). In daemon mode (FEEDBACK_RUN_MODE=daemon) the
-    # health server runs on :8002.
-    restart: unless-stopped
-    stop_grace_period: ${APP_STOP_GRACE_PERIOD:-60s}
-
-  market-data-ingestor:
-    image: vynmatrix/market-data-ingestor:latest
-    environment:
-      <<: *common-env
-      DATABASE_URL: ${MARKET_DATA_DATABASE_URL:-postgresql://vm_market_data_login:${VM_MARKET_DATA_DB_PASSWORD:-vm_market_data_local}@postgres:5432/${DB_NAME:-vm_trading}}
-      INGESTOR_SYMBOLS: ${INGESTOR_SYMBOLS:-BTC-USDC,ETH-USDC,SOL-USDC}
-      INGESTOR_GRANULARITY: ${INGESTOR_GRANULARITY:-ONE_MINUTE}
-      INGESTOR_SOURCE: ${INGESTOR_SOURCE:-coinbase_live}
-      INGESTOR_POLL_INTERVAL_SEC: ${INGESTOR_POLL_INTERVAL_SEC:-60}
-      INGESTOR_BACKFILL_MINUTES: ${INGESTOR_BACKFILL_MINUTES:-180}
-      INGESTOR_NOTIFY_CHANNEL: ${INGESTOR_NOTIFY_CHANNEL:-new_market_data}
-      # Historical auto-warm is decoupled into the one-shot `market-data-backfill`
-      # service (profile: backfill) so paging months of history can never contend
-      # with — or stall — this live poll loop. INGESTOR_BACKFILL_DAYS is consumed
-      # there, not here.
-      COINBASE_API_KEY: ${COINBASE_API_KEY:-}
-      COINBASE_API_SECRET: ${COINBASE_API_SECRET:-}
-      IBKR_GATEWAY_URL: ${IBKR_GATEWAY_URL:-https://host.docker.internal:5000}
-      IBKR_CA_CERT: ${IBKR_CA_CERT:-}
-      ZERODHA_MARKET_DATA_API_KEY: ${ZERODHA_MARKET_DATA_API_KEY:-}
-      ZERODHA_MARKET_DATA_ACCESS_TOKEN: ${ZERODHA_MARKET_DATA_ACCESS_TOKEN:-}
-      SAXO_MARKET_DATA_ACCESS_TOKEN: ${SAXO_MARKET_DATA_ACCESS_TOKEN:-}
-      SAXO_MARKET_DATA_ACCESS_TOKEN_EXPIRES_AT: ${SAXO_MARKET_DATA_ACCESS_TOKEN_EXPIRES_AT:-}
-      SAXO_MARKET_DATA_ACCOUNT_KEY: ${SAXO_MARKET_DATA_ACCOUNT_KEY:-}
-      HOST: 0.0.0.0
-      PORT: 8003
-    depends_on:
-      postgres:
-        condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
-      db-runtime-roles:
-        condition: service_completed_successfully
-    ports:
-      - "8003:8003"
-    networks:
-      - vm
-    logging: *bounded-logging
-    healthcheck:
-      # /ready (not /health): reflects feed freshness via scheduler.is_fresh(),
-      # so a stalled poll loop flips the container unhealthy. The Jun-30 16h
-      # feed stall stayed compose-"healthy" behind the static /health.
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8003/ready')\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    restart: unless-stopped
-    stop_grace_period: ${APP_STOP_GRACE_PERIOD:-60s}
-
-  # Second ingestor instance for the equity daily feed (profile-gated: the
-  # crypto-only stack never starts it). Same image, one source per process —
-  # EODHD daily bars land beside the crypto 1m feed with exact provenance,
-  # and the scoring per-asset-class market context routes equities to them.
-  # Staleness threshold spans weekend + Monday-holiday gaps for a 1d cadence.
-  market-data-ingestor-equity:
-    profiles: ["equity"]
-    image: vynmatrix/market-data-ingestor:latest
-    stop_grace_period: ${APP_STOP_GRACE_PERIOD:-60s}
-    environment:
-      <<: *common-env
-      DATABASE_URL: ${MARKET_DATA_DATABASE_URL:-postgresql://vm_market_data_login:${VM_MARKET_DATA_DB_PASSWORD:-vm_market_data_local}@postgres:5432/${DB_NAME:-vm_trading}}
-      INGESTOR_SYMBOLS: ${EQUITY_INGESTOR_SYMBOLS:-NVDA,TSLA,MSFT,AAPL,AMZN,GOOGL,META,MU,AMD,AVGO,PLTR,HOOD,COIN,NFLX,ORCL,LLY,WMT,COST,XOM,JPM,CRM,GOOG,APP,UNH,INTC}
-      INGESTOR_GRANULARITY: ONE_DAY
-      INGESTOR_SOURCE: eodhd
-      INGESTOR_POLL_INTERVAL_SEC: ${EQUITY_INGESTOR_POLL_INTERVAL_SEC:-300}
-      INGESTOR_CANDLE_POLL_INTERVAL_SEC: ${EQUITY_INGESTOR_CANDLE_POLL_INTERVAL_SEC:-3600}
-      INGESTOR_STALENESS_THRESHOLD_SEC: ${EQUITY_INGESTOR_STALENESS_THRESHOLD_SEC:-350000}
-      INGESTOR_NOTIFY_CHANNEL: ${INGESTOR_NOTIFY_CHANNEL:-new_market_data}
-      EODHD_API_TOKEN: ${EODHD_API_TOKEN:-}
-      EDGAR_USER_AGENT: ${EDGAR_USER_AGENT:-}
-      EODHD_DELAYED_QUOTES_ENABLED: ${EODHD_DELAYED_QUOTES_ENABLED:-false}
-      EODHD_DAILY_QUOTA_MIN_COOLDOWN_SEC: ${EODHD_DAILY_QUOTA_MIN_COOLDOWN_SEC:-900}
-      SP500_RESEARCH_OWNER_USER_ID: ${SP500_RESEARCH_OWNER_USER_ID:-}
-      HOST: 0.0.0.0
-      PORT: 8007
-    depends_on:
-      postgres:
-        condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
-      db-runtime-roles:
-        condition: service_completed_successfully
-    ports:
-      - "8007:8007"
-    volumes:
-      - ../.artifacts:/app/.artifacts:ro
-    networks:
-      - vm
-    logging: *bounded-logging
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8007/ready')\""]
-      interval: 60s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    restart: unless-stopped
-
-  # Independent FX observation process. ECB business-day reference rates and
-  # Coinbase USDC-EUR hourly candles are persisted as source legs; accounting
-  # derives crosses at read time and never assumes stablecoin parity. A source
-  # outage here cannot stall the primary crypto-candle scheduler above.
-  fx-rate-ingestor:
-    image: vynmatrix/market-data-ingestor:latest
-    command: ["python", "-m", "apps.market_data_ingestor.market_data_ingestor.main", "fx-rates"]
-    environment:
-      <<: *common-env
-      DATABASE_URL: ${MARKET_DATA_DATABASE_URL:-postgresql://vm_market_data_login:${VM_MARKET_DATA_DB_PASSWORD:-vm_market_data_local}@postgres:5432/${DB_NAME:-vm_trading}}
-      FX_RATE_CURRENCIES: ${FX_RATE_CURRENCIES:-USD,GBP,INR}
-      FX_RATE_HISTORY_DAYS: ${FX_RATE_HISTORY_DAYS:-90}
-      FX_RATE_POLL_INTERVAL_SEC: ${FX_RATE_POLL_INTERVAL_SEC:-21600}
-      FX_RATE_COINBASE_PRODUCT: USDC-EUR
-      HOST: 0.0.0.0
-      PORT: 8004
-    depends_on:
-      postgres:
-        condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
-      db-runtime-roles:
-        condition: service_completed_successfully
-    expose:
-      - "8004"
-    networks:
-      - vm
-    logging: *bounded-logging
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8004/ready')\""]
-      interval: 60s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    restart: unless-stopped
-    stop_grace_period: ${APP_STOP_GRACE_PERIOD:-60s}
-
-  # Official market-session writers are opt-in and independently supervised.
-  # Enable only one source for any given canonical instrument. Each writer reads
-  # exact venue identity from instrument_broker_symbols and writes only through
-  # the backend control-plane API; an empty selector or missing credential fails
-  # startup, and source outages let prior coverage age out instead of guessing.
-  market-calendar-ibkr:
-    <<: *market-calendar-service
-    profiles: ["calendar-ibkr"]
-    environment:
-      <<: *market-calendar-env
-      MARKET_CALENDAR_PROVIDER: ibkr
-      MARKET_CALENDAR_SYMBOLS: ${IBKR_MARKET_CALENDAR_SYMBOLS:-}
-      MARKET_CALENDAR_POLL_INTERVAL_SEC: ${IBKR_MARKET_CALENDAR_POLL_INTERVAL_SEC:-300}
-      IBKR_GATEWAY_URL: ${IBKR_GATEWAY_URL:-https://host.docker.internal:5000}
-      IBKR_CA_CERT: ${IBKR_CA_CERT:-}
-
-  market-calendar-saxo:
-    <<: *market-calendar-service
-    profiles: ["calendar-saxo"]
-    environment:
-      <<: *market-calendar-env
-      MARKET_CALENDAR_PROVIDER: saxo_live
-      MARKET_CALENDAR_SYMBOLS: ${SAXO_MARKET_CALENDAR_SYMBOLS:-}
-      MARKET_CALENDAR_POLL_INTERVAL_SEC: ${SAXO_MARKET_CALENDAR_POLL_INTERVAL_SEC:-300}
-      SAXO_MARKET_DATA_ACCESS_TOKEN: ${SAXO_MARKET_DATA_ACCESS_TOKEN:-}
-      SAXO_MARKET_DATA_ACCESS_TOKEN_EXPIRES_AT: ${SAXO_MARKET_DATA_ACCESS_TOKEN_EXPIRES_AT:-}
-
-  market-calendar-zerodha:
-    <<: *market-calendar-service
-    profiles: ["calendar-zerodha"]
-    environment:
-      <<: *market-calendar-env
-      MARKET_CALENDAR_PROVIDER: nse
-      MARKET_CALENDAR_SYMBOLS: ${ZERODHA_MARKET_CALENDAR_SYMBOLS:-}
-      MARKET_CALENDAR_POLL_INTERVAL_SEC: ${ZERODHA_MARKET_CALENDAR_POLL_INTERVAL_SEC:-30}
-      MARKET_CALENDAR_NSE_MARKET: ${ZERODHA_MARKET_CALENDAR_NSE_MARKET:-Capital Market}
-      MARKET_CALENDAR_NSE_LEASE_SECONDS: ${ZERODHA_MARKET_CALENDAR_NSE_LEASE_SECONDS:-120}
-
-  # One-shot historical backfill, DECOUPLED from the live ingestor so paging
-  # months of history can never contend with — or stall — the feed. Opt-in via
-  # `--profile backfill`; runs the deficit-aware warmup in its OWN process (own DB
-  # pool + venue provider) and exits. It resolves the same exact catalogue
-  # instruments and source-specific credentials as live ingestion; no venue
-  # fallback or provenance relabelling is allowed.
-  market-data-backfill:
-    profiles: ["backfill"]
-    image: vynmatrix/market-data-ingestor:latest
-    command: ["python", "-m", "apps.market_data_ingestor.market_data_ingestor.main", "backfill"]
-    environment:
-      <<: *common-env
-      DATABASE_URL: ${MARKET_DATA_DATABASE_URL:-postgresql://vm_market_data_login:${VM_MARKET_DATA_DB_PASSWORD:-vm_market_data_local}@postgres:5432/${DB_NAME:-vm_trading}}
-      INGESTOR_SYMBOLS: ${INGESTOR_SYMBOLS:-BTC-USDC,ETH-USDC,SOL-USDC}
-      INGESTOR_GRANULARITY: ${INGESTOR_GRANULARITY:-ONE_MINUTE}
-      INGESTOR_SOURCE: ${INGESTOR_SOURCE:-coinbase_live}
-      INGESTOR_BACKFILL_DAYS: ${INGESTOR_BACKFILL_DAYS:-150}
-      EODHD_API_TOKEN: ${EODHD_API_TOKEN:-}
-      COINBASE_API_KEY: ${COINBASE_API_KEY:-}
-      COINBASE_API_SECRET: ${COINBASE_API_SECRET:-}
-      IBKR_GATEWAY_URL: ${IBKR_GATEWAY_URL:-https://host.docker.internal:5000}
-      IBKR_CA_CERT: ${IBKR_CA_CERT:-}
-      ZERODHA_MARKET_DATA_API_KEY: ${ZERODHA_MARKET_DATA_API_KEY:-}
-      ZERODHA_MARKET_DATA_ACCESS_TOKEN: ${ZERODHA_MARKET_DATA_ACCESS_TOKEN:-}
-      SAXO_MARKET_DATA_ACCESS_TOKEN: ${SAXO_MARKET_DATA_ACCESS_TOKEN:-}
-      SAXO_MARKET_DATA_ACCESS_TOKEN_EXPIRES_AT: ${SAXO_MARKET_DATA_ACCESS_TOKEN_EXPIRES_AT:-}
-      SAXO_MARKET_DATA_ACCOUNT_KEY: ${SAXO_MARKET_DATA_ACCOUNT_KEY:-}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
-      db-runtime-roles:
-        condition: service_completed_successfully
-    networks:
-      - vm
-    logging: *bounded-logging
-    restart: "no"
-
-  # Default-off, one-shot quarter-end producer for the US Quality Compounder.
-  # An external scheduler invokes this profile after the final XNYS quarter
-  # close; the command itself rechecks the official session boundary and is
-  # idempotent. It creates no broker or execution authority.
-  quality-compounder-panel:
-    profiles: ["quality-compounder"]
-    image: vynmatrix/market-data-ingestor:latest
-    command: ["python", "-m", "apps.market_data_ingestor.market_data_ingestor.main", "quality-compounder-once"]
-    environment:
-      <<: *common-env
-      DATABASE_URL: ${MARKET_DATA_DATABASE_URL:-postgresql://vm_market_data_login:${VM_MARKET_DATA_DB_PASSWORD:-vm_market_data_local}@postgres:5432/${DB_NAME:-vm_trading}}
-      EODHD_API_TOKEN: ${EODHD_API_TOKEN:-}
-      EDGAR_USER_AGENT: ${EDGAR_USER_AGENT:-}
-      QUALITY_COMPOUNDER_PANELS_ENABLED: ${QUALITY_COMPOUNDER_PANELS_ENABLED:-false}
-      QUALITY_COMPOUNDER_ENTITLEMENT_OWNER_USER_ID: ${QUALITY_COMPOUNDER_ENTITLEMENT_OWNER_USER_ID:-}
-      QUALITY_COMPOUNDER_ROUND_TRIP_COMMISSION_BPS: ${QUALITY_COMPOUNDER_ROUND_TRIP_COMMISSION_BPS:-}
-      QUALITY_COMPOUNDER_OFFICIAL_SESSION_ARTIFACT: ${QUALITY_COMPOUNDER_OFFICIAL_SESSION_ARTIFACT:-}
-      QUALITY_COMPOUNDER_OFFICIAL_SESSION_SHA256: ${QUALITY_COMPOUNDER_OFFICIAL_SESSION_SHA256:-}
-      EQUITY_CATALOGUE_ARTIFACT: ${EQUITY_CATALOGUE_ARTIFACT:-}
-      EQUITY_CATALOGUE_SHA256: ${EQUITY_CATALOGUE_SHA256:-}
-      EQUITY_CATALOGUE_DRY_RUN: ${EQUITY_CATALOGUE_DRY_RUN:-true}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
-      db-seed:
-        condition: service_completed_successfully
-      db-runtime-roles:
-        condition: service_completed_successfully
-    networks:
-      - vm
-    volumes:
-      - ../.artifacts:/app/.artifacts:ro
-    logging: *bounded-logging
-    restart: "no"
-
-  # Indicator signal worker — explicitly selected strategy cores run in one
-  # slim image, fed from the DB via LISTEN/NOTIFY.
-  # Replaces the removed per-bundle lean-custom images (their multi-GB
-  # QuantConnect base was never exercised by the signal_worker runtime).
-  indicator-runner:
-    image: vynmatrix/indicator-runner:latest
-    environment:
-      <<: [*common-env, *mode-env]
-      DATABASE_URL: ${INDICATOR_DATABASE_URL:-postgresql://vm_indicator_login:${VM_INDICATOR_DB_PASSWORD:-vm_indicator_local}@postgres:5432/${DB_NAME:-vm_trading}}
-      API_KEY: ${API_KEY:-}
-      SIGNAL_API_URL: ${SIGNAL_API_URL:-http://scoring-engine:8001}
-      STRATEGY_NAME: ${STRATEGY_NAME:-}
-      # `-` (not `:-`) preserves an explicitly empty list. With no selector the
-      # runner loads nothing unless the guarded development discovery mode is on.
-      STRATEGY_LIST: ${STRATEGY_LIST-}
-      VM_DEPLOY_IMAGE_TAG: ${VM_DEPLOY_IMAGE_TAG:-local}
-      INDICATOR_PAPER_PROMOTION_MANIFEST: /app/.artifacts/paper_strategy_promotion.json
-      # Fail closed when no selector exists. This override is accepted by the
-      # runner only in ENVIRONMENT=dev and must be explicit.
-      INDICATOR_ALLOW_DEV_DISCOVERY: ${INDICATOR_ALLOW_DEV_DISCOVERY:-false}
-      RUN_MODE: ${RUN_MODE:-paper}
-      # Drop a consolidated bar whose source minutes were too gappy to trust as a
-      # full period, so a strategy never computes indicators on incomplete data (IND-2).
-      INDICATOR_MIN_BAR_COVERAGE: ${INDICATOR_MIN_BAR_COVERAGE:-0.95}
-      SIGNAL_CATCHUP_BATCH_SIZE: ${SIGNAL_CATCHUP_BATCH_SIZE:-5000}
-      INDICATOR_MAX_SIGNAL_BACKLOG_AGE_SECONDS: ${INDICATOR_MAX_SIGNAL_BACKLOG_AGE_SECONDS:-300}
-      INDICATOR_MAX_STRATEGY_LAG_SECONDS: ${INDICATOR_MAX_STRATEGY_LAG_SECONDS:-300}
-      INDICATOR_PANEL_DATA_USE_SCOPE: ${INDICATOR_PANEL_DATA_USE_SCOPE:-}
-      INDICATOR_PANEL_ENTITLEMENT_OWNER_USER_ID: ${INDICATOR_PANEL_ENTITLEMENT_OWNER_USER_ID:-}
-      INDICATOR_PANEL_ACTIVATION_CUTOFF: ${INDICATOR_PANEL_ACTIVATION_CUTOFF:-}
-      HEALTH_CHECK_PORT: "8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      scoring-engine:
-        condition: service_healthy
-      db-seed:
-        condition: service_completed_successfully
-      db-runtime-roles:
-        condition: service_completed_successfully
-    volumes:
-      - ../Data:/data
-      - ../.artifacts:/app/.artifacts:ro
-    networks:
-      - vm
-    logging: *bounded-logging
-    profiles:
-      - indicator
-    restart: unless-stopped
-    stop_grace_period: ${APP_STOP_GRACE_PERIOD:-60s}
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health')\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 90s
-
-  # Tenant config API — strategy-binding CRUD + broker-account onboarding.
-  # It connects as the backend-only non-superuser login; PostgreSQL RLS is the
-  # hard backstop behind application tenant filters.
-  # SECRETS_MASTER_KEYS is the newest-first Fernet key ring for broker-key
-  # onboarding. Local Compose defaults to env-backed reads; credential writes
-  # fail closed (503) until db + a real key ring are configured.
-  # No standalone backend image: runs from the scoring-engine image with a
-  # command override (the db-migrate pattern) — DOCR Basic caps the registry at
-  # 5 repositories; see config/containers.yaml. Isolation is per-CONTAINER
-  # (own env, role, and lifecycle), unaffected by the shared image.
-  backend:
-    image: vynmatrix/scoring-engine:latest
-    command: ["python", "-m", "apps.backend.backend.main"]
-    environment:
-      <<: *common-env
-      DATABASE_URL: ${BACKEND_DATABASE_URL:-postgresql://vm_backend_login:${VM_BACKEND_DB_PASSWORD:-vm_backend_local}@postgres:5432/${DB_NAME:-vm_trading}}
-      SECRETS_BACKEND: ${SECRETS_BACKEND:-env}
-      SECRETS_MASTER_KEYS: ${SECRETS_MASTER_KEYS:-}
-      BACKEND_ADMIN_API_KEY: ${BACKEND_ADMIN_API_KEY:-}
-      # LOCAL stack only: allow anon auth when no admin key is set so the local
-      # dev loop stays convenient. Production MUST set a real
-      # BACKEND_ADMIN_API_KEY — the API fails closed (refuses to start) when the
-      # key is unset and this opt-out is not explicitly true.
-      BACKEND_ALLOW_ANON: ${BACKEND_ALLOW_ANON:-true}
-      HOST: 0.0.0.0
-      PORT: 8081
-    depends_on:
-      postgres:
-        condition: service_healthy
-      db-migrate:
-        condition: service_completed_successfully
-      db-runtime-roles:
-        condition: service_completed_successfully
-    ports:
-      - "8081:8081"
-    networks:
-      - vm
-    logging: *bounded-logging
-    stop_grace_period: ${APP_STOP_GRACE_PERIOD:-60s}
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8081/health')\""]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    restart: unless-stopped
+      disable: true
 
 networks:
   vm:

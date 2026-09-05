@@ -47,6 +47,7 @@ from lib_application.db.session import (
     get_session_factory,
 )
 from lib_application.outbox import OutboxStore
+from lib_application.services.deployment_owner import require_deployment_owner_id
 from lib_application.services.price_ingestion_service import PriceIngestionService
 from lib_common.asset_classes import normalize_asset_class
 from lib_common.config_validation import (
@@ -1348,6 +1349,10 @@ def main(argv: list[str] | None = None) -> int:
     catchup_floor_sec = worker.catchup_floor_seconds
     exit_code = 0
     try:
+        # Only the executable subprocess entrypoint requires deployment authority;
+        # direct strategy construction and historical replay remain offline-capable.
+        with get_session_factory(engine=db_engine)() as session:
+            require_deployment_owner_id(session)
         worker.start()
         last_catchup = time.monotonic()
         while not stop_event.is_set():

@@ -48,9 +48,9 @@ def test_shell_wrapper_builds_strategy_wheel_before_venvs() -> None:
     assert script.index("vmdev build strategies") < script.index("vmdev build venvs")
 
 
-def test_indicator_image_installs_verified_strategy_wheel_payload() -> None:
+def test_platform_image_installs_verified_strategy_wheel_payload() -> None:
     repo_root = Path(__file__).resolve().parents[3]
-    dockerfile = (repo_root / "docker" / "indicator_runner.Dockerfile").read_text(encoding="utf-8")
+    dockerfile = (repo_root / "docker" / "platform_runtime.Dockerfile").read_text(encoding="utf-8")
     strategy_setup = (repo_root / "strategies" / "indicator" / "setup.py").read_text(
         encoding="utf-8"
     )
@@ -104,11 +104,11 @@ def test_shared_service_base_uses_resolved_constraints() -> None:
     assert "curl" not in dockerfile
 
 
-def test_scoring_migration_dependencies_are_constrained() -> None:
+def test_platform_migration_dependencies_are_constrained() -> None:
     repo_root = Path(__file__).resolve().parents[3]
-    profile = (repo_root / "docker" / "requirements-scoring.txt").read_text(encoding="utf-8")
+    profile = (repo_root / "docker" / "requirements-platform.txt").read_text(encoding="utf-8")
     constraints = (repo_root / "docker" / "constraints.txt").read_text(encoding="utf-8")
-    dockerfile = (repo_root / "docker" / "scoring_engine.Dockerfile").read_text(encoding="utf-8")
+    dockerfile = (repo_root / "docker" / "platform_runtime.Dockerfile").read_text(encoding="utf-8")
 
     assert "alembic==1.18.5" in profile
     assert "alembic==1.18.5" in constraints
@@ -117,27 +117,26 @@ def test_scoring_migration_dependencies_are_constrained() -> None:
     assert "rm -rf /opt/service/lib/python3.11/site-packages/alembic/testing" in dockerfile
 
 
-def test_service_images_copy_only_their_declared_wheels() -> None:
+def test_platform_image_copies_only_verified_library_and_strategy_wheels() -> None:
     repo_root = Path(__file__).resolve().parents[3]
-    service_names = (
-        "scoring_engine",
-        "execution_engine",
-        "feedback_loop_engine",
-        "market_data_ingestor",
-    )
-
-    for service_name in service_names:
-        dockerfile = (repo_root / "docker" / f"{service_name}.Dockerfile").read_text(
-            encoding="utf-8"
-        )
+    inventory = yaml.safe_load((repo_root / "config/containers.yaml").read_text())
+    for service in inventory["services"]:
+        dockerfile = (repo_root / service["dockerfile"]).read_text(encoding="utf-8")
         assert "AS wheel-builder" in dockerfile
         assert "AS runtime" in dockerfile
         assert "COPY build/wheels /tmp/wheels" not in dockerfile
-        assert "COPY build/wheels/lib_common-*.whl /tmp/wheels/" in dockerfile
+        for library in (
+            "common",
+            "data",
+            "indicators",
+            "strategy",
+            "application",
+            "infrastructure",
+        ):
+            assert f"COPY build/wheels/lib_{library}-*.whl /tmp/wheels/" in dockerfile
         assert "/opt/service/bin/python -m pip check" in dockerfile
         assert "pip uninstall --yes pip setuptools" in dockerfile
         assert "urllib.request.urlopen" in dockerfile
-        assert "CMD curl" not in dockerfile
         assert dockerfile.index("-r /tmp/requirements-") < dockerfile.index(
             "COPY build/wheels/lib_common-*.whl"
         )
@@ -552,6 +551,72 @@ def test_docker_builder_rejects_missing_dockerfiles(tmp_path: Path) -> None:
         builder.build_svc_base()
     with pytest.raises(FileNotFoundError, match="Dockerfile not found for app"):
         builder.build_app("missing_app", validate_wheelhouse=False)
+
+
+def test_declared_dockerfile_builds_composed_image_without_app_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dockerfile = tmp_path / "docker" / "composed.Dockerfile"
+    dockerfile.parent.mkdir()
+    dockerfile.write_text("FROM scratch\n")
+    config = tmp_path / "containers.yaml"
+    config.write_text(
+        "services:\n  - app: platform_runtime\n    image: vynmatrix/platform\n    dockerfile: docker/composed.Dockerfile\n"
+    )
+    builder = DockerBuilder({}, tmp_path)
+    monkeypatch.setattr(builder, "validate_wheelhouse", lambda: None)
+    monkeypatch.setattr(builder, "build_svc_base", lambda **kwargs: None)
+    monkeypatch.setattr(builder, "_cleanup_owned_dangling_images", lambda **kwargs: None)
+    commands: list[list[str]] = []
+
+    def record(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", record)
+    builder.build_from_containers_config(config_path=config)
+    assert len(commands) == 1
+    assert str(dockerfile) in commands[0]
+    assert "vynmatrix/platform:latest" in commands[0]
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        "../outside.Dockerfile",
+        "/tmp/outside.Dockerfile",
+        "",
+        "config/containers.yaml",
+        "docker/missing.Dockerfile",
+    ],
+)
+def test_invalid_declared_dockerfile_fails_before_docker_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    declared: str,
+) -> None:
+    config = tmp_path / "containers.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "services": [
+                    {
+                        "app": "platform_runtime",
+                        "image": "vynmatrix/platform",
+                        "dockerfile": declared,
+                    }
+                ]
+            }
+        )
+    )
+
+    def reject_docker(*args: object, **kwargs: object) -> None:
+        pytest.fail("invalid build configuration contacted Docker")
+
+    monkeypatch.setattr(subprocess, "run", reject_docker)
+    with pytest.raises((ValueError, FileNotFoundError), match=r"[Dd]ockerfile"):
+        DockerBuilder({}, tmp_path).build_from_containers_config(config_path=config)
 
 
 def _write_current_wheel(root: Path) -> tuple[dict[str, object], Path, Path]:

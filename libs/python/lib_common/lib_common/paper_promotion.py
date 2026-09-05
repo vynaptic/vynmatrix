@@ -33,7 +33,7 @@ from lib_common.paper_promotion_instruments import (
 )
 
 PAPER_PROMOTION_SCHEMA_VERSION = "3"
-PAPER_PROMOTION_IMAGE = "vynmatrix/indicator-runner"
+PAPER_PROMOTION_IMAGE = "vynmatrix/platform"
 PAPER_PROMOTION_MODEL_SCOPES = frozenset({"single_instrument", "synchronized_portfolio"})
 
 _STRATEGY_SCOPE_KEYS = frozenset(

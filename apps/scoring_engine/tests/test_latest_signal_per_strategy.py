@@ -19,6 +19,7 @@ NOW = dt.datetime(2026, 6, 26, 12, 0, tzinfo=dt.UTC)
 
 def _rec(strategy_id: str, signal_id: str, ts: dt.datetime) -> SignalRecord:
     return SignalRecord(
+        strategy_version="1.0.0",
         signal_id=signal_id,
         strategy_id=strategy_id,
         strategy_type="indicator",

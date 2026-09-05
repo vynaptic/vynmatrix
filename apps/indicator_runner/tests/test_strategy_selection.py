@@ -328,6 +328,10 @@ def _write_promotion_manifest(
 
 
 def _clear_selection(monkeypatch) -> None:
+    # Unit selection follows the config under test, independent of the caller's
+    # paper-mode environment. These tests never start an execution engine.
+    monkeypatch.delenv("EXECUTION_MODE", raising=False)
+    monkeypatch.delenv("RUN_MODE", raising=False)
     monkeypatch.delenv("STRATEGY_NAME", raising=False)
     monkeypatch.delenv("STRATEGY_LIST", raising=False)
     monkeypatch.delenv(DEV_DISCOVERY_ENV, raising=False)
@@ -501,6 +505,7 @@ def test_production_paper_requires_exact_evidence_manifest(tmp_path, monkeypatch
     assert scope.broker_account_id == 101
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["status"] == "passed"
+    assert manifest["image_repository"] == "vynmatrix/platform"
     assert manifest["evidence_run_id"] == _EVIDENCE_RUN_ID
     assert manifest["live_authority"] is False
 
@@ -508,6 +513,28 @@ def test_production_paper_requires_exact_evidence_manifest(tmp_path, monkeypatch
     with_manifest.load_strategies()
 
     assert [strategy.name for strategy in with_manifest.strategies] == [_CANARY_DIRECTORY]
+
+
+def test_paper_manifest_rejects_retired_image_with_matching_evidence(tmp_path, monkeypatch) -> None:
+    config_path = _write_strategy(tmp_path, _CANARY_DIRECTORY, paper_canary=True)
+    manifest_path = _write_promotion_manifest(tmp_path, config_path, monkeypatch)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["image_repository"] = "vynmatrix/indicator-runner"
+    for descriptor in manifest["evidence"].values():
+        evidence_path = tmp_path / descriptor["path"]
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence["scope"]["image_repository"] = "vynmatrix/indicator-runner"
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        descriptor["sha256"] = sha256_file(evidence_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    scope, errors = load_paper_promotion_scope(
+        manifest_path=manifest_path,
+        deploy_image_tag="1.2.3",
+    )
+
+    assert scope is None
+    assert any("image_repository" in error for error in errors)
 
 
 def test_synchronized_promotion_requires_exact_panel_owner_scope(tmp_path, monkeypatch) -> None:

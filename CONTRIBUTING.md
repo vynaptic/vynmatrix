@@ -5,11 +5,24 @@ development workflow for this independent codebase. Read [CLAUDE.md](CLAUDE.md)
 first — it's the architectural source of truth and CONTRIBUTING.md
 assumes you've already read it.
 
-The project is not yet open-source. [LICENSE](LICENSE) is preserved unchanged;
-publication, redistribution, and external contribution terms await a license/rights
-decision. The local migration has no configured public repository or deployment.
-Use the workflow below for authorized local work; repository hosting and PR
-submission become relevant only after maintainers establish the destination.
+vynmatrix is publicly source-available under the
+[Vynmatrix Personal Noncommercial Reciprocity License 1.0](LICENSE). It is not
+an OSI-approved open-source license. Read [LICENSE](LICENSE) and [NOTICE](NOTICE)
+before using or contributing to the project.
+
+## License and contribution terms
+
+The license permits personal, noncommercial use. If you externally distribute
+an enhancement or make it publicly available through a service, the license
+requires you to publish its complete corresponding source under the same terms
+and submit a good-faith pull request to
+[`vynaptic/vynmatrix`](https://github.com/vynaptic/vynmatrix) within 30 days.
+Private changes that are not externally released do not trigger that condition.
+Maintainers may accept, reject, or request changes to a pull request.
+
+By opening a pull request, you represent that you have the right to contribute
+the change and license it under the project license. Preserve existing copyright,
+attribution, and notice files, and add notices required for material you add.
 
 ---
 
@@ -24,7 +37,7 @@ pre-commit install-hooks   # prepares environments for the .githooks/pre-commit 
 # Build everything
 make build-wheels          # libraries and strategies first
 vmdev build venvs          # then app/strategy venvs
-vmdev build docker --from-config  # then config-declared service images
+vmdev build docker --from-config  # then the config-declared platform image
 
 # Run tests
 vmdev test all
@@ -32,6 +45,13 @@ vmdev test all
 
 For the full local-dev walkthrough, see [SETUP_MAC_LINUX.md](SETUP_MAC_LINUX.md)
 or [SETUP_WINDOWS.md](SETUP_WINDOWS.md).
+
+For installation, use the explicit owner and role configuration in
+[docs/DATABASE.md](docs/DATABASE.md). The supported runtime is PostgreSQL plus
+`application` and `workers`, or PostgreSQL plus the combined `all` group in the
+same application service. Bootstrap stops runtime before its declared maintenance
+job; bounded backfill/replay work executes inside an existing group. Do not add
+automatic seeds, extra service containers, or a parallel database lifecycle.
 
 ---
 
@@ -54,6 +74,10 @@ mode with the live gate disabled. Before submitting a change, confirm:
 - [ ] **Docs updated.** Update the relevant API, configuration, or contributor
       documentation when behavior changes. Keep `CLAUDE.md` and `AGENTS.md` in sync
       when agent guidance changes.
+- [ ] **Owner and execution authority remain explicit.** Preserve historical
+      user/account IDs and ledger attribution. Routine APIs resolve the designated
+      owner, require authenticated access, and share application services with the
+      CLI. Keep maintenance credentials out of runtime child environments.
 
 ---
 
@@ -61,18 +85,17 @@ mode with the live gate disabled. Before submitting a change, confirm:
 
 ### Branch and ship
 
-Work locally while the project has no published destination. Review staged paths
-before committing; never add credentials, runtime databases, generated artifacts,
-or personal configuration. Do not push or open a PR during the migration.
+Review staged paths before committing; never add credentials, runtime databases,
+generated artifacts, or personal configuration. Use a feature branch in a fork
+or working checkout, then open a pull request against
+[`vynaptic/vynmatrix`](https://github.com/vynaptic/vynmatrix).
 
-Once a hosting owner and contribution policy are established, contributors may use
-a feature branch in their fork and open a PR against the reviewed destination.
-The retained `vmdev git install` helper also supports a main-first workflow for
-collaborators with write access: `git mr submit` creates a branch and PR, then
-resets local `main`. It requires a configured `origin` and authenticated `gh`;
-it is not part of offline setup. Example for that later hosted workflow:
+The retained `vmdev git install` helper supports a main-first workflow for
+collaborators with write access: `git mr submit` creates a branch and pull
+request, then resets local `main`. It requires a configured `origin` and
+authenticated `gh`:
 
-```bash
+```text
 git add <files>
 git commit -m "<conventional message>"
 git mr submit
@@ -81,10 +104,11 @@ git mr submit
 Git helpers and aliases are installed in this repository only. The quality
 wrapper and pre-push guard both live under `.githooks`, selected by
 `core.hooksPath`; `pre-commit install-hooks` prepares their check environments.
-The installed pre-push hook blocks direct pushes to `origin/main`. Follow the
-repository's reviewed PR policy instead of bypassing that guard. Configure
-`.github/CODEOWNERS` with real consenting maintainers only after the destination
-repository exists.
+Git cannot prevent a local commit on `main`, but the installed pre-push hook and
+GitHub branch policy reject direct remote changes to `main`. Submit a pull
+request, satisfy the required `ci-gate` check, and resolve conversations before
+merge. [`.github/CODEOWNERS`](.github/CODEOWNERS) routes default review to
+`@vynaptic`; it does not replace the server-side branch policy.
 
 ### Commit messages
 
@@ -187,11 +211,16 @@ maps the symbols you are most likely to re-invent to the file that already owns 
 **Pick the right base for a service.** `ApplicationManager` is for foreground worker loops —
 `apps/indicator_runner` is the only app that uses it. The FastAPI services
 (`scoring_engine`, `execution_engine`, `feedback_loop_engine`, `backend`, and the FastAPI
-surface in `market_data_ingestor`) keep `uvicorn` as the process supervisor and build with
+surface in `market_data_ingestor`) keep `uvicorn` as their HTTP server and build with
 `lib_common.app.fastapi.create_service_app` plus a FastAPI `lifespan` and `GracefulShutdown`.
 Forcing an HTTP service into `ApplicationManager` splits the deploy contract — it adds a
 second health endpoint on `HEALTH_CHECK_PORT` duplicating uvicorn's `/health` — without
 removing real boilerplate.
+
+The container-level supervisor is `scripts/run_platform.py`; HTTP and worker
+entrypoints remain isolated child processes with their own role, listener and
+lifecycle. Extend that composition for an existing process responsibility rather
+than creating another container or moving HTTP services into the indicator manager.
 
 ---
 
@@ -222,8 +251,15 @@ paper pipeline evidence, as described in the [E2E guide](docs/E2E_VERIFICATION_G
 | Per-library unit tests | `libs/python/lib_*/tests/` | Pure functions, ports |
 | Per-app tests | `apps/*/tests/` | Service / engine logic |
 | Integration | `tests/test_*.py` | Cross-component flows |
-| End-to-end pipeline | `tests/test_e2e_*.py` | Strategy → scoring → execution → feedback |
+| Recorded-data PostgreSQL pipeline | `tests/test_public_strategy_pipeline_postgres_integration.py` | Exact account-scoped persistence and paper accounting; separate from the current-time Docker soak |
 | Strategy contract tests | `tests/test_*strategy*.py` | Causality, malformed data, signal identity, lifecycle, and risk geometry |
+
+The exact Swing development canary is `E2E_PIPELINE_CANARY_ONLY` and permanently
+excluded from paper promotion and live trading. Its narrow maintenance activation
+command verifies the already registered dev-only release; it creates no account,
+binding, worker selector, or promotion authority. Follow the
+[E2E guide](docs/E2E_VERIFICATION_GUIDE.md) for that command and the separate
+current-time, historical-safety, replay/accounting, and failure-mode evidence.
 
 ---
 

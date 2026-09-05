@@ -263,6 +263,21 @@ def _provision_catalogue(
             session.add(broker)
             session.flush()
 
+        # One designated individual owns independent strategy accounts. Keep
+        # account boundaries and ledger attribution without multi-tenant routing.
+        user_id = "ci-public-pipeline-owner"
+        session.add(
+            app_models.User(
+                user_id=user_id,
+                email=f"{user_id}@example.invalid",
+                full_name="Public Pipeline Owner",
+                tz="UTC",
+                base_ccy="USD",
+                status="active",
+                is_deployment_owner=True,
+            )
+        )
+        session.flush()
         routes: dict[str, _Route] = {}
         for index, (strategy_name, strategy_id) in enumerate(_STRATEGIES, start=1):
             config = strategy_configs[strategy_id]
@@ -289,24 +304,14 @@ def _provision_catalogue(
                 )
             )
 
-            user_id = f"ci-public-pipeline-{index}"
-            session.add(
-                app_models.User(
-                    user_id=user_id,
-                    email=f"{user_id}@example.invalid",
-                    full_name=f"Public Pipeline Tenant {index}",
-                    tz="UTC",
-                    base_ccy="USD",
-                    status="active",
-                )
-            )
-            session.flush()
             account = app_models.LinkedBrokerAccount(
                 user_id=user_id,
                 broker_id=broker.broker_id,
                 environment="paper",
                 display_name=f"CI public-data paper account {index}",
-                external_ref=f"ci-public-pipeline:{index}",
+                # Local PaperBroker reports the persisted account_id; a display
+                # label must not become a conflicting broker account identity.
+                external_ref=None,
                 base_ccy="USD",
                 status="connected",
                 paper_initial_equity=Decimal("100000"),
@@ -878,3 +883,30 @@ def test_public_coinbase_strategies_complete_account_scoped_pipeline(
         if scoring is not None:
             dispose_engine(scoring.store._engine)
         dispose_engine(db_engine)
+
+
+def test_public_pipeline_fixture_has_one_owner_and_distinct_accounts() -> None:
+    """Fixture shape must match single-owner routing before the PostgreSQL campaign."""
+    from lib_application.services.deployment_owner import require_deployment_owner_id
+
+    engine = create_engine_for_env(db_url="sqlite+pysqlite:///:memory:")
+    try:
+        app_models.Base.metadata.create_all(engine)
+        factory = get_session_factory(engine=engine)
+        _, routes = _provision_catalogue(
+            factory,
+            strategy_configs={
+                strategy_id: _exerciser_config(strategy_id) for _name, strategy_id in _STRATEGIES
+            },
+        )
+        with factory() as session:
+            owner_id = require_deployment_owner_id(session)
+            assert {route.user_id for route in routes.values()} == {owner_id}
+            assert len({route.account_id for route in routes.values()}) == len(_STRATEGIES)
+            assert session.scalar(select(func.count()).select_from(app_models.User)) == 1
+            assert all(
+                version.status == "active"
+                for version in session.scalars(select(app_models.StrategyVersion))
+            )
+    finally:
+        dispose_engine(engine)

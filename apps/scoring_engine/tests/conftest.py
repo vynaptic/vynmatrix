@@ -100,6 +100,21 @@ def provision_scoring_catalogue() -> Callable[..., None]:
                             strategy_id=strategy_id,
                             strategy_name=strategy_id,
                             asset_class=asset_class,
+                            is_active=True,
+                        )
+                    )
+                if (
+                    session.query(app_models.StrategyVersion)
+                    .filter_by(strategy_id=strategy_id, semver="1.0.0")
+                    .one_or_none()
+                    is None
+                ):
+                    session.add(
+                        app_models.StrategyVersion(
+                            strategy_id=strategy_id,
+                            semver="1.0.0",
+                            status="active",
+                            param_schema={},
                         )
                     )
             session.commit()
@@ -134,6 +149,7 @@ def app_store_with_btcusd() -> AppScoreStore:
                     strategy_id=strategy_id,
                     strategy_name=strategy_id,
                     asset_class="crypto",
+                    is_active=True,
                 )
                 for strategy_id in (
                     "test_strategy_alpha_v1",
@@ -143,6 +159,14 @@ def app_store_with_btcusd() -> AppScoreStore:
                     "mid",
                     "new",
                 )
+            ]
+        )
+        session.add_all(
+            [
+                app_models.StrategyVersion(
+                    strategy_id=strategy_id, semver="1.0.0", status="active", param_schema={}
+                )
+                for strategy_id in ("test_strategy_alpha_v1", "chatty", "slow", "old", "mid", "new")
             ]
         )
         session.commit()
