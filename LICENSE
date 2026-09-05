@@ -1,4 +1,4 @@
-Vynmatrix Personal Noncommercial Reciprocity License 1.0
+Vynmatrix Personal Noncommercial Reciprocity License 1.1
 
 Copyright (c) 2024-2026 VisionMaverick
 
@@ -20,17 +20,15 @@ business, profession, employer, client, customer, or organization.
 to the Software. It excludes secrets, credentials, private personal
 configuration, and data that the recipient has no right to redistribute.
 
-"External Release" means distribution, publication, sharing, or making an
-Enhancement functionally available for use by anyone outside the modifier's
-personal private environment, including through a network service.
-
 2. License grant
 
 Subject to these terms, each Licensor grants you a worldwide, non-exclusive,
 royalty-free, non-transferable license to use, copy, and modify the Software
 solely for Personal Noncommercial Use. You may redistribute unmodified copies
 for Personal Noncommercial Use if you preserve this license and all copyright,
-attribution, and notice files.
+attribution, and notice files. You may redistribute or make an Enhancement
+available only for Personal Noncommercial Use, provided you comply with section
+4.
 
 3. Commercial use is prohibited
 
@@ -40,19 +38,19 @@ purpose. No commercial license is granted by this document.
 
 4. Enhancement reciprocity
 
-If you make an Enhancement available through an External Release, then within
-30 days after that first release you must:
+If you make an Enhancement, then within 30 days after first creating it you
+must:
 
   a. make the complete corresponding source for that Enhancement publicly
      available under this license, including the files needed to build and
      modify it, except excluded secrets and Third-Party Materials; and
   b. submit a good-faith pull request to the Canonical source above containing
-     the Enhancement or a clear link to its complete corresponding source.
+     the Enhancement.
 
 The Canonical source's maintainers may accept, reject, or request changes to a
 pull request. This condition requires submission; it does not require a
-maintainer to merge the contribution. Private Enhancements that are not
-externally released do not trigger this section.
+maintainer to merge the contribution. It applies to private Enhancements as
+well as Enhancements made available to others.
 
 5. Contributions and notices
 

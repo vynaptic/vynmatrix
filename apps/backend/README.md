@@ -1,52 +1,40 @@
 # Backend configuration API
 
-Backend is the administrative API for the single deployment owner, linked broker
-accounts, strategy bindings/configuration, risk mandates and encrypted broker
-credentials. Owner identity comes from the database designation. Callers cannot
-select another user through a path, query, header or request field; historical
-user/account IDs remain available for durable attribution.
+Backend is the administrative API for the designated deployment owner, linked
+broker accounts, strategy bindings/configuration, risk mandates, calendars, and
+encrypted credentials. The owner comes from database designation; callers cannot
+select another user through a path, query, header, or request body. Historical
+user/account IDs remain for durable attribution.
 
-The backend process runs inside the `application` service from
-`vynmatrix/platform`, using `BACKEND_DATABASE_URL` for `vm_backend_login`.
-Its loopback host endpoint defaults to `http://127.0.0.1:8081`. Requests use
-`X-Admin-Key` with `BACKEND_ADMIN_API_KEY`; the platform launcher fixes
-`BACKEND_ALLOW_ANON=false`. It also supplies the database secrets backend and
-newest-first `SECRETS_MASTER_KEYS` ring. No credentials are returned by this API.
-Use loopback or an owner-controlled SSH tunnel. A future owner UI can serve
-static assets here without another container; public authentication is not supplied.
+The backend runs in the application group using BACKEND_DATABASE_URL as the
+least-privilege backend login. Its loopback endpoint defaults to
+http://127.0.0.1:8081 and requires X-Admin-Key with BACKEND_ADMIN_API_KEY.
+BACKEND_ALLOW_ANON is false. It returns no plaintext credentials. A future
+owner UI may serve static assets from this group without a new container.
 
-Owner designation is a maintenance operation. Follow
-[the database guide](../../docs/DATABASE.md) and the shared `vmdev user` workflow;
-this API cannot designate or silently adopt an owner.
+Owner designation is maintenance-only; this API cannot silently adopt or change
+the designated owner. See [DATABASE.md](../../docs/DATABASE.md) for that
+workflow.
 
 | Surface | Routes |
-|---|---|
-| Profile | `GET /owner`, `PATCH /owner` |
-| Accounts | `GET /broker-accounts`, `POST /broker-accounts` |
-| Existing owner account adoption | `POST /broker-accounts/{account_id}/adopt` |
-| Account edits | `PATCH /broker-accounts/{account_id}` |
-| Complete credential replacement | `PUT /broker-accounts/{account_id}/credentials` |
-| Bindings | `GET /bindings`, `POST /bindings`, `DELETE /bindings/{binding_id}` |
-| Strategy configuration | `GET /strategy-configs`, `PUT`/`DELETE /strategy-configs/{strategy_id}` |
-| Drawdown policy | `GET`/`PUT /risk-mandates/drawdown` |
-| Official calendar coverage | `PUT /market-calendars/{code}` |
+| --- | --- |
+| Profile | GET /owner; PATCH /owner |
+| Accounts | GET /broker-accounts; POST /broker-accounts |
+| Existing account adoption | POST /broker-accounts/{account_id}/adopt |
+| Account update | PATCH /broker-accounts/{account_id} |
+| Credential replacement | PUT /broker-accounts/{account_id}/credentials |
+| Bindings | GET /bindings; POST /bindings; DELETE /bindings/{binding_id} |
+| Strategy configuration | GET /strategy-configs; PUT, DELETE /strategy-configs/{strategy_id} |
+| Drawdown policy | GET, PUT /risk-mandates/drawdown |
+| Market-calendar coverage | PUT /market-calendars/{code} |
 
-Accounts require an explicit stable `config_key`, canonical uppercase `base_ccy`
-and exact broker/environment identity. Paper accounts require explicit initial
-cash/equity and contain no exchange credentials. Profile/account patches provide
-`expected` and `changes`; stale edits conflict. Used account financial identity
-cannot be changed while execution is active or after financial activity.
-Credential rotation replaces the complete document atomically. CLI and API use
-the same [broker credential contracts](../../docs/BROKER_CREDENTIALS.md).
+Accounts require stable config_key, canonical uppercase base currency, and exact
+broker/environment identity. Profile/account updates use expected and changes
+values; stale writes conflict. A financially active account cannot change its
+financial identity. Credential replacement is complete and atomic.
 
-New bindings are inactive and have autopilot disabled. Enabling a binding does
-not replace the strategy/version, owner/account, promotion or execution gates.
-Management liveness remains available when owner configuration or trading
-readiness is incomplete.
-
-Optional calendar workers are selected with `PLATFORM_WORKERS=calendar-ibkr`,
-`calendar-saxo` and/or `calendar-zerodha` within `workers` or the combined group.
-They resolve exact instrument identity using the market-data role and submit
-complete official coverage with the backend admin key. Only one writer may own
-each instrument. Empty complete coverage represents an authoritative closure;
-missing or stale non-crypto coverage blocks execution. Crypto remains continuous.
+New bindings are inactive with autopilot disabled. Enabling one does not replace
+strategy/version, account, promotion, market-session, or execution gates.
+[BROKER_CREDENTIALS.md](../../docs/BROKER_CREDENTIALS.md) defines credential
+documents; [CONFIGURATION.md](../../docs/CONFIGURATION.md) defines worker
+selection and private listeners.

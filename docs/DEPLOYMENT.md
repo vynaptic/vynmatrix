@@ -1,164 +1,110 @@
-# Local Docker and Release Boundary
+# Local Docker and release boundary
 
-vynmatrix is a self-hosted independent migration. No cloud infrastructure,
-registry, production environment, or broker certification is provisioned by this
-source tree. The source is available under [LICENSE](../LICENSE) for personal,
-noncommercial use; see [NOTICE](../NOTICE) for retained attribution and
-third-party-material boundaries. Source publication does not authorize deployment,
-release, or live trading.
+vynmatrix supports a self-hosted local paper runtime. This document owns the
+Compose topology and lifecycle envelope. It does not authorize cloud deployment,
+broker execution, paper promotion, or live trading.
 
-## What this repository contains
+## Build the declared image
 
-| Surface | Source of truth |
-|---|---|
-| Local component and wheel inventory | [config/build.yaml](../config/build.yaml) |
-| Service image inventory | [config/containers.yaml](../config/containers.yaml) |
-| Dependency lock | [docker/constraints.txt](../docker/constraints.txt) |
-| Local runtime topology | [docker/docker-compose.stack.yml](../docker/docker-compose.stack.yml) |
-| Runtime configuration contract | [CONFIGURATION.md](CONFIGURATION.md) |
-| CI and optional image publication | [.github/workflows/](../.github/workflows/) |
+Build only images declared by the repository configuration:
 
-Earlier documentation described external infrastructure. That repository and its
-runtime authority are not included in vynmatrix. The canonical source repository
-is [`vynaptic/vynmatrix`](https://github.com/vynaptic/vynmatrix), but no cloud
-budget, deployment host, or disaster-recovery result should be inferred from the
-inherited technical history.
-
-## Local image build
-
-Run from the prepared `.venv-dev` environment:
-
-```bash
-vmdev build libs
-vmdev build strategies
+~~~text
 vmdev build docker --from-config --tag latest
-```
+~~~
 
-The Docker command checks the explicit inventory, Dockerfiles, declared wheels,
-and wheel freshness before building `vynmatrix/platform`. Its intermediate
-`vynmatrix/svc-base` holds pinned shared dependencies; the platform profile adds
-its declared extras, six library wheels and the indicator strategy wheel, then
-runs `pip check`. The platform image contains backend, scoring, execution,
-feedback, market-data and indicator entrypoints plus the maintenance CLI.
-Presence in the image does not activate a strategy.
+The shared vynmatrix/platform image contains the application and worker
+programs. Image count is not container count. Build prerequisites are in
+[SETUP.md](../SETUP.md); configuration keys are in
+[CONFIGURATION.md](CONFIGURATION.md).
 
-## Local Compose topology
+## Supported topology
 
-The same single-owner topology can run locally or on one separately approved
-private host. Prepare `.env` from [`.env.example`](../.env.example), then follow
-[the database lifecycle](DATABASE.md) for bootstrap and startup.
+| Layout | Running containers | Use |
+| --- | ---: | --- |
+| Split | PostgreSQL, application, workers | Default local runtime |
+| Combined | PostgreSQL, one all application group | Compact local runtime |
+| Bootstrap maintenance | PostgreSQL plus the declared bootstrap job while application groups are stopped | Fresh install or controlled bootstrap repeat |
 
-| Layout | Configuration | Running containers |
-|---|---|---|
-| Recommended split | `COMPOSE_PROFILES=workers`, `PLATFORM_APPLICATION_GROUP=application` | PostgreSQL + `application` + `workers` |
-| Small combined installation | Empty `COMPOSE_PROFILES`, `PLATFORM_APPLICATION_GROUP=all` | PostgreSQL + `application` running all selected processes |
+The limit is three running containers including PostgreSQL. The bootstrap job
+uses a vacated application slot and exits before runtime groups restart. Bounded
+jobs, diagnostics, and administrative actions run with compose exec in an
+existing group; they do not justify another container.
 
-The application group supervises backend, scoring with its inline transactional
-outbox relay, and execution. Workers always include the feedback daemon.
-`PLATFORM_WORKERS` explicitly selects feeds, FX and calendars; `STRATEGY_LIST`
-explicitly selects indicator strategies. Empty selections start no optional
-producer. All children retain separate interpreters and role-specific credentials.
-There is no Redis, standalone relay, pgAdmin or additional scheduler container.
+An authenticated IBKR gateway is an external dependency. If an owner approves a
+gateway container, it must use the combined application layout and consumes the
+third slot. PostgreSQL, pgAdmin, a scheduler, an outbox relay, or feedback
+cannot be hidden as additional services; their responsibilities are already
+inside the declared groups.
 
-Only backend `127.0.0.1:8081` and PostgreSQL `127.0.0.1:5432` are published by
-default; their host ports are configurable. A private cloud baseline uses an
-SSH tunnel to backend loopback, without an added load balancer or TLS service.
-A future UI should serve static assets through backend in the same image.
+## Lifecycle and supervision
 
-An IBKR Client Portal Gateway is an explicit external dependency, including
-interactive authentication and gateway/TLS requirements in
-[BROKER_CREDENTIALS.md](BROKER_CREDENTIALS.md). A separately approved gateway
-container consumes the third slot and therefore requires the combined layout.
-An owner-operated external gateway must be configured explicitly; this stack
-neither supplies nor provisions one.
+Use the database lifecycle rather than arbitrary Compose profiles:
 
-Read-only inspection uses the existing service identities:
+~~~text
+vmdev db bootstrap --owner-config owner.local.yaml
+vmdev db status
+vmdev db start
+vmdev db stop
+~~~
 
-```bash
+Bootstrap stops application groups, verifies the maintenance window, runs the
+declared job, removes it, and starts only selected groups. The full database,
+role, migration, repeat, backup, and restore contract is in
+[DATABASE.md](DATABASE.md).
+
+The application and workers groups each run a supervisor that starts and stops
+their child processes together. Startup waits for PostgreSQL and selected child
+configuration; readiness requires actual component progress, while health only
+proves process liveness. Inspect declared status, health, and logs through the
+existing groups:
+
+~~~text
 docker compose --env-file .env -f docker/docker-compose.stack.yml ps
 docker compose --env-file .env -f docker/docker-compose.stack.yml logs --tail 100 application workers
-```
+docker compose --env-file .env -f docker/docker-compose.stack.yml exec -T application <command>
+docker compose --env-file .env -f docker/docker-compose.stack.yml exec -T workers <command>
+~~~
 
-## Database bootstrap and operational bounds
+These examples use the split layout. In the combined layout, omit workers from
+the logs command and run worker work with exec against application.
 
-Use the supported `vmdev db` lifecycle described in [DATABASE.md](DATABASE.md).
-Bootstrap stops both runtime groups, verifies they have exited, starts PostgreSQL,
-runs the declared maintenance `bootstrap` service with `--rm --no-deps`, and waits
-for success before restarting the selected groups. Administrative and migration
-credentials belong only to maintenance. Safe reference catalogue reconciliation
-and explicit owner designation replace broad demo/commercial seeding.
+The supervisor forwards termination and bounds group shutdown. A failed
+maintenance stage leaves runtime stopped for inspection rather than starting an
+incomplete platform.
 
-The three-container limit covers supported lifecycle operations and explicit jobs
-inside existing containers. Raw `docker compose --profile '*' up`, parallel
-maintenance jobs, extra services or manual `run` commands bypass that contract.
-Do not use them as an alternative startup path. Build tools create images, not
-extra running services. A failed maintenance stage leaves runtime stopped for
-review and a bounded retry.
+## Persistence, networking, and secrets
 
-The supervisor exposes `/health`, `/ready`, `/status` and `/metrics` internally
-on `8090`; component metrics are available through `/metrics/<component>`.
-Management can stay healthy while owner setup or a selected feed is unready.
-Trading readiness separately checks source progress, outbox age/dead letters,
-durable paper orders, reconciliation and feedback heartbeats. See
-[CONFIGURATION.md](CONFIGURATION.md) for the complete internal port and key map.
+PostgreSQL data is persisted in the declared volume. Keep database archives and
+the separate encryption-key ring under owner control; a database dump cannot
+recreate encrypted credentials. Runtime logs use the configured Docker or host
+collection mechanism. Do not commit .env, owner configuration, credentials, or
+evidence artifacts.
 
-The explicit jobs `python -m scripts.run_platform job backfill` and
-`python -m scripts.run_platform job quality-compounder` run with `compose exec`
-in `workers` (or `application` in the combined layout). They require their
-reviewed source/owner settings, accept `--timeout-seconds` (default 3600,
-maximum 86400), and prevent same-job overlap within that container. There is
-no automatic scheduler. File locks assume the single prescribed worker group;
-multiple independent worker containers are outside this topology.
+Only the declared loopback PostgreSQL and backend listeners are published.
+Internal service, worker, and supervisor listeners remain in their Compose
+network. Use an owner-controlled SSH tunnel for a private remote backend rather
+than publishing a control-plane or database port. See
+[CONFIGURATION.md](CONFIGURATION.md) for scoped database URLs, child
+environments, secret-key rings, ports, and readiness settings.
 
-PostgreSQL persists in `postgres-data`; `Data` is mounted at `/data`, and
-`.artifacts` is mounted read-only at `/app/.artifacts`. Retain encrypted-secret
-key-ring recovery material separately from database backups. Take and verify a
-backup before upgrade; keep the previous image and apply only reviewed migration
-rollback procedures. Recreating empty retired tables cannot recover disposed data.
+## Upgrade and recovery boundary
 
-Logs rotate at 10 MB with three files per container by default. Pools default
-to at most five connections per process. Compose grants 60 seconds for shutdown;
-the supervisor forwards termination, reaps process trees and bounds group cleanup
-to 55 seconds. Readiness, restore and restart evidence must be checked after an
-upgrade. Unit/contract checks do not establish that PostgreSQL acceptance or the
-new image build has passed.
+Before an existing-data upgrade, take and validate a protected backup, retain
+the prior image and encryption-key ring, then use the explicit migration path.
+Do not remove volumes to resolve a startup failure. Restore leaves runtime
+stopped so the owner can verify the intended database and grants before restart.
+[DATABASE.md](DATABASE.md) is the source for these steps; [RUNBOOK.md](RUNBOOK.md)
+contains incident actions.
 
-## Optional future release workflow
+## Paper verification and future release
 
-[build-and-push.yml](../.github/workflows/build-and-push.yml) is a manual
-`workflow_dispatch` image build/publication path. Publication is
-opt-in (`publish=false` by default); pushing a tag is not an automatic registry
-publication instruction. A configured destination must explicitly provide
-`DO_REGISTRY_NAME` and the registry credential. No registry destination is
-configured by this repository.
+Keep EXECUTION_MODE=paper and EXECUTION_ENGINE_ALLOW_LIVE=false. A running
+stack, image build, or green unit test is not pipeline, broker, strategy, or
+release evidence. The recorded-data acceptance procedure is
+[E2E_VERIFICATION_GUIDE.md](E2E_VERIFICATION_GUIDE.md); account and credential
+boundaries are in [BROKER_CREDENTIALS.md](BROKER_CREDENTIALS.md).
 
-The retained release checks require a strict SemVer tag, a matching dated
-changelog section, the current `origin/main` commit, and successful CI for that
-exact commit. These technical gates do not resolve licensing, authorize a push,
-or deploy a service. Review rights, credentials, destination ownership, and
-workflow permissions before any separately authorized publication. Deployment
-would also need independently reviewed manifests, secret provisioning, backups,
-restore evidence, and rollback instructions.
-
-## Paper acceptance is separate from live authority
-
-The [E2E guide](E2E_VERIFICATION_GUIDE.md) describes recorded-data checks for
-bootstrap suppression, fresh signals, stale-signal rejection, explicitly
-bounded paper replay, durable orders/fills, restart accounting, and feedback.
-A green unit suite or running container cannot substitute for that evidence.
-
-Swing is an `E2E_PIPELINE_CANARY_ONLY` development fixture, permanently excluded
-from paper promotion and live trading. The narrow maintenance canary activation
-in [DATABASE.md](DATABASE.md) only enables its exact registered dev-only release;
-it creates no account/binding authority and does not grant deployment eligibility.
-
-Paper promotion manifests bind the exact image/config/evidence, strategy version,
-user, binding, broker account, data scope, and instrument set. Portfolio
-manifests also bind the model configuration. They record `live_authority=false`.
-The image repository is `vynmatrix/platform`; the logical `indicator-runner`
-attestation role does not imply a separate image or container. Retired-image
-evidence is rejected and cannot be relabeled for the consolidated image.
-Inherited marker-writing utilities and broker certification descriptions are
-technical references only; no certificate or live authority is supplied here.
-Keep `EXECUTION_MODE=paper` and `EXECUTION_ENGINE_ALLOW_LIVE=false` throughout
-this migration and its verification.
+Any future cloud host, registry, public endpoint, external scheduler, gateway,
+or live authority is a separate owner decision. It must declare its external
+infrastructure, preserve the container budget or explicitly change it, and
+produce new matched evidence.

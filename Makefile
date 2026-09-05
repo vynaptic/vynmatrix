@@ -49,9 +49,7 @@ setup:
 	@echo "$(GREEN)=====================================$(NC)"
 	@echo ""
 	@echo "Next steps:"
-	@echo "  1. Build wheels:     make build-wheels"
-	@echo "  2. Build images:     make build-docker"
-	@echo "  3. Run the stack:    docker compose --env-file .env -f docker/docker-compose.stack.yml up -d"
+	@echo "  Continue with SETUP.md; bootstrap through vmdev db after private configuration."
 	@echo ""
 	@echo "For all commands:    vmdev --help"
 

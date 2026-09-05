@@ -1,139 +1,65 @@
 # vynmatrix
 
-A Python monorepo for multi-strategy signal generation, scoring, durable paper
-execution, and feedback. This is an independent local migration with fresh Git
-history; it does not carry an existing deployment, broker account, or strategy
-certification.
+vynmatrix is a Python platform for signal generation, scoring, durable paper
+execution, and feedback in one self-hosted deployment. It is an independent
+migration: this repository carries no broker account, deployment, strategy
+certification, or live-trading authority.
 
-**License status:** vynmatrix is publicly source-available under the
-[Vynmatrix Personal Noncommercial Reciprocity License 1.0](LICENSE). It permits
-personal, noncommercial use and requires public source release plus a good-faith
-pull request for externally released enhancements. It is not an OSI-approved
-open-source license. Read [NOTICE](NOTICE) for retained attribution and known
-third-party provenance gaps.
+It is publicly source-available under the
+[Vynmatrix Personal Noncommercial Reciprocity License 1.1](LICENSE). The
+license permits personal, noncommercial use and requires source publication and
+a pull request for every Enhancement; it is not an OSI-approved open-source
+license. [NOTICE](NOTICE) preserves attribution and known fixture-provenance
+limits.
 
-## Overview
+## Scope
 
-Indicator strategies emit canonical signals without calling brokers. Scoring
-persists decisions and an execution command in a transactional outbox. The
-execution engine applies tenant, account, instrument, session, and risk gates,
-then records orders and fills in the canonical ledger. Feedback evaluates those
-persisted outcomes. PostgreSQL provides the runtime state and durable handoffs;
-Docker Compose provides the local integration environment.
+Indicator strategies emit canonical `Signal` records only. Scoring persists
+decisions and execution commands through PostgreSQL's transactional outbox.
+Execution then applies owner, broker-account, environment, instrument,
+currency/FX, market-session, and risk authority before recording the canonical
+order and fill ledger. Feedback evaluates those durable outcomes.
 
-Keep `EXECUTION_MODE=paper`, `EXECUTION_ENGINE_ALLOW_LIVE=false`, and
-`EXECUTION_USE_LOCAL_PAPER_BROKER=true` for local work. Selecting a strategy or
-building an image does not authorize a broker order or a deployment.
+Local work must keep `EXECUTION_MODE=paper` and
+`EXECUTION_ENGINE_ALLOW_LIVE=false`. A shipped strategy, a selected process, or
+a registered database row never authorizes an order.
 
-## New Developer Onboarding
+## Start here
 
-Use [SETUP_MAC_LINUX.md](SETUP_MAC_LINUX.md) or
-[SETUP_WINDOWS.md](SETUP_WINDOWS.md). Both cover:
-
-1. Python 3.11, Git, and an isolated `.venv-dev` tooling/test environment.
-2. Constraints-pinned dependencies, the retained `vmdev` CLI, and Git hooks.
-3. Local tests and library/strategy wheel builds.
-4. A private `.env` with local-only configuration.
-5. Config-declared Docker images and explicit indicator selection for paper checks.
-
-The source can be inspected and tested without GitHub authentication. Git helpers
-and pull-request submission need an initialized checkout and `gh` login. Changes
-to the canonical repository use pull requests at
-[`vynaptic/vynmatrix`](https://github.com/vynaptic/vynmatrix); the protected
-`main` branch does not accept direct pushes.
-
-## Repository Structure
-
-```text
-vynmatrix/
-├── apps/
-│   ├── scoring_engine/         # Signal scoring and transactional outbox
-│   ├── execution_engine/       # Risk gates, paper execution, canonical ledger
-│   ├── feedback_loop_engine/   # Outcome evaluation and suggestions
-│   ├── market_data_ingestor/   # Venue candles, observed FX, official sessions
-│   ├── indicator_runner/       # DB-fed signal-only strategy workers
-│   └── backend/                # Tenant/account/binding control plane
-├── strategies/indicator/       # Strategy cores, configuration, and tests
-├── libs/python/                # Six lib_* packages in domain/application/adapter layers
-├── tools/dev_cli/              # vmdev builds, tests, audit, and validation campaigns
-├── config/                     # Build inventory and reviewed runtime configuration
-├── docker/                     # Dockerfiles, pinned constraints, Compose, seeds
-├── scripts/                    # CI, database, and paper verification utilities
-├── tests/                      # Cross-component and contract tests
-├── docs/                       # Technical documentation
-└── pyproject.toml              # vynmatrix package metadata and Python tooling
-```
-
-The root distribution is `vynmatrix`; shared imports remain `lib_common`,
-`lib_data`, `lib_indicators`, `lib_strategy`, `lib_application`, and
-`lib_infrastructure`. Indicator strategies are packaged in `vynmatrix_indicator`.
-The developer command remains `vmdev`.
-
-## Local builds and tests
-
-Run from the repository root with the setup guide's `.venv-dev` active:
-
-```bash
-vmdev test lib --name=lib_common
-vmdev test all
-vmdev audit --strict
-vmdev build libs
-vmdev build strategies
-vmdev build venvs
-vmdev build docker --from-config --tag latest
-```
-
-`vmdev test` runs pytest in the CLI's current interpreter. Component venvs isolate
-installed wheels; `build/venvs/strategy-validation` is the separate environment
-for recorded-data campaigns. Docker builds validate wheel freshness before
-building the shared `vynmatrix/platform` application image and its build bases.
-
-After configuring `.env` and your owner profile as described in the OS guide:
-
-```text
-vmdev db bootstrap --owner-config owner.local.yaml
-vmdev db status
-```
-
-The default single-owner topology runs PostgreSQL, application and workers in three
-containers. A combined application/workers variant uses two. Bootstrap registers
-inactive references, preserves repeat-install settings, and creates no broker account
-or executable binding. Explicit owner/account, strategy, instrument, FX and session
-authority remain mandatory. See the [database workflow](docs/DATABASE.md),
-[deployment topology](docs/DEPLOYMENT.md), and
-[paper verification guide](docs/E2E_VERIFICATION_GUIDE.md).
+Complete the platform-specific prerequisites in
+[SETUP_MAC_LINUX.md](SETUP_MAC_LINUX.md) or
+[SETUP_WINDOWS.md](SETUP_WINDOWS.md), then continue with [SETUP.md](SETUP.md).
+The supported local topology and the single-owner bootstrap contract are
+documented in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and
+[docs/DATABASE.md](docs/DATABASE.md).
 
 ## Documentation
 
 This is the canonical documentation index.
 
-| Document | Purpose |
-|---|---|
-| [SETUP_MAC_LINUX.md](SETUP_MAC_LINUX.md) | macOS/Linux setup and local checks |
-| [SETUP_WINDOWS.md](SETUP_WINDOWS.md) | PowerShell setup and local checks |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution status, workflow, code style, testing |
-| [CLAUDE.md](CLAUDE.md) / [AGENTS.md](AGENTS.md) | Synchronized agent architecture and safety guidance |
-| [docs/USER_MANUAL.md](docs/USER_MANUAL.md) | Architecture and code walkthrough |
-| [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) | Command cheat sheet |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Configuration precedence and fail-closed boundaries |
-| [docs/DATABASE.md](docs/DATABASE.md) | PostgreSQL schema, migrations, and isolated local operation |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Local Docker topology and future release boundary |
-| [docs/E2E_VERIFICATION_GUIDE.md](docs/E2E_VERIFICATION_GUIDE.md) | Recorded-data paper pipeline verification |
-| [docs/RUNBOOK.md](docs/RUNBOOK.md) | Operational reference and broker evidence requirements |
-| [docs/BROKER_CREDENTIALS.md](docs/BROKER_CREDENTIALS.md) | Credential ownership and per-account boundaries |
-| [docs/STRATEGY_READINESS.md](docs/STRATEGY_READINESS.md) | Source inventory and unverified readiness boundaries |
-| [docs/MIGRATION.md](docs/MIGRATION.md) | Migration scope, validation, privacy review, and publication decisions |
-| [docs/SINGLE_OWNER.md](docs/SINGLE_OWNER.md) | Proposed single-owner design, implementation sequence, and acceptance criteria |
-| [NOTICE](NOTICE) | License, retained attribution, and third-party provenance notices |
-| [strategies/indicator/USQualityCompounder/README.md](strategies/indicator/USQualityCompounder/README.md) | Equity portfolio design and paper blockers |
-| [docs/SCALING.md](docs/SCALING.md) | Deferred scaling options and tenant isolation |
-| [docs/REVIEWER_CHECKLIST.md](docs/REVIEWER_CHECKLIST.md) | Review and audit criteria |
-| [scripts/README.md](scripts/README.md) | Script purposes and local verification usage |
-| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Community expectations; private reporting channel pending |
-| [CHANGELOG.md](CHANGELOG.md) | Inherited technical history, not current deployment evidence |
+| Need | Canonical document |
+| --- | --- |
+| Shared local setup | [SETUP.md](SETUP.md) |
+| macOS/Linux or Windows prerequisites | [SETUP_MAC_LINUX.md](SETUP_MAC_LINUX.md) / [SETUP_WINDOWS.md](SETUP_WINDOWS.md) |
+| Contribution terms, branches, checks, and commits | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Commands and file locations | [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) |
+| Runtime architecture and source navigation | [docs/USER_MANUAL.md](docs/USER_MANUAL.md) |
+| Environment precedence and fail-closed settings | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
+| PostgreSQL bootstrap, migration, schema, and backup | [docs/DATABASE.md](docs/DATABASE.md) |
+| Compose topology and release boundary | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| Account and credential onboarding | [docs/BROKER_CREDENTIALS.md](docs/BROKER_CREDENTIALS.md) |
+| Paper-pipeline evidence procedure | [docs/E2E_VERIFICATION_GUIDE.md](docs/E2E_VERIFICATION_GUIDE.md) |
+| Runtime incidents and recovery | [docs/RUNBOOK.md](docs/RUNBOOK.md) |
+| Current strategy authority and readiness | [docs/STRATEGY_READINESS.md](docs/STRATEGY_READINESS.md) |
+| Single-owner design decision | [docs/SINGLE_OWNER.md](docs/SINGLE_OWNER.md) |
+| Deferred capacity work | [docs/SCALING.md](docs/SCALING.md) |
+| Pull-request review | [docs/REVIEWER_CHECKLIST.md](docs/REVIEWER_CHECKLIST.md) |
+| Script catalogue | [scripts/README.md](scripts/README.md) |
+| Backend API contract | [apps/backend/README.md](apps/backend/README.md) |
+| Strategy-specific contracts | [SwingHighLowPMO](strategies/indicator/SwingHighLowPMO/README.md) / [USQualityCompounder](strategies/indicator/USQualityCompounder/README.md) |
+| Migration and publication history | [docs/MIGRATION.md](docs/MIGRATION.md) / [CHANGELOG.md](CHANGELOG.md) |
+| License, attribution, and conduct | [LICENSE](LICENSE) / [NOTICE](NOTICE) / [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
 
-## Contributing
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing code. Use conventional
-commit messages, review staged files, and run the checks appropriate to the
-change. Contributions use the protected pull-request workflow described there.
+Agent-specific repository guidance lives in [AGENTS.md](AGENTS.md) and
+[CLAUDE.md](CLAUDE.md); the two files are intentionally synchronized.

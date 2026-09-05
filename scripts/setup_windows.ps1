@@ -46,7 +46,4 @@ Pop-Location
 
 Write-Ok "Setup complete!"
 Write-Host "Next steps:" -ForegroundColor Green
-Write-Host "  1) Build libs:        vmdev build libs" -ForegroundColor Green
-Write-Host "  2) Build strategies:  vmdev build strategies" -ForegroundColor Green
-Write-Host "  3) Build venvs:       vmdev build venvs" -ForegroundColor Green
-Write-Host "  4) Run the stack:     docker compose --env-file .env -f docker/docker-compose.stack.yml up -d" -ForegroundColor Green
+Write-Host "  Continue with SETUP.md; bootstrap through vmdev db after private configuration." -ForegroundColor Green
