@@ -43,7 +43,6 @@ from ._services import (
     ExecutionPositionStorePort,
     ExecutionServices,
     MarketDataProviderPort,
-    OutboxStorePort,
     SessionFactory,
 )
 from .account_execution_serializer import AccountExecutionSerializer, AccountWriterKind
@@ -121,7 +120,6 @@ class ExecutionEngine:
         execution_metrics_store: ExecutionMetricsStorePort | None = None,
         execution_position_store: ExecutionPositionStorePort | None = None,
         risk_breach_store: RiskBreachStore | None = None,
-        outbox_store: OutboxStorePort | None = None,
         canonical_execution_store: CanonicalExecutionStore | None = None,
         fx_rate_provider: FXRateProvider | None = None,
         default_mode: str = "paper",
@@ -186,7 +184,6 @@ class ExecutionEngine:
         )
         self._execution_metrics_store = execution_metrics_store
         self._execution_position_store = execution_position_store
-        self._outbox_store = outbox_store
         self._default_mode = default_mode
         if allow_live and default_mode != "live":
             # Startup footgun surfaced in D1: ALLOW_LIVE=true with a paper
@@ -227,7 +224,6 @@ class ExecutionEngine:
             execution_log_store=execution_log_store,
             execution_metrics_store=execution_metrics_store,
             execution_position_store=execution_position_store,
-            outbox_store=outbox_store,
             pnl_service=self._pnl_service,
             session_factory=session_factory,
             environment_resolver=self._route_resolver.resolve_environment,

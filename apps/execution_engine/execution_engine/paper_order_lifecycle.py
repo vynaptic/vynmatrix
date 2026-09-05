@@ -24,8 +24,6 @@ from lib_application.db.models import (
 from lib_application.db.models import (
     OrderIntent as CanonicalOrderIntent,
 )
-from lib_application.outbox import OutboxStore
-from lib_common.internal_events import ExecutionResultEvent
 from lib_common.logging import get_logger
 from lib_common.metrics import counter
 
@@ -214,7 +212,6 @@ class PaperOrderLifecycleWorker:
         self._interval_sec = float(interval_sec)
         self._participation = participation
         self._canonical_store = CanonicalExecutionStore(session_factory=session_factory)
-        self._outbox_store = OutboxStore(session_factory)
         self._account_serializer = (
             account_serializer
             or getattr(engine, "account_execution_serializer", None)
@@ -618,17 +615,8 @@ class PaperOrderLifecycleWorker:
                 self._cancel_oco_siblings(session, pending)
             elif pending.oco_group_id:
                 self._resize_oco_siblings(session, pending)
-            event = self._result_event(session, pending, plan, candle)
-            self._outbox_store.enqueue_on_session(
-                session,
-                topic=event.topic,
-                event_type=event.event_type,
-                payload=event.model_dump(mode="json"),
-                aggregate_type="order",
-                aggregate_id=str(canonical_order.order_id),
-                event_key=f"paper-fill:{trade_id}",
-                ordering_key=f"broker-account:{pending.broker_account_id}",
-            )
+            # Lineage for a lifecycle fill is the canonical ledger itself:
+            # orders -> order_intents.canonical_signal_id -> canonical_signals.
             session.commit()
 
         assert plan is not None
@@ -752,54 +740,6 @@ class PaperOrderLifecycleWorker:
         )
         for sibling in siblings:
             sibling.quantity = Decimal(str(sibling.cumulative_filled_quantity or 0)) + remaining
-
-    @staticmethod
-    def _result_event(
-        session: Any,
-        pending: PendingOrder,
-        plan: PaperFillPlan,
-        candle: CommittedCandle,
-    ) -> ExecutionResultEvent:
-        canonical_order = session.get(Order, pending.canonical_order_id)
-        canonical_intent = session.get(CanonicalOrderIntent, canonical_order.intent_id)
-        signal = session.get(CanonicalSignal, canonical_intent.canonical_signal_id)
-        return ExecutionResultEvent(
-            run_id=pending.run_id,
-            correlation_id=pending.signal_id,
-            causation_id=str(signal.external_signal_id),
-            producer="execution_engine",
-            user_id=pending.user_id,
-            signal_id=str(signal.external_signal_id),
-            strategy_id=str(pending.strategy_id),
-            symbol=pending.symbol,
-            success=True,
-            status=pending.status,
-            execution_mode=pending.execution_mode,
-            broker=pending.broker,
-            broker_account_id=int(pending.broker_account_id),
-            orders_submitted=1,
-            # A partial fill is still one economically realized fill-bearing
-            # broker result. Terminality governs future fills, not whether the
-            # current result contains a fill.
-            orders_filled=1,
-            total_quantity=float(plan.fill.quantity),
-            average_price=float(plan.fill.price),
-            total_commission=float(plan.fill.commission),
-            executed_at=candle.ts,
-            order_results=[
-                {
-                    "canonical_order_id": pending.canonical_order_id,
-                    "client_order_id": pending.client_order_id,
-                    "broker_order_id": plan.fill.order_id,
-                    "trade_id": plan.fill.trade_id,
-                    "status": pending.status,
-                    "cumulative_filled_quantity": str(pending.cumulative_filled_quantity),
-                    "source_price_id": candle.price_id,
-                    "source_content_revision": candle.content_revision,
-                    "trigger_policy_version": pending.trigger_policy_version,
-                }
-            ],
-        )
 
     async def _drain_projection(
         self,

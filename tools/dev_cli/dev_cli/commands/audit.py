@@ -176,7 +176,10 @@ MODELS_FILE_MAX_LOC = 600
 #: provider boundary catch mirroring ``_resolve_provider``'s fail-open
 #: contract, required because the ingest unit of work now runs on a worker
 #: thread where the async resolver cannot be awaited.
-BARE_EXCEPT_BASELINE = 43
+#: 2026-09-06: lowered 43 -> 42. Retiring the ``execution.results`` outbox
+#: event removed the boundary catch in
+#: ``execution_persistence._emit_result_message_standalone``; no handler was added.
+BARE_EXCEPT_BASELINE = 42
 
 
 #: Files where a known refactor is in-flight. The cap is still checked, but

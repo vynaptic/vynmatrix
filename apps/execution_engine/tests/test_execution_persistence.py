@@ -310,7 +310,10 @@ def test_execution_persistence_returns_committed_log_id_without_metrics() -> Non
         result=result,
         score_context=None,
         account_state=None,
-        profile={"_risk_baseline_audit": risk_baseline_audit},
+        profile={
+            "_risk_baseline_audit": risk_baseline_audit,
+            "_execution_user_strategy_config": {"_causation_event_id": "evt-cause-1"},
+        },
         intents=None,
     )
 
@@ -323,6 +326,11 @@ def test_execution_persistence_returns_committed_log_id_without_metrics() -> Non
     assert "run_id" not in details
     assert "run_id" not in details["signal"]
     assert details["risk_baseline"] == risk_baseline_audit
+    # The inbound command's event_id is the command -> result trace link now
+    # that no execution.results event is published alongside the log row.
+    assert details["causation_event_id"] == "evt-cause-1"
+    assert "outbox_store" not in log_store.calls[0]
+    assert "event_message" not in log_store.calls[0]
 
 
 def test_engine_links_committed_execution_log_to_decision() -> None:

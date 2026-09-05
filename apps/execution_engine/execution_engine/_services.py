@@ -85,8 +85,6 @@ class ExecutionLogStorePort(Protocol):
         details: dict[str, Any],
         error_message: str | None = None,
         run_id: str | None = None,
-        outbox_store: Any | None = None,
-        event_message: dict[str, Any] | None = None,
     ) -> str:
         """Persist one ``execution_logs`` row, returning its identity."""
 
@@ -162,45 +160,6 @@ class ExecutionPositionStorePort(Protocol):
         allow_empty_prune: bool = False,
     ) -> None:
         """Mirror a broker position snapshot into the DB ledger."""
-
-
-class OutboxStorePort(Protocol):
-    """Port for the transactional outbox carrying execution result events."""
-
-    def enqueue(
-        self,
-        *,
-        topic: str,
-        event_type: str,
-        payload: dict[str, Any],
-        schema_version: str = "v1",
-        aggregate_type: str | None = None,
-        aggregate_id: str | None = None,
-        event_key: str | None = None,
-        ordering_key: str | None = None,
-        headers: dict[str, Any] | None = None,
-        available_at: datetime | None = None,
-        max_attempts: int = 10,
-    ) -> str:
-        """Insert (or idempotently reuse) a pending outbox message."""
-
-    def enqueue_on_session(
-        self,
-        session: Any,
-        *,
-        topic: str,
-        event_type: str,
-        payload: dict[str, Any],
-        schema_version: str = "v1",
-        aggregate_type: str | None = None,
-        aggregate_id: str | None = None,
-        event_key: str | None = None,
-        ordering_key: str | None = None,
-        headers: dict[str, Any] | None = None,
-        available_at: datetime | None = None,
-        max_attempts: int = 10,
-    ) -> str:
-        """Enqueue within the caller's open transaction (no commit/flush)."""
 
 
 # ---------------------------------------------------------------------------

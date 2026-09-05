@@ -1,10 +1,9 @@
-"""Persistence and result-event emission for the execution engine.
+"""Persistence for the execution engine.
 
 Extracted from ``apps/execution_engine/execution_engine/engine.py`` as the
 third step of the Phase-3 ExecutionEngine decomposition. This module owns the
 write-side of execution: logging completed executions, recording metrics,
-syncing positions, persisting daily NAV snapshots, and emitting the
-``ExecutionResultEvent`` to the outbox.
+syncing positions and persisting daily NAV snapshots.
 
 It is intentionally narrow:
 
@@ -14,8 +13,8 @@ It is intentionally narrow:
   site so persistence runs in the same dedup boundary as before.
 
 ``ExecutionEngine`` keeps the same private method names
-(``_persist_execution``, ``_emit_execution_result_event``,
-``_build_metric_position_state``, ``_update_daily_nav_snapshot``) as thin
+(``_persist_execution``, ``_build_metric_position_state``,
+``_update_daily_nav_snapshot``) as thin
 delegates so existing tests that patch those names continue to work.
 """
 
@@ -25,12 +24,6 @@ from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
 
-from lib_common.internal_events import (
-    BrokerRouteSnapshot,
-    ExecutionPolicySnapshot,
-    ExecutionResultEvent,
-    ScoreContextSnapshot,
-)
 from lib_common.logging import get_logger
 from lib_common.observability import ensure_run_id
 from lib_strategy.signals.signal import Signal
@@ -53,7 +46,7 @@ Injected by the engine so the persistence module does not need to depend on
 
 
 class ExecutionPersistence:
-    """Owns the write-side of execution: logs, metrics, positions, NAV, events."""
+    """Owns the write-side of execution: logs, metrics, positions, NAV."""
 
     def __init__(
         self,
@@ -61,7 +54,6 @@ class ExecutionPersistence:
         execution_log_store: Any | None = None,
         execution_metrics_store: Any | None = None,
         execution_position_store: Any | None = None,
-        outbox_store: Any | None = None,
         pnl_service: PnLService | None = None,
         session_factory: Any | None = None,
         environment_resolver: EnvironmentResolver | None = None,
@@ -69,7 +61,6 @@ class ExecutionPersistence:
         self._execution_log_store = execution_log_store
         self._execution_metrics_store = execution_metrics_store
         self._execution_position_store = execution_position_store
-        self._outbox_store = outbox_store
         self._pnl_service = pnl_service
         self._session_factory = session_factory
         self._environment_resolver = environment_resolver
@@ -203,21 +194,13 @@ class ExecutionPersistence:
         ) or profile.get("_execution_policy_snapshot")
         details["broker_route_snapshot"] = profile.get("_broker_route_snapshot")
         details["risk_baseline"] = profile.get("_risk_baseline_audit")
+        # The inbound execution command's event_id, threaded by the API as
+        # user_strategy_config["_causation_event_id"], is the trace link from
+        # command to result now that no result event is published.
+        details["causation_event_id"] = user_strategy_config.get("_causation_event_id")
         status = execution_log_status(result)
         canonical_signal_id = self._extract_canonical_signal_id(signal)
 
-        # Build the result event once, then co-commit it with the execution_logs
-        # row (transactional outbox) so a crash cannot persist the trade record
-        # without its downstream result event, or vice-versa.
-        event_message = self._build_result_event_message(
-            user_id=user_id,
-            signal=signal,
-            result=result,
-            score_context=score_context,
-            profile=profile,
-            user_strategy_config=user_strategy_config,
-        )
-        event_committed_with_log = False
         execution_log_id: str | None = None
 
         if self._execution_log_store is not None:
@@ -237,10 +220,7 @@ class ExecutionPersistence:
                     details=details,
                     error_message=result.error_message,
                     run_id=run_id,
-                    outbox_store=self._outbox_store,
-                    event_message=event_message,
                 )
-                event_committed_with_log = event_message is not None
             except Exception:
                 # Boundary catch: log persistence is best-effort. The signal
                 # has already executed; failure here cannot unwind the broker
@@ -250,12 +230,6 @@ class ExecutionPersistence:
                     signal_id=result.signal_id,
                     run_id=run_id,
                 )
-
-        # If the event was not co-committed with a log row (no log store, or the
-        # atomic write rolled back), emit it standalone so downstream consumers
-        # still receive it. enqueue is idempotent on event_key.
-        if event_message is not None and not event_committed_with_log:
-            self._emit_result_message_standalone(event_message, signal_id=result.signal_id)
 
         if self._execution_metrics_store is None:
             return execution_log_id
@@ -284,16 +258,13 @@ class ExecutionPersistence:
             )
         except Exception:
             # Boundary catch: any metrics/position-store failure must not
-            # block the event emission below — the downstream feedback loop
-            # depends on ExecutionResultEvent landing in the outbox.
+            # discard the already-committed execution_logs identity returned
+            # to the caller.
             logger.exception(
                 "Failed to persist execution metrics",
                 signal_id=result.signal_id,
                 run_id=run_id,
             )
-        # NOTE: the ExecutionResultEvent was already enqueued atomically with the
-        # execution_logs row above (transactional outbox), so it is not emitted
-        # again here.
         return execution_log_id
 
     def persist_paper_fill_projections(
@@ -675,126 +646,6 @@ class ExecutionPersistence:
             "current_price": current_price,
             "realized_pnl": realized,
         }
-
-    def _build_result_event_message(
-        self,
-        *,
-        user_id: str,
-        signal: Signal,
-        result: ExecutionResult,
-        score_context: dict[str, Any] | None,
-        profile: dict[str, Any],
-        user_strategy_config: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        """Build the outbox enqueue kwargs for the ExecutionResultEvent.
-
-        Returns None when the outbox is unwired. The returned dict is suitable
-        for both ``OutboxStore.enqueue`` and ``enqueue_on_session`` (the latter
-        co-commits it with the execution_logs row — see persist()).
-        """
-        if self._outbox_store is None:
-            return None
-
-        score_snapshot = None
-        if score_context:
-            recommended_mode = score_context.get("recommended_mode")
-            score_snapshot = ScoreContextSnapshot(
-                asset_score=float(score_context.get("asset_score", 0.0)),
-                sector_score=(
-                    float(score_context["sector_score"])
-                    if score_context.get("sector_score") is not None
-                    else None
-                ),
-                market_score=(
-                    float(score_context["market_score"])
-                    if score_context.get("market_score") is not None
-                    else None
-                ),
-                recommended_mode=(str(recommended_mode) if recommended_mode is not None else None),
-                score_scope=str(score_context.get("score_scope") or "asset"),
-                score_target=str(score_context.get("score_target") or signal.symbol),
-            )
-
-        policy_snapshot_payload = (
-            user_strategy_config.get("_execution_policy_snapshot")
-            or profile.get("_execution_policy_snapshot")
-            or {}
-        )
-        route_snapshot_payload = profile.get("_broker_route_snapshot") or {
-            "broker": result.broker,
-            "broker_account_id": result.broker_account_id,
-            "broker_environment": profile.get("broker_environment"),
-            "allowed_brokers": (
-                profile.get("linked_brokers") or profile.get("allowed_brokers") or []
-            ),
-            "route_source": "execution_engine",
-            "live_enabled": bool(profile.get("live_enabled")),
-            "sandbox": bool(profile.get("sandbox", result.execution_mode != "live")),
-            "asset_class": signal.asset_class,
-            "execution_mode": result.execution_mode,
-        }
-
-        event = ExecutionResultEvent(
-            run_id=signal.run_id,
-            correlation_id=signal.signal_id,
-            # The execution command that produced this result (set by the API from
-            # the inbound ExecutionCommandEvent.event_id) is the direct cause.
-            causation_id=user_strategy_config.get("_causation_event_id"),
-            producer="execution_engine",
-            user_id=user_id,
-            signal_id=result.signal_id,
-            strategy_id=signal.strategy_id,
-            symbol=signal.symbol,
-            success=result.success,
-            status=execution_log_status(result),
-            execution_mode=result.execution_mode,
-            broker=result.broker,
-            broker_account_id=self._require_broker_account_id(
-                result,
-                artifact="execution result event",
-            ),
-            orders_submitted=result.orders_submitted,
-            orders_filled=result.orders_filled,
-            total_quantity=result.total_quantity,
-            average_price=result.average_price,
-            total_commission=result.total_commission,
-            error_message=result.error_message,
-            executed_at=result.executed_at,
-            score_context=score_snapshot,
-            execution_policy=(
-                ExecutionPolicySnapshot(**policy_snapshot_payload)
-                if policy_snapshot_payload
-                else None
-            ),
-            broker_route=BrokerRouteSnapshot(**route_snapshot_payload),
-            order_results=[dict(item) for item in result.order_results],
-        )
-        return {
-            "topic": event.topic,
-            "event_type": event.event_type,
-            "payload": event.model_dump(mode="json"),
-            "schema_version": event.schema_version,
-            "aggregate_type": "execution_result",
-            "aggregate_id": f"{signal.signal_id}:{user_id}",
-            "event_key": f"execution-result:{signal.signal_id}:{user_id}",
-            "ordering_key": user_id,
-            "headers": {"run_id": signal.run_id or ""},
-        }
-
-    def _emit_result_message_standalone(
-        self, event_message: dict[str, Any], *, signal_id: str
-    ) -> None:
-        """Enqueue a prebuilt result-event message in its OWN transaction.
-
-        Fallback used only when there is no execution_logs row to co-commit the
-        event with (the atomic path lives in persist() via ExecutionLogStore.log).
-        """
-        if self._outbox_store is None:
-            return
-        try:
-            self._outbox_store.enqueue(**event_message)
-        except Exception:
-            logger.exception("Failed to enqueue execution result event", signal_id=signal_id)
 
     @staticmethod
     def _require_broker_account_id(result: ExecutionResult, *, artifact: str) -> int:
