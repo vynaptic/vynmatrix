@@ -35,7 +35,6 @@ from scoring_engine.models import (
     ScoringUserBinding,
     TriggerDecision,
 )
-from scoring_engine.pipeline_events import enqueue_scoring_pipeline_events
 from scoring_engine.storage import ScoreStore
 
 _PLAN_TTL: Final = timedelta(days=7)
@@ -209,9 +208,6 @@ class RebalanceScoringService:
             self._store.persist_model_rebalance(event)
             plan_ids: list[str] = []
             outbox_ids: list[str] = []
-            queued_users_by_signal: dict[str, list[str]] = {
-                str(signal.external_signal_id): [] for signal in signals
-            }
             for binding in self._exact_bindings(
                 event,
                 entitlement_owner_user_id=entitlement_owner_user_id,
@@ -226,15 +222,6 @@ class RebalanceScoringService:
                 )
                 plan_ids.append(self._store.persist_account_rebalance_plan(draft))
                 outbox_ids.append(self._dispatcher.enqueue_rebalance(draft.command))
-                for command_leg in draft.command.legs:
-                    queued_users_by_signal[command_leg.external_signal_id].append(binding.user_id)
-            for signal, score in zip(signals, scores, strict=True):
-                enqueue_scoring_pipeline_events(
-                    store=self._store,
-                    signal=signal,
-                    score=score,
-                    queued_users=queued_users_by_signal[str(signal.external_signal_id)],
-                )
         return RebalanceIngestionResult(
             rebalance_id=event.rebalance_id,
             replayed=False,

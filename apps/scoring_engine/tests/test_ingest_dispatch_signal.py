@@ -96,10 +96,11 @@ def test_ingest_dispatches_the_ingested_signal_not_latest_for_symbol(
         canonical = (
             session.query(app_models.CanonicalSignal).filter_by(strategy_id="ema_strat").one()
         )
-        signal_event = (
+        # signals.ingested is retired: the canonical_signals row is the surviving record.
+        retired_events = (
             session.query(app_models.OutboxEvent)
             .filter_by(event_key=f"canonical-signal:{dispatched.signal_id}")
-            .one()
+            .count()
         )
     assert dispatched.metadata["canonical_signal_id"] == canonical.signal_id
-    assert signal_event.payload["canonical_signal_db_id"] == canonical.signal_id
+    assert retired_events == 0

@@ -461,12 +461,8 @@ def test_atomic_batch_fans_out_isolated_ordered_account_plans_and_replays() -> N
     assert tenant_a.available_at == _EXECUTE_AT
     tenant_b = next(record for record in commands if record.payload["user_id"] == "tenant-b")
     assert [leg["phase"] for leg in tenant_b.payload["legs"]] == ["exit"]
-    scored = {
-        record.payload["signal"]["symbol"]: record.payload["queued_users"]
-        for record in store._outbox.values()
-        if record.topic == "signals.scored"
-    }
-    assert scored == {"IBM": ["tenant-a", "tenant-b"], "MSFT": ["tenant-a"]}
+    assert not [record for record in store._outbox.values() if record.topic == "signals.scored"]
+    assert not [record for record in store._outbox.values() if record.topic == "signals.ingested"]
     persisted_signals = {item.symbol: item for item in store.list_all_signals()}
     assert persisted_signals["MSFT"].expected_return == 0.01
     assert persisted_signals["MSFT"].predicted_risk == 0.02
@@ -507,13 +503,8 @@ def test_personal_provider_evidence_fans_out_only_to_its_entitlement_owner() -> 
         if record.topic == "execution.rebalance.commands"
     ]
     assert [record.payload["user_id"] for record in commands] == [owner.user_id]
-    scored = [
-        record.payload["queued_users"]
-        for record in store._outbox.values()
-        if record.topic == "signals.scored"
-    ]
-    assert scored
-    assert all(users == [owner.user_id] for users in scored)
+    assert not [record for record in store._outbox.values() if record.topic == "signals.scored"]
+    assert not [record for record in store._outbox.values() if record.topic == "signals.ingested"]
 
 
 class _FailingPlanStore(InMemoryScoreStore):
