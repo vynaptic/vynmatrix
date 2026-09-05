@@ -79,7 +79,7 @@ def test_mark_failed_pushes_available_at_into_the_future() -> None:
     """Failed rows respect the backoff window before the next claim."""
     store, session_local = _store()
     event_id = store.enqueue(
-        topic="signals.scored",
+        topic="execution.commands",
         event_type="ScoredSignal",
         payload={"signal_id": "sig-backoff"},
         event_key="score:sig-backoff",
@@ -87,7 +87,7 @@ def test_mark_failed_pushes_available_at_into_the_future() -> None:
     )
 
     claimed = store.claim_batch(
-        topics=["signals.scored"], consumer="worker", limit=1, lease_seconds=60
+        topics=["execution.commands"], consumer="worker", limit=1, lease_seconds=60
     )
     assert claimed
     before = datetime.now(tz=UTC)
@@ -115,7 +115,7 @@ def test_mark_failed_pushes_available_at_into_the_future() -> None:
 
     # A subsequent claim within the backoff window finds nothing.
     locked = store.claim_batch(
-        topics=["signals.scored"], consumer="worker", limit=1, lease_seconds=60
+        topics=["execution.commands"], consumer="worker", limit=1, lease_seconds=60
     )
     assert locked == []
 
@@ -159,7 +159,7 @@ def test_mark_failed_promotes_to_dead_letter_only_at_max_attempts() -> None:
     """``mark_failed`` keeps status = 'failed' until attempts hits the cap."""
     store, session_local = _store()
     event_id = store.enqueue(
-        topic="signals.scored",
+        topic="execution.commands",
         event_type="ScoredSignal",
         payload={"signal_id": "sig-attempts"},
         event_key="score:sig-attempts",
@@ -171,7 +171,7 @@ def test_mark_failed_promotes_to_dead_letter_only_at_max_attempts() -> None:
         # branch on it. Use a 0-second backoff so the row immediately becomes
         # claimable again on the next loop iteration.
         claimed = store.claim_batch(
-            topics=["signals.scored"], consumer="worker", limit=1, lease_seconds=60
+            topics=["execution.commands"], consumer="worker", limit=1, lease_seconds=60
         )
         assert claimed
         assert claimed[0].attempts == expected_attempts

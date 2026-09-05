@@ -136,25 +136,6 @@ class PlatformEvent(BaseModel):
     event_type: str
 
 
-class CanonicalSignalEvent(PlatformEvent):
-    """Signal ingestion event emitted after canonical persistence."""
-
-    topic: Literal["signals.ingested"] = "signals.ingested"
-    event_type: Literal["CanonicalSignal"] = "CanonicalSignal"
-    signal: CanonicalSignalSnapshot
-    canonical_signal_db_id: int | None = None
-
-
-class ScoredSignalEvent(PlatformEvent):
-    """Score computation event emitted after score persistence."""
-
-    topic: Literal["signals.scored"] = "signals.scored"
-    event_type: Literal["ScoredSignal"] = "ScoredSignal"
-    signal: CanonicalSignalSnapshot
-    score_context: ScoreContextSnapshot
-    queued_users: list[str] = Field(default_factory=list)
-
-
 class ExecutionCommandEvent(PlatformEvent):
     """Execution command queued by the scoring engine."""
 
@@ -600,67 +581,19 @@ class RebalanceExecutionCommandEvent(PlatformEvent):
         return self
 
 
-class ExecutionResultEvent(PlatformEvent):
-    """Execution outcome emitted by the execution engine."""
-
-    topic: Literal["execution.results"] = "execution.results"
-    event_type: Literal["ExecutionResult"] = "ExecutionResult"
-    user_id: str
-    signal_id: str
-    strategy_id: str
-    symbol: str
-    success: bool
-    status: str
-    execution_mode: str
-    broker: str
-    broker_account_id: int = Field(gt=0)
-    orders_submitted: int
-    orders_filled: int
-    total_quantity: float
-    average_price: float
-    total_commission: float
-    error_message: str | None = None
-    executed_at: datetime
-    score_context: ScoreContextSnapshot | None = None
-    execution_policy: ExecutionPolicySnapshot | None = None
-    broker_route: BrokerRouteSnapshot | None = None
-    order_results: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class FeedbackEvaluationEvent(PlatformEvent):
-    """Feedback-loop evaluation emitted after signal-performance persistence."""
-
-    topic: Literal["feedback.ready"] = "feedback.ready"
-    event_type: Literal["FeedbackEvaluation"] = "FeedbackEvaluation"
-    signal_id: int
-    strategy_id: str
-    symbol: str
-    evaluation_horizon: str
-    is_correct: bool
-    price_change_pct: float
-    pnl_pct: float
-    consecutive_wrong_count: int
-    needs_optimization: bool
-    evaluated_at: datetime
-
-
 __all__ = [
     "EXTERNAL_SIGNAL_ID_MAX_LENGTH",
     "BrokerRouteSnapshot",
-    "CanonicalSignalEvent",
     "CanonicalSignalSnapshot",
     "DataUseScopeValue",
     "ExecutionCommandEvent",
     "ExecutionPolicySnapshot",
-    "ExecutionResultEvent",
-    "FeedbackEvaluationEvent",
     "ModelRebalanceLegSnapshot",
     "ModelRebalanceSubmissionEvent",
     "PlatformEvent",
     "RebalanceExecutionCommandEvent",
     "RebalanceExecutionLegSnapshot",
     "ScoreContextSnapshot",
-    "ScoredSignalEvent",
     "compute_account_plan_id",
     "compute_model_rebalance_content_sha256",
     "compute_model_rebalance_id",
