@@ -36,7 +36,9 @@ _COINBASE_GRANULARITY = "ONE_HOUR"
 _COINBASE_TIMEFRAME = "1h"
 _COINBASE_PERIOD = timedelta(hours=1)
 _MAX_COINBASE_HOURS_PER_REQUEST = 300
-_MAX_HISTORY_DAYS = 90
+# Coinbase USDC/EUR hourly candles may be backfilled up to one year; the ECB leg
+# always comes from the official rolling 90-day reference feed.
+_MAX_HISTORY_DAYS = 366
 _MIN_POLL_INTERVAL_SECONDS = 60
 
 
@@ -78,7 +80,7 @@ class FXRateIngestor:
             msg = "FX ingestion requires at least one non-EUR ECB quote currency"
             raise ValueError(msg)
         if history_days < 1 or history_days > _MAX_HISTORY_DAYS:
-            msg = "FX history_days must be between 1 and 90"
+            msg = f"FX history_days must be between 1 and {_MAX_HISTORY_DAYS}"
             raise ValueError(msg)
         if poll_interval_sec < _MIN_POLL_INTERVAL_SECONDS:
             msg = "FX poll_interval_sec must be at least 60"

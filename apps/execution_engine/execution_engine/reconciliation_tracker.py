@@ -472,6 +472,15 @@ class ReconciliationTracker:
             raise PendingOrderPersistenceError(msg)
         return resolved_order_id
 
+    def cancel_working_order(self, order_id: str, *, reason: str) -> bool:
+        """Durably cancel a superseded resting order and drop it from the cache."""
+        if not self._pending_order_repo.enabled:
+            return False
+        cancelled = self._pending_order_repo.cancel_working(order_id, reason=reason)
+        if cancelled:
+            self._pending_orders.pop(order_id, None)
+        return cancelled
+
     def mark_submission_unknown(
         self,
         order_id: str,

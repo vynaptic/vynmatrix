@@ -7,6 +7,18 @@ Git history.
 
 ## [Unreleased]
 
+### Fixed
+
+- Close and flatten transitions now durably cancel obsolete local-paper
+  protective orders; a reduce-only row with no remaining position is terminally
+  cancelled instead of retried.
+- The platform supervisor forwards each child's service key when proxying
+  `/metrics/<component>`.
+- `FX_RATE_HISTORY_DAYS` permits up to 366 days for Coinbase `USDC/EUR`;
+  ECB reference history remains bounded by its official rolling 90-day feed.
+- Host-side `vmdev db bootstrap` now loads the checkout's `scripts` package
+  reliably.
+
 ### Changed
 
 - Consolidated repository documentation around one owner per topic: shared

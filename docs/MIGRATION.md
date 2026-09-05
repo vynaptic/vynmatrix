@@ -49,6 +49,17 @@ pipeline validation in an isolated test project. It did not establish a current
 Swing economic-order witness, broker connectivity, deployment, capacity result,
 or live authority. Re-run the current checks for any new claim.
 
+A later isolated local-paper recorded-data exercise covered bootstrap, bounded
+strategy configuration/binding, historical backfill, normal stale-entry
+rejection, and a separately authorized paper replay. Explicit scoring inputs
+were relaxed only after the blocked-entry result, then restored with the binding
+revoked. A known harness timeframe defect excluded affected signals from
+feedback, and the per-day replay cap bounded the exercise. It exposed the host
+bootstrap import, protective-order cancellation, metrics-proxy credential, and
+year-long Coinbase FX-backfill regressions addressed in the current source.
+This was a functional pipeline exercise, not strategy-promotion or live-trading
+evidence.
+
 ## Current design references
 
 The follow-up added migrations 0099 through 0104 for owner designation, safe

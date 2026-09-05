@@ -85,6 +85,10 @@ def _resolve_source_watermark(
     return row_ts, raw_revision
 
 
+_CANCELLABLE_STATUSES = frozenset({"pending", "submitted", "working", "partially_filled"})
+_TERMINAL_ORDER_STATES = frozenset({"filled", "rejected", "canceled"})
+
+
 class PendingOrderPersistenceError(RuntimeError):
     """A pending-order write could not be confirmed durably."""
 
@@ -389,6 +393,53 @@ class PendingOrderRepository:
         except (SQLAlchemyError, OSError) as exc:
             logger.exception("Failed to mark pending order %s terminal", order_id)
             msg = f"Pending order {order_id} could not be marked terminal"
+            raise PendingOrderPersistenceError(msg) from exc
+        return True
+
+    def cancel_working(self, order_id: str, *, reason: str) -> bool:
+        """Durably cancel a still-working row; terminal rows are never overwritten.
+
+        A close/flatten supersedes this context's resting protective orders. The
+        broker's in-memory book is not authoritative for durable paper orders
+        (it is empty after a restart), so the pending row and its canonical
+        ``orders`` state are closed here in one transaction. Returns ``True``
+        only when a non-terminal row was cancelled.
+        """
+        if self._session_factory is None:
+            msg = "Pending-order persistence is not configured"
+            raise PendingOrderPersistenceError(msg)
+        try:
+            from lib_application.db.models import Order, PendingOrder  # noqa: PLC0415
+        except ImportError as exc:
+            msg = "Pending-order model is unavailable"
+            raise PendingOrderPersistenceError(msg) from exc
+
+        try:
+            with self._session_factory() as session:
+                row = (
+                    session.query(PendingOrder)
+                    .filter(
+                        (PendingOrder.order_id == order_id)
+                        | (PendingOrder.broker_order_id == order_id)
+                    )
+                    .with_for_update()
+                    .one_or_none()
+                )
+                if row is None or row.status not in _CANCELLABLE_STATUSES:
+                    return False
+                resolved_at = datetime.now(tz=UTC)
+                row.status = "cancelled"
+                row.error_message = reason
+                row.resolved_at = resolved_at
+                if row.canonical_order_id is not None:
+                    order = session.get(Order, row.canonical_order_id)
+                    if order is not None and order.state not in _TERMINAL_ORDER_STATES:
+                        order.state = "canceled"
+                        order.last_update = resolved_at
+                session.commit()
+        except (SQLAlchemyError, OSError) as exc:
+            logger.exception("Failed to cancel pending order %s", order_id)
+            msg = f"Pending order {order_id} could not be cancelled"
             raise PendingOrderPersistenceError(msg) from exc
         return True
 

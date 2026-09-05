@@ -241,10 +241,14 @@ class PlatformSupervisor:
         )
         if child is None:
             return 404, b"Unknown component\n"
+        request = Request(f"http://127.0.0.1:{child.spec.port}/metrics")
+        # Component /metrics routes sit behind the child's own service key; the
+        # supervisor already holds that child's scoped environment.
+        api_key = child.spec.environment.get("API_KEY")
+        if api_key:
+            request.add_header("X-API-Key", api_key)
         try:
-            with build_opener(ProxyHandler({})).open(
-                f"http://127.0.0.1:{child.spec.port}/metrics", timeout=1
-            ) as response:
+            with build_opener(ProxyHandler({})).open(request, timeout=1) as response:
                 payload = response.read(1024 * 1024 + 1)
                 if len(payload) > 1024 * 1024:
                     return 502, b"Metrics response exceeds bound\n"
@@ -307,7 +311,7 @@ def _shutdown_signals(event: threading.Event) -> Iterator[None]:
 
 
 def create_health_server(
-    supervisor: PlatformSupervisor, *, host: str = "0.0.0.0", port: int = 8090
+    supervisor: PlatformSupervisor, *, host: str = "127.0.0.1", port: int = 8090
 ) -> ThreadingHTTPServer:
     """Expose private group liveness, progress and separately namespaced metrics."""
 

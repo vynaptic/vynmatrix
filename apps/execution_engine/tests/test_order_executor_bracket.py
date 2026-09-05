@@ -601,3 +601,40 @@ def test_close_does_not_cancel_other_contexts_orders() -> None:
 
     assert broker.cancelled == []
     assert len(broker.submitted) == 1
+
+
+class _DurableTracker(_FakeTracker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.durably_cancelled: list[tuple[str, str]] = []
+
+    def cancel_working_order(self, order_id: str, *, reason: str) -> bool:
+        self.durably_cancelled.append((order_id, reason))
+        return True
+
+
+def test_close_durably_cancels_pending_row_when_broker_confirms_cancel() -> None:
+    # The broker's in-memory cancel alone left the durable pending row working;
+    # the paper lifecycle then retried it forever against a flat book.
+    broker = _FakeBroker([_result(filled=True, qty=0.07, order_id="close")])
+    tracker = _DurableTracker()
+    tracker.pending_orders_cache["bracket-1"] = _resting_bracket_row()
+    asyncio.run(OrderExecutor(tracker=tracker).execute(broker, [_close()]))
+
+    assert tracker.durably_cancelled == [("bracket-1", "Superseded by close for SOLUSD")]
+    assert "bracket-1" not in tracker.pending_orders_cache
+
+
+def test_close_keeps_live_broker_row_when_cancel_is_unconfirmed() -> None:
+    # A live venue that did not confirm the cancel keeps its durable row for
+    # reconciliation; only the paper lifecycle owns paper resting orders.
+    broker = _FakeBroker(
+        [_result(filled=True, qty=0.07, order_id="close")],
+        cancel_result=False,
+    )
+    tracker = _DurableTracker()
+    tracker.pending_orders_cache["bracket-1"] = _resting_bracket_row()
+    asyncio.run(OrderExecutor(tracker=tracker).execute(broker, [_close()]))
+
+    assert tracker.durably_cancelled == []
+    assert "bracket-1" in tracker.pending_orders_cache

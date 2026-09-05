@@ -106,8 +106,10 @@ binding, broker account, or execution route.
 
 The FX worker persists observed ECB EUR reference rates and Coinbase USDC-EUR
 traded candles. Conversion resolves an eligible point-in-time direct, inverse,
-or EUR-cross observation; it never assumes USD/USDC parity. Configure only
-the currencies, age bounds, and source products permitted by .env.example.
+or EUR-cross observation; it never assumes USD/USDC parity.
+`FX_RATE_HISTORY_DAYS` accepts `1..366` and controls Coinbase `USDC/EUR` hourly
+backfill; the ECB source retains its rolling 90-day history. Configure only
+currencies, age bounds, and source products permitted by .env.example.
 
 Each non-crypto tradable instrument needs current official session coverage.
 calendar-ibkr, calendar-saxo, and calendar-zerodha are opt-in writers with

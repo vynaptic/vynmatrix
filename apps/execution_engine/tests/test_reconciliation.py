@@ -1318,3 +1318,55 @@ def test_submit_path_commits_canonical_result_before_resolving_pending_row() -> 
         == "local-1"
     )
     assert events == ["canonical", "pending"]
+
+
+def test_cancel_working_transitions_only_non_terminal_rows() -> None:
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from lib_application.db.models import Base, PendingOrder
+
+    db = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(db)
+    sessions = sessionmaker(db, expire_on_commit=False)
+    now = datetime.now(tz=UTC).replace(tzinfo=None)
+
+    def _row(order_id: str, status: str) -> PendingOrder:
+        return PendingOrder(
+            order_id=order_id,
+            client_order_id=f"{order_id}:client",
+            user_id="user-1",
+            signal_id="sig-1",
+            instr_id=1,
+            broker_account_id=101,
+            symbol="BTC-USDC",
+            settlement_currency="USD",
+            side="SELL",
+            order_type="bracket",
+            quantity=Decimal("1"),
+            purpose="bracket",
+            reduce_only=True,
+            execution_mode="paper",
+            broker="paper",
+            broker_environment="paper",
+            status=status,
+            broker_order_id=f"{order_id}:broker",
+            strategy_id="swing_high_low_pmo_v1",
+            created_at=now,
+        )
+
+    with sessions() as session:
+        session.add_all([_row("working-1", "working"), _row("filled-1", "filled")])
+        session.commit()
+    repo = PendingOrderRepository(sessions)
+
+    assert repo.cancel_working("working-1:broker", reason="Superseded by close") is True
+    assert repo.cancel_working("filled-1", reason="Superseded by close") is False
+    assert repo.cancel_working("missing", reason="Superseded by close") is False
+
+    with sessions() as session:
+        cancelled = session.get(PendingOrder, "working-1")
+        assert cancelled.status == "cancelled"
+        assert cancelled.error_message == "Superseded by close"
+        assert cancelled.resolved_at is not None
+        assert session.get(PendingOrder, "filled-1").status == "filled"
