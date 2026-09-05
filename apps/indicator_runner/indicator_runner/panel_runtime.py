@@ -55,7 +55,7 @@ class SynchronizedPanelRuntime:
         signal_buffer: BufferedSignalEmitter,
         runtime_store: StrategyRuntimeStore,
         processing_lock: threading.RLock,
-        relay_once: Callable[[], tuple[int, int]],
+        wake_delivery: Callable[[], None],
         mark_transition_failure: FailureCallback,
         clock: Callable[[], datetime],
     ) -> None:
@@ -65,7 +65,7 @@ class SynchronizedPanelRuntime:
         self._signal_buffer = signal_buffer
         self._runtime_store = runtime_store
         self._processing_lock = processing_lock
-        self._relay_once = relay_once
+        self._wake_delivery = wake_delivery
         self._mark_transition_failure = mark_transition_failure
         self._clock = clock
         self._started = False
@@ -278,7 +278,7 @@ class SynchronizedPanelRuntime:
                     self._mark_transition_failure(exc, decision_key)
                 raise
             self._signal_buffer.clear()
-            self._relay_once()
+            self._wake_delivery()
             return True
 
     def _load_registered_input(self, input_payload: Mapping[str, Any]) -> object:

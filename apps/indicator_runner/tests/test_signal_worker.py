@@ -252,6 +252,7 @@ def _build_worker(
     catchup_batch_size: int = 5000,
     clock: Callable[[], datetime] | None = None,
     delivery_emitter: SignalEmitter | None = None,
+    delivery_loop: Any | None = None,
 ) -> SignalWorker:
     """Construct a durable worker with no DSN (no LISTEN thread).
 
@@ -294,6 +295,7 @@ def _build_worker(
             worker_id="test-worker",
             strategy_id=strategy.strategy_id,
         ),
+        delivery_loop=delivery_loop,
     )
 
 
@@ -1269,6 +1271,8 @@ def test_main_returns_nonzero_for_listener_delivery_failure(
         _listener_thread = _AliveThread()
         _dsn = "postgresql://listener"
         catchup_floor_seconds = 30
+        delivery_alive = True
+        delivery_idle_interval_seconds = 1.0
         failed = True
         rebuild_required = False
         terminal_error = httpx.ConnectError("scoring unavailable")
@@ -1328,3 +1332,86 @@ def test_executable_entrypoint_requires_owner_before_starting_worker(
     monkeypatch.setattr(worker, "start", refuse_unfenced_start)
     with pytest.raises(DeploymentOwnerError, match="active deployment owner"):
         signal_worker_module.main(["--strategy-path", str(tmp_path)])
+
+
+class _ObservingStrategy(PureSignalStrategy):
+    def __init__(self) -> None:
+        super().__init__(
+            strategy_id="delivery_wiring_probe",
+            strategy_type="indicator",
+            config={"strategy_version": "1.0.0"},
+        )
+
+    def initialize(self) -> None:
+        return None
+
+    def on_data(self, state: MarketState) -> None:
+        return None
+
+
+class _FakeDeliveryLoop:
+    idle_interval_seconds = 5.0
+
+    def __init__(self) -> None:
+        self.wakes = 0
+        self.started = False
+        self.stopped_with: float | None = None
+        self.alive = False
+        self.failure_handler: Any = None
+
+    def bind_failure_handler(self, handler: Any) -> None:
+        self.failure_handler = handler
+
+    def start(self) -> None:
+        self.started = True
+        self.alive = True
+
+    def wake(self) -> None:
+        self.wakes += 1
+
+    def stop(self, *, timeout: float) -> None:
+        self.stopped_with = timeout
+        self.alive = False
+
+
+def test_worker_wakes_an_injected_delivery_loop_instead_of_delivering_inline(
+    session_factory: sessionmaker,
+) -> None:
+    # start() bootstraps the configured universe and fails closed on an unknown
+    # instrument, so the default BTCUSD row must exist even with no bars.
+    _seed_instrument(session_factory)
+    loop = _FakeDeliveryLoop()
+    worker = _build_worker(session_factory, _ObservingStrategy(), delivery_loop=loop)
+
+    worker.start()
+    assert loop.started is True
+    assert loop.wakes == 1  # start() hands the committed backlog to the loop
+    assert loop.failure_handler is not None
+    assert worker.delivery_alive is True
+    assert worker.delivery_idle_interval_seconds == 5.0
+
+    worker.deliver_after_commit()
+    assert loop.wakes == 2
+
+    worker.stop()
+    assert loop.stopped_with is not None
+    assert loop.stopped_with >= 10.0
+    assert worker.delivery_alive is False
+
+
+def test_worker_without_delivery_loop_delivers_inline(session_factory: sessionmaker) -> None:
+    worker = _build_worker(session_factory, _ObservingStrategy())
+    assert worker.delivery_alive is True
+    assert worker.delivery_idle_interval_seconds == 1.0
+    assert worker.deliver_after_commit() is None  # runs relay_once synchronously
+
+
+def test_delivery_failure_marks_the_worker_failed(session_factory: sessionmaker) -> None:
+    _seed_instrument(session_factory)
+    loop = _FakeDeliveryLoop()
+    worker = _build_worker(session_factory, _ObservingStrategy(), delivery_loop=loop)
+    worker.start()
+    loop.failure_handler(RuntimeError("relay database gone"))
+    assert worker.failed is True
+    assert isinstance(worker.terminal_error, RuntimeError)
+    worker.stop()
