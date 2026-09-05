@@ -49,7 +49,6 @@ from ._signal_validation import (
 from .dispatcher import DispatchProviderContexts, ExecutionDispatcher
 from .engine import ScoreEngine, signal_from_record
 from .models import ScoreRecord
-from .pipeline_events import enqueue_scoring_pipeline_events
 from .schemas import (
     SIGNAL_SCHEMA_VERSION,
     VALID_STRATEGY_TYPES,
@@ -203,19 +202,6 @@ def create_app(  # noqa: PLR0915
         # Single source of truth for record->Signal reconstruction (shared with
         # the cross-strategy ensemble gather). Returns None for a malformed row.
         return signal_from_record(recent_signals[0])
-
-    def _emit_pipeline_events(
-        *,
-        signal: Signal,
-        score: ScoreRecord,
-        queued_users: list[str] | None = None,
-    ) -> None:
-        enqueue_scoring_pipeline_events(
-            store=engine.store,
-            signal=signal,
-            score=score,
-            queued_users=queued_users,
-        )
 
     async def _resolve_dispatch_provider_contexts(
         signal: Signal,
@@ -515,8 +501,7 @@ def create_app(  # noqa: PLR0915
                 _record_scored(sig, _t0)
                 # Dispatch the signal just ingested. A latest-for-symbol lookup can
                 # select another strategy's concurrent signal and lose this decision.
-                queued_users = _dispatch_if_configured(sig, score, sector, provider_contexts)
-                _emit_pipeline_events(signal=sig, score=score, queued_users=queued_users)
+                _dispatch_if_configured(sig, score, sector, provider_contexts)
             return score.to_dict()
 
         return await asyncio.to_thread(_run_ingest_unit)

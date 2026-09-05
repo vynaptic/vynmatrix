@@ -1275,6 +1275,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Modify: `apps/scoring_engine/scoring_engine/api.py` (import line 52, `_emit_pipeline_events` lines 207-219, call line 519)
 - Modify: `apps/scoring_engine/scoring_engine/services/rebalance_service.py` (import line 38, loop lines 231-237)
 - Modify: `apps/scoring_engine/tests/test_rebalance_ingestion.py` (lines ~466 and ~513)
+- Modify: `apps/scoring_engine/tests/test_ingest_dispatch_signal.py` (the `signals.ingested` outbox lookup, ~lines 99-107)
 
 - [ ] **Step 1: Update the tests first**
 
@@ -1285,7 +1286,9 @@ In `apps/scoring_engine/tests/test_rebalance_ingestion.py`, replace the block th
 ```
 Apply the same replacement at the second occurrence (~line 513). Keep every other assertion in those tests.
 
-Run: `python -m pytest -q -p no:cacheprovider apps/scoring_engine/tests/test_rebalance_ingestion.py`
+In `apps/scoring_engine/tests/test_ingest_dispatch_signal.py`, the `session.query(app_models.OutboxEvent).filter_by(event_key=f"canonical-signal:{dispatched.signal_id}")` lookup ends in `.one()` and its result is asserted as `signal_event.payload["canonical_signal_db_id"]`. Change the lookup to `.count()` bound to `retired_events`, keep `assert dispatched.metadata["canonical_signal_id"] == canonical.signal_id`, and replace the payload assertion with `assert retired_events == 0` (same zero-row pattern as above).
+
+Run: `python -m pytest -q -p no:cacheprovider apps/scoring_engine/tests/test_rebalance_ingestion.py apps/scoring_engine/tests/test_ingest_dispatch_signal.py`
 Expected: the edited tests fail because the producers still enqueue.
 
 - [ ] **Step 2: Remove the producers**
@@ -1311,7 +1314,7 @@ Expected: all pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add -A apps/scoring_engine/scoring_engine apps/scoring_engine/tests/test_rebalance_ingestion.py
+git add -A apps/scoring_engine/scoring_engine apps/scoring_engine/tests/test_rebalance_ingestion.py apps/scoring_engine/tests/test_ingest_dispatch_signal.py
 git commit -m "refactor(scoring): stop enqueuing signals.ingested and signals.scored
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
