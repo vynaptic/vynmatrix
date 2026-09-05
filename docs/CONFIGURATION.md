@@ -89,6 +89,26 @@ ready for selected-component progress. A management endpoint may be healthy
 while feeds, owner configuration, or execution authority keep the platform
 unready.
 
+Connection budget. Every strategy worker inherits a fixed pool of two
+connections with no overflow plus one raw LISTEN connection; the indicator
+supervisor uses the same pool. Other children keep DB_POOL_SIZE plus
+DB_MAX_OVERFLOW (five by default). The configured allowance is therefore
+3 x strategies + 2 + 5 x other children + 1 for the scoring notification
+listener: twenty strategies with backend, scoring, execution, feedback,
+market-data and fx as the six other children reach 93 of PostgreSQL's default
+max_connections of 100 (three are reserved for the superuser). Beyond that,
+raise max_connections through a command on the postgres service in
+docker/docker-compose.stack.yml, which runs the image default today; each extra
+strategy adds three and each optional equity or calendar worker adds five.
+
+Delivery cadence. SCORING_OUTBOX_NOTIFY_ENABLED (default true) wakes the
+scoring relay on the outbox_events notification while SCORING_OUTBOX_POLL_SEC
+remains the recovery poll. SIGNAL_RELAY_IDLE_INTERVAL_SEC (default 5) is the
+recovery cadence of each strategy worker's delivery loop; committed bars wake
+the loop directly. The relay publishes only execution.commands and
+execution.rebalance.commands; the former signals.ingested, signals.scored,
+execution.results and feedback.ready topics were retired with their producers.
+
 Readiness fails on stale selected strategy or outbox work, dead-lettered
 execution commands, unknown broker submissions, incomplete account
 reconciliation, stale required FX, or exhausted bounded database resources.

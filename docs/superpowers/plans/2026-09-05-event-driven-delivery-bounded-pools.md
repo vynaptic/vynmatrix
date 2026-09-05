@@ -1811,11 +1811,12 @@ connections with no overflow plus one raw LISTEN connection; the indicator
 supervisor uses the same pool. Other children keep DB_POOL_SIZE plus
 DB_MAX_OVERFLOW (five by default). The configured allowance is therefore
 3 x strategies + 2 + 5 x other children + 1 for the scoring notification
-listener: twenty strategies with the default six other children reach 93 of
-PostgreSQL's default max_connections of 100 (three are reserved for the
-superuser). Beyond that, raise max_connections through the postgres service
-command in docker/docker-compose.stack.yml; each extra strategy adds three and
-each optional equity or calendar worker adds five.
+listener: twenty strategies with backend, scoring, execution, feedback,
+market-data and fx as the six other children reach 93 of PostgreSQL's default
+max_connections of 100 (three are reserved for the superuser). Beyond that,
+raise max_connections through the postgres service command in
+docker/docker-compose.stack.yml; each extra strategy adds three and each
+optional equity or calendar worker adds five.
 
 Delivery cadence. SCORING_OUTBOX_NOTIFY_ENABLED (default true) wakes the
 scoring relay on the outbox_events notification while SCORING_OUTBOX_POLL_SEC
@@ -2484,3 +2485,7 @@ EOF
 gh pr checks --watch
 ```
 Expected: `ci-gate` succeeds. If it fails, read the failing job with `gh run view --log-failed`, fix on the branch, commit, push, and re-watch. Merging is the owner's decision; report the PR URL and check state.
+
+---
+
+Implementation note: Task 9 shortened the revision id to `0105_retire_observational_topics` because `alembic_version` is `varchar(32)` (the file keeps its longer name), and Task 4 kept the audit baseline `BARE_EXCEPT_BASELINE = 42` by narrowing the delivery-loop catch to `(SQLAlchemyError, OSError, RuntimeError, ValueError, TypeError)` instead of `Exception`.
