@@ -703,3 +703,60 @@ async def _assert_malformed_order_is_isolated_and_retains_durable_failure() -> N
         assert healthy.status == "filled"
         assert len(fills) == 1
     assert worker.is_healthy() is False
+
+
+def test_reduce_only_order_without_position_is_cancelled_durably() -> None:
+    asyncio.run(_assert_reduce_only_order_without_position_is_cancelled_durably())
+
+
+async def _assert_reduce_only_order_without_position_is_cancelled_durably() -> None:
+    from lib_application.db.models import Order
+
+    sessions, _broker, _worker, canonical_order_id = await _runtime()
+    # The protected long was closed elsewhere: after a restart the rehydrated
+    # paper book is flat while the bracket row is still working.
+    flat_broker = PaperBroker(
+        account_id="101",
+        starting_balance=Decimal("250000"),
+        available_cash=Decimal("250000"),
+        currency="USD",
+        slippage_pct=0,
+        commission_pct=0,
+    )
+    engine = _Engine(flat_broker, sessions)
+    worker = PaperOrderLifecycleWorker(
+        engine=engine,
+        session_factory=sessions,
+        max_volume_participation=Decimal("1"),
+    )
+    with sessions() as session:
+        session.add(
+            InstrumentPrice(
+                price_id=9001,
+                instr_id=1,
+                ts=_BAR_TS.replace(tzinfo=None),
+                timeframe="1m",
+                open=Decimal("118000"),
+                high=Decimal("119000"),
+                low=Decimal("116500"),
+                close=Decimal("118400"),
+                volume=Decimal("8"),
+                source="coinbase_live",
+                content_revision=1,
+            )
+        )
+        session.commit()
+
+    assert await worker.process_once() == 0
+
+    with sessions() as session:
+        pending = session.get(PendingOrder, "local-bracket-1")
+        assert pending.status == "cancelled"
+        assert pending.resolved_at is not None
+        assert "no long position" in pending.error_message
+        assert session.get(Order, canonical_order_id).state == "canceled"
+        assert session.query(Execution).filter_by(order_id=canonical_order_id).count() == 0
+    assert engine.paper_order_lifecycle_health["healthy"] is True
+    assert engine.paper_order_lifecycle_health["failed_orders"] == 0
+    # A later bar never revisits the cancelled row.
+    assert await worker.process_once() == 0

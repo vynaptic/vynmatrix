@@ -312,12 +312,19 @@ class OrderExecutor:
                     symbol,
                 )
                 continue
-            if cancelled:
+            durably_cancelled = self._cancel_durable_resting_order(
+                broker,
+                str(key),
+                symbol=symbol,
+                cancelled_at_broker=cancelled,
+            )
+            if cancelled or durably_cancelled:
                 cache.pop(key, None)
                 logger.info(
-                    "Cancelled resting order %s for %s before close",
+                    "Cancelled resting order %s for %s before close (durable=%s)",
                     broker_order_id,
                     symbol,
+                    durably_cancelled,
                 )
             else:
                 logger.warning(
@@ -326,6 +333,36 @@ class OrderExecutor:
                     broker_order_id,
                     symbol,
                 )
+
+    def _cancel_durable_resting_order(
+        self,
+        broker: BrokerAdapter,
+        order_id: str,
+        *,
+        symbol: str,
+        cancelled_at_broker: bool,
+    ) -> bool:
+        """Close the durable pending row of a resting order superseded by a close.
+
+        Durable paper resting orders are owned by the paper-order lifecycle, so
+        the paper broker's in-memory book (empty after a restart) is never the
+        authority for them. A live broker's row is only closed once the venue
+        confirmed the cancel; otherwise reconciliation resolves it.
+        """
+        if not cancelled_at_broker and not isinstance(broker, PaperBroker):
+            return False
+        cancel = getattr(self._tracker, "cancel_working_order", None)
+        if not callable(cancel):
+            return False
+        try:
+            return bool(cancel(order_id, reason=f"Superseded by close for {symbol}"))
+        except PendingOrderPersistenceError:
+            logger.exception(
+                "Failed to durably cancel resting order %s for %s before close",
+                order_id,
+                symbol,
+            )
+            return False
 
     async def _submit_intent(  # noqa: PLR0911, PLR0912, PLR0915
         self,

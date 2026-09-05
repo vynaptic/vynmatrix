@@ -230,7 +230,7 @@ def _get_fx_history_days() -> int:
         "FX_RATE_HISTORY_DAYS",
         default=90,
         min_value=1,
-        max_value=90,
+        max_value=366,
         logger=logger,
     )
 

@@ -138,3 +138,21 @@ def test_rejects_noncanonical_stablecoin_leg() -> None:
             quote_currencies={"USD"},
             coinbase_product="USDC-USD",
         )
+
+
+def test_history_days_allows_one_year_of_coinbase_backfill_and_rejects_more() -> None:
+    def _build(days: int) -> FXRateIngestor:
+        return FXRateIngestor(
+            session_factory=lambda: None,
+            quote_currencies={"USD"},
+            history_days=days,
+            coinbase_product="USDC-EUR",
+            ecb_client=_ECBClient(),  # type: ignore[arg-type]
+            coinbase_client=_CoinbaseClient(),  # type: ignore[arg-type]
+        )
+
+    assert _build(366)._history_days == 366
+    with pytest.raises(ValueError, match="between 1 and 366"):
+        _build(367)
+    with pytest.raises(ValueError, match="between 1 and 366"):
+        _build(0)

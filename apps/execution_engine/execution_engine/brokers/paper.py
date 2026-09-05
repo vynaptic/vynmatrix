@@ -54,6 +54,14 @@ from lib_common.logging import get_logger
 logger = get_logger(__name__)
 
 
+class ReduceOnlyPositionUnavailableError(ValueError):
+    """A reduce-only resting order no longer has a position to reduce.
+
+    The durable lifecycle treats this as a terminal cancellation rather than a
+    retryable fill failure: a protective order for a flat book protects nothing.
+    """
+
+
 @dataclass(frozen=True)
 class PaperFillPlan:
     """Validated local-paper economics awaiting canonical ledger commit."""
@@ -300,7 +308,7 @@ class PaperBroker(BrokerAdapter):
             raise ValueError(msg)
         requested_quantity, position_error = self._effective_resting_quantity(intent)
         if position_error:
-            raise ValueError(position_error)
+            raise ReduceOnlyPositionUnavailableError(position_error)
         normalized_quantity = min(normalized_quantity, Decimal(str(requested_quantity)))
         slip = Decimal(str(self._get_slippage_pct(intent.symbol)))
         fill_price = normalized_reference

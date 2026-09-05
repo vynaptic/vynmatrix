@@ -33,7 +33,7 @@ from .account_execution_serializer import (
     AccountExecutionBusyError,
     AccountExecutionSerializer,
 )
-from .brokers.paper import PaperBroker, PaperFillPlan
+from .brokers.paper import PaperBroker, PaperFillPlan, ReduceOnlyPositionUnavailableError
 from .canonical_execution_store import CanonicalExecutionStore
 from .execution_result import ExecutionResult
 from .models import OrderCurrencyContext, OrderIntent
@@ -566,17 +566,28 @@ class PaperOrderLifecycleWorker:
                 "market_data_timeframe": candle.timeframe,
                 "trigger_reason": decision.reason,
             }
-            plan = broker.prepare_resting_fill(
-                intent,
-                broker_order_id=broker_order_id,
-                trade_id=trade_id,
-                quantity=fill_quantity,
-                reference_price=decision.reference_price,
-                timestamp=candle.ts,
-                source_provenance=provenance,
-                apply_market_slippage=decision.apply_market_slippage,
-                is_terminal=terminal,
-            )
+            try:
+                plan = broker.prepare_resting_fill(
+                    intent,
+                    broker_order_id=broker_order_id,
+                    trade_id=trade_id,
+                    quantity=fill_quantity,
+                    reference_price=decision.reference_price,
+                    timestamp=candle.ts,
+                    source_provenance=provenance,
+                    apply_market_slippage=decision.apply_market_slippage,
+                    is_terminal=terminal,
+                )
+            except ReduceOnlyPositionUnavailableError as exc:
+                self._cancel_unprotectable_order(
+                    session,
+                    pending,
+                    canonical_order,
+                    candle,
+                    reason=str(exc),
+                )
+                session.commit()
+                return False
             inserted_execution_ids = self._canonical_store.apply_broker_result_on_session(
                 session,
                 order_id=int(canonical_order.order_id),
@@ -667,8 +678,42 @@ class PaperOrderLifecycleWorker:
             },
         }
 
+    def _cancel_unprotectable_order(
+        self,
+        session: Any,
+        pending: PendingOrder,
+        canonical_order: Order,
+        candle: CommittedCandle,
+        *,
+        reason: str,
+    ) -> None:
+        """Durably cancel a reduce-only resting order whose position is gone.
+
+        The position it protected was already closed by another fill (a flatten
+        or an OCO peer), so this order can never fill; leaving it working would
+        replay the same failure on every later committed bar. Its OCO siblings
+        protect the same vanished position and are cancelled with it.
+        """
+        resolved_at = candle.ts.replace(tzinfo=None)
+        pending.status = "cancelled"
+        pending.resolved_at = resolved_at
+        pending.error_message = f"Cancelled: {reason}"
+        if canonical_order.state not in {"filled", "rejected", "canceled"}:
+            canonical_order.state = "canceled"
+            canonical_order.last_update = resolved_at
+        if pending.oco_group_id:
+            self._cancel_oco_siblings(session, pending, reason=pending.error_message)
+        logger.warning(
+            "Durable paper order cancelled: its position no longer exists",
+            order_id=pending.order_id,
+            symbol=pending.symbol,
+            reason=reason,
+        )
+
     @staticmethod
-    def _cancel_oco_siblings(session: Any, filled: PendingOrder) -> None:
+    def _cancel_oco_siblings(
+        session: Any, filled: PendingOrder, *, reason: str | None = None
+    ) -> None:
         siblings = (
             session.query(PendingOrder)
             .filter(
@@ -682,7 +727,7 @@ class PaperOrderLifecycleWorker:
         for sibling in siblings:
             sibling.status = "cancelled"
             sibling.resolved_at = filled.resolved_at
-            sibling.error_message = f"OCO peer {filled.order_id} filled"
+            sibling.error_message = reason or f"OCO peer {filled.order_id} filled"
             if sibling.canonical_order_id is not None:
                 order = session.get(Order, sibling.canonical_order_id)
                 if order is not None and order.state not in {"filled", "rejected", "canceled"}:

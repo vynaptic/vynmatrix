@@ -330,7 +330,8 @@ def test_feed_outage_is_visible_without_breaking_management_liveness() -> None:
     )
     supervisor = module.PlatformSupervisor([spec])
     supervisor.start()
-    server = module.create_health_server(supervisor, host="127.0.0.1", port=0)
+    server = module.create_health_server(supervisor, port=0)
+    assert server.server_address[0] == "127.0.0.1"
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     base = f"http://127.0.0.1:{server.server_port}"
@@ -474,3 +475,53 @@ def test_indicator_metrics_generations_do_not_mix_after_a_restart(tmp_path: Path
     assert len(paths) == 2
     assert paths[0] != paths[1]
     assert all(not Path(path).exists() for path in paths)
+
+
+def test_component_metrics_proxy_forwards_child_service_key() -> None:
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.request import urlopen
+
+    class KeyedHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path == "/metrics" and self.headers.get("X-API-Key") != "feed-secret":
+                self.send_response(401)
+                self.end_headers()
+                self.wfile.write(b"Invalid or missing API key")
+                return
+            payload = (
+                b"feed_fresh 1\n" if self.path == "/metrics" else b'{"ready":true,"checks":{}}'
+            )
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, _format: str, *_args: Any) -> None:
+            pass
+
+    feed = ThreadingHTTPServer(("127.0.0.1", 0), KeyedHandler)
+    feed_thread = threading.Thread(target=feed.serve_forever, daemon=True)
+    feed_thread.start()
+    module = _module("run_platform")
+    spec = _module().ProcessSpec(
+        name="feed",
+        command=(sys.executable, "-c", "import time;time.sleep(30)"),
+        environment={"API_KEY": "feed-secret"},
+        port=feed.server_port,
+    )
+    supervisor = module.PlatformSupervisor([spec])
+    supervisor.start()
+    server = module.create_health_server(supervisor, host="127.0.0.1", port=0)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with urlopen(f"{base}/metrics/feed") as response:
+            assert response.read() == b"feed_fresh 1\n"
+    finally:
+        supervisor.stop(timeout=0.2)
+        for endpoint in (server, feed):
+            endpoint.shutdown()
+            endpoint.server_close()
+        server_thread.join(timeout=1)
+        feed_thread.join(timeout=1)
