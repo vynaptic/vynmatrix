@@ -114,3 +114,55 @@ def test_wake_during_a_drain_is_not_lost() -> None:
         assert _wait(lambda: len(calls) >= 2)
     finally:
         loop.stop(timeout=1.0)
+
+
+def test_stop_during_an_active_drain_ends_between_passes() -> None:
+    calls: list[float] = []
+
+    def _slow_success() -> tuple[int, int]:
+        calls.append(time.monotonic())
+        time.sleep(0.05)
+        return (1, 0)  # would drain forever without a stop check
+
+    loop = SignalDeliveryLoop(run_once=_slow_success, worker_id="w", idle_interval_seconds=60.0)
+    loop.start()
+    loop.wake()
+    assert _wait(lambda: len(calls) >= 2)
+    started = time.monotonic()
+    assert loop.stop(timeout=2.0) is True
+    assert time.monotonic() - started < 1.0  # one in-flight pass, not the 200-pass cap
+    assert not loop.alive
+    settled = len(calls)
+    time.sleep(0.2)
+    assert len(calls) == settled  # nothing ran after stop() returned
+
+
+def test_stop_reports_a_pass_that_outlives_its_budget() -> None:
+    gate = threading.Event()
+    entered = threading.Event()
+
+    def _hung_post() -> tuple[int, int]:
+        entered.set()
+        gate.wait(5.0)
+        return (0, 0)
+
+    loop = SignalDeliveryLoop(run_once=_hung_post, worker_id="w", idle_interval_seconds=60.0)
+    loop.start()
+    try:
+        loop.wake()
+        assert entered.wait(2.0)
+        assert loop.stop(timeout=0.2) is False
+        assert loop.alive  # the caller knows a pass is still in flight
+    finally:
+        gate.set()
+        assert _wait(lambda: not loop.alive)
+
+
+def test_request_stop_never_blocks_and_ends_a_drain_before_its_first_pass() -> None:
+    relay = _Relay([(1, 0), (1, 0)])
+    loop = SignalDeliveryLoop(run_once=relay.run_once, worker_id="w", idle_interval_seconds=60.0)
+    loop.request_stop()
+    assert loop.stop_requested
+    assert loop.drain() == (0, 0)
+    assert relay.calls == 0
+    assert loop.stop(timeout=0.1) is True  # never started: nothing to join
