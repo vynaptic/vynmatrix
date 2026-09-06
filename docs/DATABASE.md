@@ -98,13 +98,13 @@ cannot change after relevant activity. Never place a secret in a command line.
 
 ## Existing databases, migrations, and rollback
 
-The current linear Alembic head is 0105_retire_observational_topics. Verify the
+The current linear Alembic head is 0106_retire_topic_dead_letters. Verify the
 revision from scripts/db/alembic/versions rather than copying a transient
 command result. Revisions 0099 through 0104 introduce single-owner controls,
 safe reference registration, control-plane guards, commercial-tenancy removal,
 and a guarded Saxo capability correction; 0105 marks the undelivered rows of
-the retired observational outbox topics published and its downgrade is a
-deliberate no-op.
+the retired observational outbox topics published, 0106 does the same for
+their dead-lettered rows, and both downgrades are deliberate no-ops.
 
 For an existing database, configure its actual maintenance authority and use:
 
