@@ -49,9 +49,12 @@ from .signal_worker import (
 logger = get_logger(__name__)
 
 # Every worker gets this long to stop before it is killed. It exceeds the
-# worker's own stop budget so a graceful stop completes inside it, and the
-# whole fleet shares one deadline instead of spending it per worker in turn.
-_STRATEGY_STOP_GRACE_SECONDS = WORKER_STOP_BUDGET_SECONDS + 5.0
+# worker's own stop budget so a graceful stop completes inside it, the whole
+# fleet shares one deadline instead of spending it per worker in turn, and it
+# stays inside the platform supervisor's smallest stage share (55 s split over
+# the three stop orders of the combined group, about 18 s), so the runner is
+# not SIGKILLed while it is still waiting for its workers.
+_STRATEGY_STOP_GRACE_SECONDS = WORKER_STOP_BUDGET_SECONDS + 3.0
 
 _MAX_VALIDATION_ERRORS_SHOWN = 5
 DEV_DISCOVERY_ENV = "INDICATOR_ALLOW_DEV_DISCOVERY"

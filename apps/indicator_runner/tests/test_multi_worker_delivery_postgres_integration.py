@@ -516,6 +516,10 @@ def test_twenty_workers_wake_together_with_bounded_connections(  # noqa: PLR0915
             f"delivery latency s: p50={statistics.median(first_wave):.3f} "
             f"max={max(first_wave):.3f} n={len(first_wave)}"
         )
+        # The stub sees each POST before its worker fences the row as published.
+        _wait_until(
+            lambda: _count(control, "published") == _WORKERS, what="first wave fenced as published"
+        )
         with control() as session:
             statuses = session.execute(
                 text(

@@ -78,16 +78,18 @@ logger = get_logger(__name__)
 
 SessionFactory = Callable[[], Any]
 HISTORICAL_REBUILD_EXIT_CODE = 75
-# Shutdown budget. The listener loop re-checks its stop flag every second; the
-# delivery loop ends between passes, so its join covers one in-flight pass —
-# normally milliseconds, at worst one HTTP attempt (10s timeout) plus retry
-# slack. A pass that outlives the join (an unresponsive scoring endpoint can
-# hold a record for ~32s of retries) is abandoned: its claimed outbox row is
-# reclaimed after the lease expires and scoring deduplicates on
-# external_signal_id. The process manager grants every worker more than
-# WORKER_STOP_BUDGET_SECONDS before it kills the process.
-_LISTENER_STOP_TIMEOUT_SECONDS = 5.0
-_DELIVERY_STOP_TIMEOUT_SECONDS = 15.0
+# Shutdown budget. Catch-up returns between bars once a stop is requested, the
+# listener loop re-checks its stop flag every second, and the delivery loop
+# ends between passes, so its join covers one in-flight pass — normally
+# milliseconds, at worst one HTTP attempt (10s timeout) plus slack. A pass that
+# outlives the join (an unresponsive scoring endpoint can hold a record for
+# ~32s of retries) is abandoned: its claimed outbox row is reclaimed after the
+# lease expires and scoring deduplicates on external_signal_id. The process
+# manager grants every worker more than WORKER_STOP_BUDGET_SECONDS, and that
+# grace in turn fits the platform supervisor's smallest stage share; see
+# process_manager._STRATEGY_STOP_GRACE_SECONDS.
+_LISTENER_STOP_TIMEOUT_SECONDS = 2.0
+_DELIVERY_STOP_TIMEOUT_SECONDS = 12.0
 WORKER_STOP_BUDGET_SECONDS = _LISTENER_STOP_TIMEOUT_SECONDS + _DELIVERY_STOP_TIMEOUT_SECONDS
 # The main loop re-checks thread liveness and the catch-up floor on this tick;
 # it is independent of the delivery loop's idle interval by design.
@@ -848,8 +850,10 @@ class SignalWorker:
                 )
                 # A different symbol may have exhausted delivery retries while
                 # this thread waited for the shared strategy lock. Never
-                # acknowledge work after terminal state.
-                if self.failed:
+                # acknowledge work after terminal state. A requested stop also
+                # ends here: every bar is acknowledged individually, so the
+                # next start resumes from the watermark.
+                if self.failed or self._stop_event.is_set():
                     return
         except HistoricalRebuildRequiredError as exc:
             self._mark_rebuild_required(exc)
@@ -981,6 +985,8 @@ class SignalWorker:
             self._panel_runtime.poll_input_revisions()
             return
         for symbol in self._symbols:
+            if self._stop_event.is_set():
+                return
             try:
                 self._catchup_symbol(symbol)
             except (SQLAlchemyError, OSError):

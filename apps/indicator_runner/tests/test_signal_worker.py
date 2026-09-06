@@ -782,6 +782,38 @@ def test_catchup_all_processes_new_bars_without_notify(session_factory: Any) -> 
     assert delta[0].timestamp == new_ts[0].replace(tzinfo=UTC)
 
 
+def test_catchup_returns_between_bars_once_a_stop_is_requested(session_factory: Any) -> None:
+    """A requested stop ends catch-up after the current bar, which is already
+    acknowledged, so the stop budget starts promptly and a restart resumes there."""
+    instr_id = _seed_instrument(session_factory)
+    base = datetime(2026, 5, 4, 12, 0, 0, tzinfo=UTC)
+    _seed_bars(session_factory, instr_id=instr_id, count=2, start=base)
+
+    class _StopOnFirstNewBar(_RecordingStrategy):
+        worker: Any = None
+
+        def on_data(self, state: MarketState) -> None:
+            super().on_data(state)
+            if self.worker is not None:
+                self.worker.request_stop()
+
+    strategy = _StopOnFirstNewBar()
+    worker = _build_worker(session_factory, strategy)
+    worker.start()
+    bootstrap_count = len(strategy.on_data_calls)
+    new_ts = _seed_bars(
+        session_factory, instr_id=instr_id, count=3, start=base + timedelta(minutes=2)
+    )
+    strategy.worker = worker
+
+    worker.catchup_all()
+
+    delta = strategy.on_data_calls[bootstrap_count:]
+    assert [state.timestamp for state in delta] == [new_ts[0].replace(tzinfo=UTC)]
+    state = worker._watermark.get_state("BTCUSD", worker._timeframe)
+    assert state.last_ts.replace(tzinfo=UTC) == new_ts[0].replace(tzinfo=UTC)
+
+
 def test_catchup_is_memory_bounded_and_resumes_from_durable_checkpoint(
     session_factory: Any,
 ) -> None:
