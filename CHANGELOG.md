@@ -18,6 +18,22 @@ Git history.
   ECB reference history remains bounded by its official rolling 90-day feed.
 - Host-side `vmdev db bootstrap` now loads the checkout's `scripts` package
   reliably.
+- The scoring engine and the backend each hold one bounded database pool: the
+  scoring store no longer opens SQLAlchemy's default fifteen-connection pool
+  beside its session factory, and the backend's db secrets provider reuses the
+  backend's engine, so twenty strategies fit the documented 93-connection budget.
+- Strategy workers end their delivery loop between passes on stop, report a pass
+  that outlives the stop budget instead of disposing the engine silently, and
+  the indicator process manager grants the whole fleet one grace deadline that
+  covers that budget.
+- `vm_scoring_outbox_notify_listener_up` reads 1 only while PostgreSQL has
+  acknowledged the `LISTEN`, not while the listener thread is merely alive.
+- The supervisor rejects the `postgresql+psycopg2://` URL spelling for every
+  service role, and LISTEN connections normalize it when handed one directly.
+- The strategy worker's catch-up floor and liveness checks run on a fixed
+  one-second tick again; `SIGNAL_RELAY_IDLE_INTERVAL_SEC` no longer delays them.
+- Migration `0106` marks the dead-lettered rows of the retired outbox topics
+  published so they cannot fail soak acceptance.
 
 ### Changed
 

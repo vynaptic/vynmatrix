@@ -76,6 +76,14 @@ CONFIGURATION.md documents this formula and states that exceeding it requires ra
 `docker/docker-compose.stack.yml`. This spec adds no automatic checker; the existing
 `vm_database_pool_*` metrics remain the runtime signal.
 
+Correction (2026-09-06): the "5 each" row did not hold as implemented. The scoring
+store kept SQLAlchemy's default pool (five plus ten overflow) beside the
+five-connection session factory, and the backend's db secrets provider opened a
+second engine, so the configured allowance was 113. Both now share their process's
+single bounded engine and the table above is accurate again;
+[CONFIGURATION.md](../../CONFIGURATION.md) also records the execution engine's lazy
+extra pool for non-local brokers.
+
 ## 4. Scoring relay wake-up
 
 Both relay constructors in [main.py](../../../apps/scoring_engine/scoring_engine/main.py)
