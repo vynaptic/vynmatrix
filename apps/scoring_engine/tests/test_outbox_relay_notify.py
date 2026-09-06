@@ -39,6 +39,7 @@ class _FakeListener:
         self._callback = callback
         self.fire = threading.Event()
         self._stop = threading.Event()
+        self.listening = True  # PostgreSQL acknowledged LISTEN
         _FakeListener.instances.append(self)
 
     def run_forever(self) -> None:
@@ -192,3 +193,42 @@ def test_inline_relay_receives_notify_dsn(monkeypatch: pytest.MonkeyPatch) -> No
     assert captured["api_key"] == "execution-key"
     assert "publisher" not in captured
     assert "publish_topics" not in captured
+
+
+def test_listener_gauge_reports_acknowledged_listen_not_thread_liveness() -> None:
+    gauge = outbox_relay._NOTIFY_LISTENER_UP
+    if gauge is None:
+        pytest.skip("prometheus_client not installed")
+
+    class _Reconnecting:
+        """Alive thread, no registered LISTEN — the reconnect loop."""
+
+        def __init__(self) -> None:
+            self.listening = False
+
+    class _AliveThread:
+        def is_alive(self) -> bool:
+            return True
+
+    worker = OutboxRelayWorker(
+        store=InMemoryScoreStore(),
+        exec_engine_url="http://execution.test",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(_ok)),
+        notify_dsn="postgresql://listener",
+    )
+    listener = _Reconnecting()
+    worker._notify_listener = listener  # type: ignore[assignment]
+    worker._notify_thread = _AliveThread()  # type: ignore[assignment]
+
+    worker._refresh_notify_gauge()
+    assert gauge._value.get() == 0  # alive but reconnecting is not "up"
+
+    listener.listening = True
+    worker._refresh_notify_gauge()
+    assert gauge._value.get() == 1
+
+    worker._notify_listener = None
+    worker._notify_thread = None
+    worker._refresh_notify_gauge()
+    assert gauge._value.get() == 0
+    asyncio.run(worker.aclose())
