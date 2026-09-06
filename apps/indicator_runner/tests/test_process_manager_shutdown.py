@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,42 @@ def _runner_with(processes: list[_Process]) -> IndicatorRunner:
 
 def test_grace_covers_the_worker_stop_budget() -> None:
     assert process_manager._STRATEGY_STOP_GRACE_SECONDS > signal_worker.WORKER_STOP_BUDGET_SECONDS
+
+
+def test_grace_fits_inside_the_platform_supervisor_stage_share() -> None:
+    """scripts/run_platform.py splits its 55 s stop cap evenly across stop orders.
+
+    In the combined group every stage gets 55 s / <stop orders>, and the runner
+    is SIGKILLed at the end of its stage, so the fleet grace plus the runner's
+    own cleanup must fit inside that share.
+    """
+    platform_processes = importlib.import_module("scripts.platform_processes")
+    env = {
+        **{
+            f"{role}_DATABASE_URL": f"postgresql://vm_{login}_login:secret@postgres/db"
+            for role, login in (
+                ("BACKEND", "backend"),
+                ("SCORING", "scoring"),
+                ("EXECUTION", "execution"),
+                ("FEEDBACK", "feedback"),
+                ("MARKET_DATA", "market_data"),
+                ("INDICATOR", "indicator"),
+            )
+        },
+        "BACKEND_ADMIN_API_KEY": "backend-secret",
+        "SCORING_API_KEY": "scoring-secret",
+        "EXECUTION_API_KEY": "execution-secret",
+        "SCORING_ADMIN_API_KEY": "scoring-admin-secret",
+        "EXECUTION_ADMIN_API_KEY": "execution-admin-secret",
+        "FEEDBACK_API_KEY": "feedback-secret",
+        "MARKET_DATA_API_KEY": "market-data-secret",
+        "SECRETS_MASTER_KEYS": "encrypted-key-ring",
+    }
+    stages = len({spec.stop_order for spec in platform_processes.build_processes("all", env)})
+    supervisor_stop_cap_seconds = 55.0  # run_platform.PlatformSupervisor.stop(timeout=55.0)
+    assert (
+        supervisor_stop_cap_seconds / stages
+    ) >= process_manager._STRATEGY_STOP_GRACE_SECONDS + 1.0
 
 
 def test_shutdown_terminates_every_worker_before_waiting_on_any() -> None:
