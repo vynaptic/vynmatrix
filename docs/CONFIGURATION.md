@@ -91,15 +91,19 @@ unready.
 
 Connection budget. Every strategy worker inherits a fixed pool of two
 connections with no overflow plus one raw LISTEN connection; the indicator
-supervisor uses the same pool. Other children keep DB_POOL_SIZE plus
-DB_MAX_OVERFLOW (five by default). The configured allowance is therefore
-3 x strategies + 2 + 5 x other children + 1 for the scoring notification
-listener: twenty strategies with backend, scoring, execution, feedback,
-market-data and fx as the six other children reach 93 of PostgreSQL's default
-max_connections of 100 (three are reserved for the superuser). Beyond that,
-raise max_connections through a command on the postgres service in
-docker/docker-compose.stack.yml, which runs the image default today; each extra
-strategy adds three and each optional equity or calendar worker adds five.
+supervisor uses the same pool. Every other child holds exactly one pool of
+DB_POOL_SIZE plus DB_MAX_OVERFLOW (five by default): the scoring store, its
+providers and its relay share one engine, and the backend hands its session
+factory to the db secrets backend rather than letting it open a second engine.
+The configured allowance is therefore 3 x strategies + 2 + 5 x other children
++ 1 for the scoring notification listener: twenty strategies with backend,
+scoring, execution, feedback, market-data and fx as the six other children
+reach 93 of PostgreSQL's default max_connections of 100 (three are reserved
+for the superuser). Beyond that, raise max_connections through a command on
+the postgres service in docker/docker-compose.stack.yml, which runs the image
+default today; each extra strategy adds three and each optional equity or
+calendar worker adds five. Execution opens one more pool of five the first
+time it resolves a non-local broker, which the local paper stack never does.
 
 Delivery cadence. SCORING_OUTBOX_NOTIFY_ENABLED (default true) wakes the
 scoring relay on the outbox_events notification while SCORING_OUTBOX_POLL_SEC

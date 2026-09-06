@@ -23,7 +23,9 @@ logger = get_logger(__name__)
 def build_app() -> FastAPI:
     """Assemble the production app graph (session factory + secrets provider)."""
     session_factory = get_session_factory()
-    secrets_provider = create_secrets_provider()
+    # The db secrets backend otherwise builds its own engine, doubling the
+    # backend's pooled connections against the deployment budget.
+    secrets_provider = create_secrets_provider(session_factory=session_factory)
     return create_app(session_factory=session_factory, secrets_provider=secrets_provider)
 
 

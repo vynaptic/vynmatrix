@@ -14,9 +14,10 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI
 from sqlalchemy import text
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
-from lib_application.db.session import get_session_factory
+from lib_application.db.session import create_engine_for_env, dispose_engine, get_session_factory
 from lib_common.app import start_background_health_server
 from lib_common.config_validation import (
     RunMode,
@@ -61,6 +62,7 @@ class RuntimeState:
     dispatcher: ExecutionDispatcher | None = None
     relay_worker: OutboxRelayWorker | None = None
     relay_task: asyncio.Task[None] | None = None
+    db_engine: Engine | None = None
 
 
 _runtime = RuntimeState()
@@ -116,10 +118,12 @@ def _start_health_server(
     )
 
 
-def build_engine(config: ScoringEngineConfig) -> ScoreEngine:
+def build_engine(config: ScoringEngineConfig, *, db_engine: Engine | None = None) -> ScoreEngine:
+    """Build the scoring engine; ``db_engine`` shares one pool with the store."""
     store = AppScoreStore(
         config.database.url,
         bindings_cache_ttl_seconds=config.runtime.bindings_cache_ttl_seconds,
+        engine=db_engine,
     )
     weights = dict(config.scoring.score_weights or {})
     half_life = config.scoring.half_life_bars
@@ -449,6 +453,9 @@ async def cleanup_dispatcher() -> None:
         logger.info("Closing dispatcher")
         await _runtime.dispatcher.aclose()
         _runtime.dispatcher = None
+    if _runtime.db_engine is not None:
+        dispose_engine(_runtime.db_engine)
+        _runtime.db_engine = None
 
 
 def _make_lifespan(
@@ -563,16 +570,19 @@ def main() -> None:
 
     config = load_scoring_engine_config()
     db_url = config.database.url
-    engine = build_engine(config)
+    # One bounded engine serves the store, the providers and the relay, so the
+    # scoring child holds at most DB_POOL_SIZE + DB_MAX_OVERFLOW connections —
+    # the allowance the deployment connection budget assigns to it.
+    db_engine = create_engine_for_env(db_url=db_url)
+    _runtime.db_engine = db_engine
+    engine = build_engine(config, db_engine=db_engine)
     exec_url = config.execution_engine_url
     exec_engine_api_key = os.getenv("EXEC_ENGINE_API_KEY") or os.getenv("API_KEY")
     # The relay listens as the scoring login on the existing outbox_events
     # trigger; LISTEN needs no extra privilege. Polling stays as recovery.
     notify_dsn = db_url if config.runtime.relay.notify_enabled else None
 
-    # Canonical session factory — applies environment-aware pool sizing and
-    # ``pool_pre_ping`` semantics in one place.
-    session_factory = get_session_factory(db_url=db_url)
+    session_factory = get_session_factory(engine=db_engine)
 
     profile_provider = DBProfileProvider(session_factory)
     strat_cfg_provider = DBStrategyConfigProvider(session_factory)
@@ -600,15 +610,19 @@ def main() -> None:
                 "outbox_progress": _relay_ready(engine.store, config.runtime.relay),
             },
         )
-        asyncio.run(
-            _run_relay_worker(
-                engine.store,
-                exec_url,
-                relay_config=config.runtime.relay,
-                exec_engine_api_key=exec_engine_api_key,
-                notify_dsn=notify_dsn,
+        try:
+            asyncio.run(
+                _run_relay_worker(
+                    engine.store,
+                    exec_url,
+                    relay_config=config.runtime.relay,
+                    exec_engine_api_key=exec_engine_api_key,
+                    notify_dsn=notify_dsn,
+                )
             )
-        )
+        finally:
+            dispose_engine(db_engine)
+            _runtime.db_engine = None
         return
 
     # Create lifespan for proper shutdown handling

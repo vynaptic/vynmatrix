@@ -9,9 +9,11 @@ from types import ModuleType
 from typing import Any
 
 from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from lib_application.db.session import create_engine_for_env
 from lib_application.outbox import OutboxStore
 from lib_application.services.instrument_resolution import resolve_instrument
 from lib_common.logging import get_logger
@@ -56,24 +58,47 @@ app_models = _app_models_module
 # SQLAlchemy implementation for the app schema.
 
 
+def _build_store_engine(url: str) -> Engine:
+    """Return the store engine for ``url``.
+
+    PostgreSQL goes through the canonical helper so the pool is bounded by
+    ``DB_POOL_SIZE`` / ``DB_MAX_OVERFLOW`` and instrumented like every other
+    child. SQLAlchemy's bare default (five pooled plus ten overflow) let one
+    scoring process hold three times its documented connection allowance.
+    In-memory SQLite keeps one ``StaticPool`` connection so test rigs share
+    state across sessions; the canonical helper deliberately exposes no pool
+    class, which is why this branch stays here.
+    """
+    if url.startswith("sqlite"):
+        engine_kwargs: dict[str, Any] = {"future": True}
+        if ":memory:" in url:
+            engine_kwargs.update(
+                {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool}
+            )
+        return create_engine(url, **engine_kwargs)
+    return create_engine_for_env(db_url=url)
+
+
 class _StoreInfra(ScoreStore):
     """
     PostgreSQL-backed store using lib_application schema.
 
     Configure via DATABASE_URL (e.g., postgresql://user:pass@host:5432/dbname).
+    Pass ``engine`` to share one bounded pool with the rest of the process
+    instead of opening a second one for the store.
     """
 
-    def __init__(self, url: str, *, bindings_cache_ttl_seconds: float = 5.0) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        bindings_cache_ttl_seconds: float = 5.0,
+        engine: Engine | None = None,
+    ) -> None:
         if not _APP_MODELS_AVAILABLE or app_models is None:
             msg = "lib_application models are required for AppScoreStore"
             raise RuntimeError(msg)
-        engine_kwargs: dict[str, Any] = {"future": True}
-        if url.startswith("sqlite") and ":memory:" in url:
-            # Keep a single in-memory connection across sessions for tests.
-            engine_kwargs.update(
-                {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool}
-            )
-        self._engine = create_engine(url, **engine_kwargs)
+        self._engine = engine if engine is not None else _build_store_engine(url)
         self._is_sqlite = self._engine.dialect.name == "sqlite"
         self._signal_seq = 0
         self._asset_score_seq = 0
@@ -112,6 +137,11 @@ class _StoreInfra(ScoreStore):
     def invalidate_bindings_cache(self) -> None:
         """Drop the cached binding projection after a binding write."""
         self._bindings_cache = None
+
+    @property
+    def engine(self) -> Engine:
+        """The bound engine, so one process can share a single pool."""
+        return self._engine
 
     @contextmanager
     def _session(self) -> Iterator[Session]:
