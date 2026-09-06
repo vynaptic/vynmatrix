@@ -1,11 +1,16 @@
 """Twenty strategy workers waking on one committed bar batch (PostgreSQL, opt-in).
 
 Proves, on a real database and a real LISTEN/NOTIFY channel, that the delivery
-loop keeps connections bounded, delivers every committed signal to a stub
-scoring endpoint, preserves per-worker order, does not duplicate under a repeated
-notification or a reclaimed lease, recovers after a scoring outage, and stops
-cleanly mid-drain. Latency from row commit to stub receipt is recorded, not
-promised.
+loop keeps connections within three per worker throughout the workload, delivers
+every committed signal to a stub scoring endpoint, preserves per-worker order,
+redelivers a reclaimed lease under the same canonical identity, recovers after a
+scoring outage, stops between passes inside one worker's budget without leaving a
+dangling claim, and, restarted after a simulated crash, drains the backlog with
+no duplicate or missing delivery. Latency from row commit to stub receipt is
+recorded, not promised. The stub stands in for scoring's transport only: the
+canonical deduplication it relies on is scoring's ``external_signal_id`` upsert,
+covered by ``apps/scoring_engine/tests/test_signal_idempotency.py`` and the
+PostgreSQL double-post case in ``test_api_postgres_integration.py``.
 """
 
 from __future__ import annotations
@@ -186,23 +191,90 @@ def _fixture_rows(instr_id: int) -> list[CandleRow]:
     return sorted(rows, key=lambda row: row.ts)
 
 
-def _wait_until(predicate: Any, *, what: str, timeout: float = _WAIT) -> None:
+def _wait_until(
+    predicate: Any, *, what: str, timeout: float = _WAIT, detail: Any | None = None
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
         time.sleep(0.05)
     msg = f"Timed out waiting for {what}"
+    if detail is not None:
+        msg = f"{msg}: {detail()}"
     raise AssertionError(msg)
 
 
+def _activity(session_factory: Any) -> str:
+    """Describe every backend on the current database, for a failed connection bound."""
+    with session_factory() as session:
+        rows = session.execute(
+            text(
+                "SELECT pid, state, backend_type, left(query, 60) FROM pg_stat_activity "
+                "WHERE datname = current_database() ORDER BY backend_start"
+            )
+        ).all()
+    return "; ".join(f"{pid} {state} {kind}: {query}" for pid, state, kind, query in rows)
+
+
 def _connections(session_factory: Any) -> int:
+    """Client connections to this database; autovacuum workers also carry its name."""
     with session_factory() as session:
         return int(
             session.execute(
-                text("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()")
+                text(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                    "AND backend_type = 'client backend'"
+                )
             ).scalar_one()
         )
+
+
+class _ConnectionSampler:
+    """Poll pg_stat_activity on its own thread so the peak during workload is observed."""
+
+    def __init__(self, session_factory: Any, *, interval: float = 0.05) -> None:
+        self._session_factory = session_factory
+        self._interval = interval
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self.peak = 0
+        self.latest = 0
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            count = _connections(self._session_factory)
+            with self._lock:
+                self.latest = count
+                self.peak = max(self.peak, count)
+            self._stop.wait(self._interval)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def reset(self) -> None:
+        with self._lock:
+            self.peak = self.latest
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+
+
+def _expected_ids(strategy_id: str, rows: list[CandleRow], bars: tuple[int, ...]) -> list[str]:
+    return [
+        compute_external_signal_id(
+            strategy_id=strategy_id,
+            symbol=_SYMBOL,
+            action=SignalAction.LONG,
+            bar_close_ts=rows[i].ts.replace(tzinfo=UTC),
+            strategy_version="1.0.0",
+            reason="probe_entry",
+        )
+        for i in bars
+    ]
 
 
 def _notify(session_factory: Any, latest_ts: datetime) -> None:
@@ -221,7 +293,12 @@ def _notify(session_factory: Any, latest_ts: datetime) -> None:
 
 def _provision(session_factory: Any) -> int:
     with session_factory() as session:
-        if session.get(User, _OWNER_ID) is None:
+        # The workers need a deployment owner to exist; the CI database has none,
+        # a shared local test database already has one and keeps it.
+        has_owner = session.scalars(
+            select(User).where(User.is_deployment_owner.is_(True)).limit(1)
+        ).first()
+        if has_owner is None and session.get(User, _OWNER_ID) is None:
             session.add(
                 User(
                     user_id=_OWNER_ID,
@@ -349,14 +426,33 @@ class _Fleet:
             for worker in self.workers
         )
 
-    def stop(self) -> float:
+    def stop(self) -> tuple[float, bool]:
+        """Stop every worker concurrently, as the process manager does.
+
+        Returns the wall-clock spent and whether every delivery loop stopped
+        inside its budget; engines are disposed only afterwards.
+        """
         started = time.monotonic()
-        for worker in self.workers:
-            worker.stop()
+        outcomes: list[bool] = []
+        lock = threading.Lock()
+
+        def _stop(worker: SignalWorker) -> None:
+            stopped = worker.stop()
+            with lock:
+                outcomes.append(stopped)
+
+        threads = [
+            threading.Thread(target=_stop, args=(worker,), daemon=True) for worker in self.workers
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
         elapsed = time.monotonic() - started
         for engine in self.engines:
             dispose_engine(engine)
-        return elapsed
+        clean = all(outcomes) and not any(loop.alive for loop in self.loops)
+        return elapsed, clean
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +477,7 @@ def test_twenty_workers_wake_together_with_bounded_connections(  # noqa: PLR0915
     ingestion = PriceIngestionService(control)
     stub = _StubScoring()
     stub.start()
+    sampler = _ConnectionSampler(control)
     instr_id: int | None = None
     fleet: _Fleet | None = None
     try:
@@ -391,17 +488,21 @@ def test_twenty_workers_wake_together_with_bounded_connections(  # noqa: PLR0915
         entries = {rows[i].ts.replace(tzinfo=UTC) for i in (3, 5, 6, 7, 8, 9, 10)}
         ingestion.upsert_candles(rows[:3])
 
-        baseline = _connections(control)
+        # The baseline must include both of the control pool's connections (this
+        # thread and the sampler), so hold one while the sampler opens the other;
+        # every later increase then belongs to workers.
+        with control() as held:
+            held.execute(text("SELECT 1"))
+            sampler.start()
+            time.sleep(0.3)
+        baseline = sampler.peak
+        sampler.reset()
         fleet = _Fleet(dsn, stub.url, entries)
         fleet.start()
         _wait_until(fleet.listening, what="LISTEN registration on every worker")
 
-        # 1. Connections stay within 3 per worker (2 pooled + 1 LISTEN).
-        _wait_until(
-            lambda: _connections(control) - baseline <= _WORKERS * 3,
-            what="bounded connections",
-            timeout=5.0,
-        )
+        # 1. Idle fleet: 3 per worker (2 pooled + 1 LISTEN). The peak during the
+        #    workload is asserted at the end.
         assert _connections(control) - baseline <= _WORKERS * 3
 
         # 2. One committed bar + one NOTIFY -> twenty deliveries; latency recorded.
@@ -442,13 +543,17 @@ def test_twenty_workers_wake_together_with_bounded_connections(  # noqa: PLR0915
             ).one()
             session.commit()
         _wait_until(lambda: len(stub.received) == _WORKERS + 1, what="lease reclaim redelivery")
-        with control() as session:
-            reclaimed = session.execute(
-                text("SELECT status, attempts FROM outbox_events WHERE event_id = :id"),
-                {"id": target.event_id},
-            ).one()
-        assert reclaimed.status == "published"
-        assert reclaimed.attempts == target.attempts + 1
+        # The stub sees the POST before the worker fences the row as published.
+        _wait_until(
+            lambda: _row(control, target.event_id).status == "published",
+            what="reclaimed row fenced as published",
+        )
+        assert _row(control, target.event_id).attempts == target.attempts + 1
+        # The redelivery carries the identical canonical identity, which is what
+        # scoring's external_signal_id upsert deduplicates on.
+        strategy_00 = f"{_STRATEGY_PREFIX}_00"
+        bar3_id = _expected_ids(strategy_00, rows, (3,))[0]
+        assert stub.ids_for(strategy_00) == [bar3_id, bar3_id]
 
         # 5. Two more bars: per-worker order follows bar order.
         ingestion.upsert_candles([rows[4], rows[5], rows[6]])
@@ -456,21 +561,9 @@ def test_twenty_workers_wake_together_with_bounded_connections(  # noqa: PLR0915
         _wait_until(lambda: len(stub.received) >= _WORKERS * 3 + 1, what="second and third wave")
         for index in range(_WORKERS):
             strategy_id = f"{_STRATEGY_PREFIX}_{index:02d}"
-            ids = stub.ids_for(strategy_id)
-            expected = [
-                compute_external_signal_id(
-                    strategy_id=strategy_id,
-                    symbol=_SYMBOL,
-                    action=SignalAction.LONG,
-                    bar_close_ts=rows[i].ts.replace(tzinfo=UTC),
-                    strategy_version="1.0.0",
-                    reason="probe_entry",
-                )
-                for i in (3, 5, 6)
-            ]
             # The reclaimed row of worker 00 appears twice; order of first appearances holds.
-            first_seen = list(dict.fromkeys(ids))
-            assert first_seen == expected, strategy_id
+            first_seen = list(dict.fromkeys(stub.ids_for(strategy_id)))
+            assert first_seen == _expected_ids(strategy_id, rows, (3, 5, 6)), strategy_id
 
         # 6. Outage: deliveries fail, back off, then recover through the idle pass.
         stub.fail.set()
@@ -482,30 +575,82 @@ def test_twenty_workers_wake_together_with_bounded_connections(  # noqa: PLR0915
             lambda: _count(control, "published") == _WORKERS * 4, what="recovery after outage"
         )
 
-        # 7. Stop every worker while a slow drain is in flight.
-        stub.delay_seconds = 0.5
+        # 7. Stop every worker while a slow drain is in flight. Each stop ends
+        #    between passes, so it completes inside one worker's budget and
+        #    leaves no dangling claim; bars still queued stay pending.
+        stub.delay_seconds = 1.0
         ingestion.upsert_candles(rows[8:])
         _notify(control, rows[-1].ts.replace(tzinfo=UTC))
-        time.sleep(0.2)
-        elapsed = fleet.stop()
+        _wait_until(lambda: _count(control, "published") >= _WORKERS * 5, what="bar 8 delivered")
+        elapsed, stopped_cleanly = fleet.stop()
         fleet = None
-        assert elapsed < _WORKERS * 15.0
+        assert stopped_cleanly
+        assert elapsed < 15.0  # one in-flight pass (1 s stub) plus the listener's 1 s select
+        assert _count(control, "in_progress") == 0
+        assert _count(control, "pending") > 0  # the restart below has real work to recover
+        _wait_until(
+            lambda: sampler.latest <= baseline,
+            what="fleet connections released",
+            detail=lambda: f"baseline={baseline} now={sampler.latest} {_activity(control)}",
+        )
+
+        # 8. Restart after a simulated crash: worker 00's oldest pending row is
+        #    turned into a dead worker's stale claim. A fresh fleet reclaims it
+        #    and drains the backlog with no duplicate or missing delivery.
         with control() as session:
-            stale = session.execute(
+            crashed = session.execute(
                 text(
-                    "SELECT count(*) FROM outbox_events WHERE topic = 'signals.submit' "
-                    "AND ordering_key LIKE :prefix AND status = 'in_progress' "
-                    "AND claimed_at < now() - interval '60 seconds'"
+                    "UPDATE outbox_events SET status = 'in_progress', claim_owner = 'dead-worker', "
+                    "claimed_at = now() - interval '10 minutes' WHERE event_id = ("
+                    "SELECT event_id FROM outbox_events WHERE topic = 'signals.submit' "
+                    "AND ordering_key = :key AND status = 'pending' ORDER BY created_at LIMIT 1) "
+                    "RETURNING event_id, attempts"
                 ),
-                {"prefix": f"{_WORKER_PREFIX}-%"},
-            ).scalar_one()
-        assert stale == 0
+                {"key": f"{_WORKER_PREFIX}-00"},
+            ).one()
+            session.commit()
+        stub.delay_seconds = 0.0
+        fleet = _Fleet(dsn, stub.url, entries)
+        fleet.start()
+        _wait_until(fleet.listening, what="LISTEN registration after restart")
+        _wait_until(
+            lambda: _count(control, "published") == _WORKERS * 7, what="restart drains the backlog"
+        )
+        assert _count(control, "in_progress") == 0
+        assert _count(control, "pending") == 0
+        assert _count(control, "failed") == 0
+        for index in range(_WORKERS):
+            strategy_id = f"{_STRATEGY_PREFIX}_{index:02d}"
+            expected = _expected_ids(strategy_id, rows, (3, 5, 6, 7, 8, 9, 10))
+            assert list(dict.fromkeys(stub.ids_for(strategy_id))) == expected, strategy_id
+        # The dead worker's claim was reclaimed and fenced by the restarted worker.
+        reclaimed_after_restart = _row(control, crashed.event_id)
+        assert reclaimed_after_restart.status == "published"
+        assert reclaimed_after_restart.attempts == crashed.attempts + 1
+        # That row had never been posted, so the step-4 reclaim is the only redelivery.
+        assert len(stub.received) == _WORKERS * 7 + 1
+        _elapsed, stopped_cleanly = fleet.stop()
+        fleet = None
+        assert stopped_cleanly
+
+        # 9. At no point did the fleet hold more than three connections per worker.
+        sampler.stop()
+        assert sampler.peak - baseline <= _WORKERS * 3
     finally:
+        sampler.stop()
         if fleet is not None:
             fleet.stop()
         stub.stop()
         _cleanup(control, instr_id)
         dispose_engine(control_engine)
+
+
+def _row(session_factory: Any, event_id: Any) -> Any:
+    with session_factory() as session:
+        return session.execute(
+            text("SELECT status, attempts FROM outbox_events WHERE event_id = :id"),
+            {"id": event_id},
+        ).one()
 
 
 def _count(session_factory: Any, status: str) -> int:

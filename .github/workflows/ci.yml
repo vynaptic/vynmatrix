@@ -223,7 +223,9 @@ jobs:
       - name: Run PostgreSQL integration tests
         run: >-
           pytest -v -m integration
+          apps/indicator_runner/tests/test_multi_worker_delivery_postgres_integration.py
           apps/feedback_loop_engine/tests/test_feedback_concurrency_postgres_integration.py
+
           apps/scoring_engine/tests/test_api_postgres_integration.py
           apps/indicator_runner/tests/test_postgres_notify_integration.py
           tests/test_service_roles_postgres_integration.py
