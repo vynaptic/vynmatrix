@@ -7,6 +7,7 @@ market_data_ingestor without polling the prices table directly.
 from __future__ import annotations
 
 import json
+import re
 import select as _select
 import threading
 import time
@@ -21,6 +22,18 @@ logger = get_logger(__name__)
 
 # Type for the notification callback
 NotifyCallback = Callable[[str, dict[str, Any]], None]
+
+_SQLALCHEMY_DRIVER_SCHEME = re.compile(r"^postgresql\+[a-z0-9_]+://", re.IGNORECASE)
+
+
+def libpq_dsn(dsn: str) -> str:
+    """Return ``dsn`` in the form libpq accepts.
+
+    Callers hand this listener the same URL SQLAlchemy uses. libpq rejects the
+    ``postgresql+psycopg2://`` dialect spelling, and a rejected DSN would leave
+    the thread reconnecting forever while polling hides the outage.
+    """
+    return _SQLALCHEMY_DRIVER_SCHEME.sub("postgresql://", dsn, count=1)
 
 
 class PgNotifyListener:
@@ -65,6 +78,15 @@ class PgNotifyListener:
     def stop(self) -> None:
         self._stop_event.set()
 
+    @property
+    def listening(self) -> bool:
+        """True while PostgreSQL has acknowledged this connection's LISTEN.
+
+        False during the initial connect and every reconnect, so health that
+        reads it cannot report a live thread with no registered channel.
+        """
+        return self._listening_event.is_set()
+
     def wait_until_listening(self, timeout: float | None = None) -> bool:
         """Wait until PostgreSQL has acknowledged this connection's LISTEN.
 
@@ -98,7 +120,7 @@ class PgNotifyListener:
         import psycopg2  # noqa: PLC0415
 
         self._listening_event.clear()
-        self._conn = psycopg2.connect(self._dsn)
+        self._conn = psycopg2.connect(libpq_dsn(self._dsn))
         self._conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
         with self._conn.cursor() as cur:
             cur.execute(f"LISTEN {self._channel};")

@@ -229,8 +229,11 @@ def _environment(env: Mapping[str, str], role: str, keys: frozenset[str]) -> dic
     database_url = _required(env, key)
     try:
         parsed = urlsplit(database_url)
+        # ``postgresql://`` is the one spelling every consumer accepts: the
+        # SQLAlchemy engines, libpq for the LISTEN connections, and the scoring
+        # child's DatabaseConfig validator, which rejects the dialect suffix.
         valid = (
-            parsed.scheme in {"postgresql", "postgresql+psycopg2"}
+            parsed.scheme == "postgresql"
             and parsed.username == f"vm_{role}_login"
             and parsed.password
             and parsed.hostname

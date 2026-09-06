@@ -146,6 +146,16 @@ def test_runtime_role_cannot_be_replaced_with_migration_login(runtime_env: dict[
         _module().build_processes("application", runtime_env)
 
 
+def test_runtime_role_url_rejects_the_sqlalchemy_driver_suffix(runtime_env: dict[str, str]) -> None:
+    # libpq (the LISTEN connections) and the scoring child's config validator
+    # both reject this spelling, so the supervisor must not forward it.
+    runtime_env["SCORING_DATABASE_URL"] = (
+        "postgresql+psycopg2://vm_scoring_login:secret@postgres/db"
+    )
+    with pytest.raises(ValueError, match="SCORING_DATABASE_URL"):
+        _module().build_processes("application", runtime_env)
+
+
 def test_unconfigured_installation_runs_feedback_without_empty_indicator(
     runtime_env: dict[str, str],
 ) -> None:

@@ -44,7 +44,7 @@ _OUTBOX_PROGRESS_READY = gauge(
 )
 _NOTIFY_LISTENER_UP = gauge(
     "vm_scoring_outbox_notify_listener_up",
-    "1 while the outbox_events LISTEN thread is alive, else 0",
+    "1 while the outbox_events LISTEN is registered on a live connection, else 0",
 )
 _BACKLOG_STATUSES = ("pending", "in_progress", "failed", "dead_letter")
 
@@ -267,8 +267,15 @@ class OutboxRelayWorker:
             _NOTIFY_LISTENER_UP.set(value)
 
     def _refresh_notify_gauge(self) -> None:
-        alive = self._notify_thread is not None and self._notify_thread.is_alive()
-        self._set_notify_gauge(1 if alive else 0)
+        # Thread liveness alone is a false positive: the listener thread stays
+        # alive while it reconnects, and no notification arrives until
+        # PostgreSQL has acknowledged LISTEN on the replacement connection.
+        listener = self._notify_listener
+        thread = self._notify_thread
+        registered = (
+            listener is not None and thread is not None and thread.is_alive() and listener.listening
+        )
+        self._set_notify_gauge(1 if registered else 0)
 
     def _start_notify_listener(
         self,
@@ -294,7 +301,8 @@ class OutboxRelayWorker:
             name=f"{self._consumer_name}-pg-listen",
         )
         self._notify_thread.start()
-        self._set_notify_gauge(1)
+        # Reads 0 until the LISTEN is acknowledged; the run loop refreshes it.
+        self._refresh_notify_gauge()
         logger.info(
             "outbox.listen_started",
             extra={"channel": self._notify_channel, "consumer": self._consumer_name},
