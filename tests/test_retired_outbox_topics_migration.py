@@ -1,4 +1,4 @@
-"""Migration 0105 retires undelivered rows of the consumer-less topics idempotently."""
+"""Migrations 0105 and 0106 retire the consumer-less topics' rows idempotently."""
 
 from __future__ import annotations
 
@@ -13,19 +13,26 @@ from sqlalchemy.orm import Session
 
 from lib_application.db.models import Base, OutboxEvent
 
-_MIGRATION = (
-    Path(__file__).resolve().parents[1]
-    / "scripts/db/alembic/versions/0105_retire_observational_outbox_topics.py"
-)
+_VERSIONS = Path(__file__).resolve().parents[1] / "scripts/db/alembic/versions"
+_MIGRATION = _VERSIONS / "0105_retire_observational_outbox_topics.py"
+_DEAD_LETTER_MIGRATION = _VERSIONS / "0106_retire_dead_lettered_outbox_topics.py"
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("migration_0105", _MIGRATION)
+def _load_migration(path: Path = _MIGRATION):
+    spec = importlib.util.spec_from_file_location(f"migration_{path.stem[:4]}", path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _upgrade_twice(engine, module) -> None:
+    for _ in range(2):  # second run must change nothing further
+        with engine.begin() as connection:
+            context = MigrationContext.configure(connection)
+            with Operations.context(context):
+                module.upgrade()
 
 
 def _row(event_key: str, topic: str, status: str) -> OutboxEvent:
@@ -57,16 +64,12 @@ def test_upgrade_marks_only_undelivered_retired_rows_published_and_is_idempotent
                 _row("k-inflight", "execution.results", "in_progress"),
                 _row("k-done", "signals.ingested", "published"),
                 _row("k-live", "execution.commands", "pending"),
+                _row("k-dead", "signals.scored", "dead_letter"),
             ]
         )
         session.commit()
 
-    module = _load_migration()
-    for _ in range(2):  # second run must change nothing further
-        with engine.begin() as connection:
-            context = MigrationContext.configure(connection)
-            with Operations.context(context):
-                module.upgrade()
+    _upgrade_twice(engine, _load_migration())
 
     with Session(engine) as session:
         rows = {row.event_key: row for row in session.scalars(select(OutboxEvent)).all()}
@@ -77,3 +80,50 @@ def test_upgrade_marks_only_undelivered_retired_rows_published_and_is_idempotent
     assert rows["k-done"].status == "published"
     assert rows["k-done"].delivery_metadata is None
     assert rows["k-live"].status == "pending"
+    assert rows["k-dead"].status == "dead_letter"  # left for 0106
+
+
+def test_0106_retires_only_dead_letters_of_retired_topics_and_is_idempotent() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        dead = [
+            _row(f"dl-{topic}", topic, "dead_letter")
+            for topic in (
+                "signals.ingested",
+                "signals.scored",
+                "execution.results",
+                "feedback.ready",
+            )
+        ]
+        for row in dead:
+            row.claim_owner = "scoring-outbox-relay"
+            row.last_error = "no consumer"
+            row.failure_class = "permanent"
+        session.add_all(
+            [
+                *dead,
+                _row("dl-live", "execution.commands", "dead_letter"),
+                _row("k-done", "signals.scored", "published"),
+            ]
+        )
+        session.commit()
+
+    _upgrade_twice(engine, _load_migration(_DEAD_LETTER_MIGRATION))
+
+    with Session(engine) as session:
+        rows = {row.event_key: row for row in session.scalars(select(OutboxEvent)).all()}
+    for topic in ("signals.ingested", "signals.scored", "execution.results", "feedback.ready"):
+        row = rows[f"dl-{topic}"]
+        assert row.status == "published"
+        assert row.published_at is not None
+        assert row.claim_owner is None
+        assert row.claimed_at is None
+        assert row.delivery_metadata == {
+            "publisher": "retired",
+            "revision": "0106_retire_topic_dead_letters",
+        }
+        assert row.last_error == "no consumer"  # failure evidence is kept
+        assert row.failure_class == "permanent"
+    assert rows["dl-live"].status == "dead_letter"  # execution dead letters stay actionable
+    assert rows["k-done"].delivery_metadata is None
