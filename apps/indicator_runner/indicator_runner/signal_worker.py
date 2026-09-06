@@ -78,9 +78,20 @@ logger = get_logger(__name__)
 
 SessionFactory = Callable[[], Any]
 HISTORICAL_REBUILD_EXIT_CODE = 75
-# One HTTP attempt budget (10s timeout) plus retry slack; the loop is joined
-# for at most this long before the engine is disposed.
+# Shutdown budget. The listener loop re-checks its stop flag every second; the
+# delivery loop ends between passes, so its join covers one in-flight pass —
+# normally milliseconds, at worst one HTTP attempt (10s timeout) plus retry
+# slack. A pass that outlives the join (an unresponsive scoring endpoint can
+# hold a record for ~32s of retries) is abandoned: its claimed outbox row is
+# reclaimed after the lease expires and scoring deduplicates on
+# external_signal_id. The process manager grants every worker more than
+# WORKER_STOP_BUDGET_SECONDS before it kills the process.
+_LISTENER_STOP_TIMEOUT_SECONDS = 5.0
 _DELIVERY_STOP_TIMEOUT_SECONDS = 15.0
+WORKER_STOP_BUDGET_SECONDS = _LISTENER_STOP_TIMEOUT_SECONDS + _DELIVERY_STOP_TIMEOUT_SECONDS
+# The main loop re-checks thread liveness and the catch-up floor on this tick;
+# it is independent of the delivery loop's idle interval by design.
+_MAIN_LOOP_TICK_SECONDS = 1.0
 _BARS_PROCESSED_METRIC = "vm_indicator_bars_processed_total"
 _SIGNALS_EMITTED_METRIC = "vm_indicator_signals_emitted_total"
 
@@ -286,16 +297,38 @@ class SignalWorker:
             warmed_up=self._warmed_up,
         )
 
-    def stop(self) -> None:
-        """Stop the worker gracefully: listener first, then delivery, before engine disposal."""
+    def request_stop(self) -> None:
+        """Ask every thread to stop without waiting; safe from a signal handler.
+
+        :meth:`stop` joins the threads afterwards, so a signal handler followed
+        by the shutdown path waits for the delivery budget once, not twice.
+        """
         self._stop_event.set()
         if self._listener is not None:
             self._listener.stop()
-        if self._listener_thread and self._listener_thread.is_alive():
-            self._listener_thread.join(timeout=5.0)
         if self._delivery is not None:
-            self._delivery.stop(timeout=_DELIVERY_STOP_TIMEOUT_SECONDS)
-        logger.info("Signal worker stopped", worker_id=self._worker_id)
+            self._delivery.request_stop()
+
+    def stop(self) -> bool:
+        """Stop the worker gracefully: listener first, then delivery, before engine disposal.
+
+        Returns False when the delivery loop is still in flight after its stop
+        budget. The caller may still dispose the engine and exit: the in-flight
+        pass holds its own connection, and its claimed outbox row is reclaimed
+        once the lease expires.
+        """
+        self.request_stop()
+        if self._listener_thread and self._listener_thread.is_alive():
+            self._listener_thread.join(timeout=_LISTENER_STOP_TIMEOUT_SECONDS)
+        delivery_stopped = True
+        if self._delivery is not None:
+            delivery_stopped = self._delivery.stop(timeout=_DELIVERY_STOP_TIMEOUT_SECONDS)
+        logger.info(
+            "Signal worker stopped",
+            worker_id=self._worker_id,
+            delivery_stopped=delivery_stopped,
+        )
+        return delivery_stopped
 
     @property
     def failed(self) -> bool:
@@ -336,13 +369,6 @@ class SignalWorker:
     def delivery_alive(self) -> bool:
         """False once an injected delivery loop has stopped or died."""
         return self._delivery is None or self._delivery.alive
-
-    @property
-    def delivery_idle_interval_seconds(self) -> float:
-        """Main-loop wait between recovery checks."""
-        if self._delivery is None:
-            return 1.0
-        return self._delivery.idle_interval_seconds
 
     def _mark_delivery_failure(self, exc: BaseException) -> None:
         if self._terminal_error is None:
@@ -1385,8 +1411,10 @@ def main(argv: list[str] | None = None) -> int:
     stop_event = threading.Event()
 
     def _shutdown(signum: int, _frame: object) -> None:
+        # Only flag the threads here; the ``finally`` below performs the one
+        # bounded join so the stop budget is spent once.
         logger.info("Stopping signal worker after signal %s", signum, worker_id=args.worker_id)
-        worker.stop()
+        worker.request_stop()
         stop_event.set()
 
     os_signal.signal(os_signal.SIGTERM, _shutdown)
@@ -1403,7 +1431,6 @@ def main(argv: list[str] | None = None) -> int:
         with get_session_factory(engine=db_engine)() as session:
             require_deployment_owner_id(session)
         worker.start()
-        idle_seconds = worker.delivery_idle_interval_seconds
         last_catchup = time.monotonic()
         while not stop_event.is_set():
             if worker.failed:
@@ -1435,7 +1462,9 @@ def main(argv: list[str] | None = None) -> int:
                 logger.error("Signal worker delivery loop stopped unexpectedly")
                 exit_code = 1
                 break
-            if stop_event.wait(idle_seconds):
+            if stop_event.wait(
+                _seconds_until_catchup(time.monotonic(), last_catchup, catchup_floor_sec)
+            ):
                 break
             if time.monotonic() - last_catchup >= catchup_floor_sec:
                 worker.catchup_all()
@@ -1444,9 +1473,30 @@ def main(argv: list[str] | None = None) -> int:
         worker._mark_rebuild_required(exc)
         exit_code = HISTORICAL_REBUILD_EXIT_CODE
     finally:
-        worker.stop()
+        if not worker.stop():
+            logger.error(
+                "Signal worker exiting with delivery still in flight; its claimed outbox "
+                "row is reclaimed after the lease expires",
+                worker_id=args.worker_id,
+            )
         dispose_engine(db_engine)
     return exit_code
+
+
+def _seconds_until_catchup(
+    now: float,
+    last_catchup: float,
+    floor_seconds: float,
+    *,
+    tick_seconds: float = _MAIN_LOOP_TICK_SECONDS,
+) -> float:
+    """Wait until the catch-up floor is due, never longer than one liveness tick.
+
+    The catch-up cadence therefore follows ``SIGNAL_WORKER_CATCHUP_FLOOR_SEC``
+    alone; the delivery loop's idle interval never delays it, and a dead
+    listener or delivery thread is noticed within a tick.
+    """
+    return max(0.0, min(tick_seconds, last_catchup + floor_seconds - now))
 
 
 if __name__ == "__main__":

@@ -1272,7 +1272,6 @@ def test_main_returns_nonzero_for_listener_delivery_failure(
         _dsn = "postgresql://listener"
         catchup_floor_seconds = 30
         delivery_alive = True
-        delivery_idle_interval_seconds = 1.0
         failed = True
         rebuild_required = False
         terminal_error = httpx.ConnectError("scoring unavailable")
@@ -1284,8 +1283,12 @@ def test_main_returns_nonzero_for_listener_delivery_failure(
         def start(self) -> None:
             self.started = True
 
-        def stop(self) -> None:
+        def request_stop(self) -> None:
+            return None
+
+        def stop(self) -> bool:
             self.stopped = True
+            return True
 
     worker = _FailedWorker()
     with session_factory() as session:
@@ -1309,6 +1312,58 @@ def test_main_returns_nonzero_for_listener_delivery_failure(
     assert exit_code == 1
     assert worker.started is True
     assert worker.stopped is True
+
+
+def test_main_disposes_the_engine_when_delivery_outlives_its_stop_budget(
+    session_factory: sessionmaker,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    from indicator_runner import signal_worker
+
+    class _AliveThread:
+        def is_alive(self) -> bool:
+            return True
+
+    class _StuckWorker:
+        _listener_thread = _AliveThread()
+        _dsn = "postgresql://listener"
+        catchup_floor_seconds = 30
+        delivery_alive = True
+        failed = True
+        rebuild_required = False
+        terminal_error = httpx.ConnectError("scoring unavailable")
+
+        def start(self) -> None:
+            return None
+
+        def request_stop(self) -> None:
+            return None
+
+        def stop(self) -> bool:
+            return False  # a pass is still in flight after the stop budget
+
+    disposed: list[Any] = []
+    with session_factory() as session:
+        session.add(
+            User(
+                user_id="owner",
+                email="owner@example.invalid",
+                base_ccy="USD",
+                is_deployment_owner=True,
+            )
+        )
+        session.commit()
+        engine = session.get_bind()
+    monkeypatch.setattr(signal_worker, "setup_logging", lambda _level: None)
+    monkeypatch.setattr(
+        signal_worker, "_build_worker", lambda *_args, **_kwargs: (_StuckWorker(), engine)
+    )
+    monkeypatch.setattr(signal_worker, "dispose_engine", disposed.append)
+    monkeypatch.setattr(signal_worker.os_signal, "signal", lambda *_args: None)
+
+    assert signal_worker.main(["--strategy-path", str(tmp_path)]) == 1
+    assert disposed == [engine]  # the in-flight pass owns its connection; the lease recovers it
 
 
 def test_executable_entrypoint_requires_owner_before_starting_worker(
@@ -1350,14 +1405,14 @@ class _ObservingStrategy(PureSignalStrategy):
 
 
 class _FakeDeliveryLoop:
-    idle_interval_seconds = 5.0
-
-    def __init__(self) -> None:
+    def __init__(self, *, stops_cleanly: bool = True) -> None:
         self.wakes = 0
         self.started = False
+        self.stop_requests = 0
         self.stopped_with: float | None = None
         self.alive = False
         self.failure_handler: Any = None
+        self._stops_cleanly = stops_cleanly
 
     def bind_failure_handler(self, handler: Any) -> None:
         self.failure_handler = handler
@@ -1369,9 +1424,13 @@ class _FakeDeliveryLoop:
     def wake(self) -> None:
         self.wakes += 1
 
-    def stop(self, *, timeout: float) -> None:
+    def request_stop(self) -> None:
+        self.stop_requests += 1
+
+    def stop(self, *, timeout: float) -> bool:
         self.stopped_with = timeout
-        self.alive = False
+        self.alive = not self._stops_cleanly
+        return self._stops_cleanly
 
 
 def test_worker_wakes_an_injected_delivery_loop_instead_of_delivering_inline(
@@ -1388,22 +1447,45 @@ def test_worker_wakes_an_injected_delivery_loop_instead_of_delivering_inline(
     assert loop.wakes == 1  # start() hands the committed backlog to the loop
     assert loop.failure_handler is not None
     assert worker.delivery_alive is True
-    assert worker.delivery_idle_interval_seconds == 5.0
 
     worker.deliver_after_commit()
     assert loop.wakes == 2
 
-    worker.stop()
+    assert worker.stop() is True
+    assert loop.stop_requests == 1
     assert loop.stopped_with is not None
     assert loop.stopped_with >= 10.0
     assert worker.delivery_alive is False
 
 
+def test_worker_stop_reports_a_delivery_loop_that_outlived_its_budget(
+    session_factory: sessionmaker,
+) -> None:
+    _seed_instrument(session_factory)
+    loop = _FakeDeliveryLoop(stops_cleanly=False)
+    worker = _build_worker(session_factory, _ObservingStrategy(), delivery_loop=loop)
+    worker.start()
+    assert worker.stop() is False
+    assert worker.delivery_alive is True  # the caller can see the pass is still in flight
+
+
 def test_worker_without_delivery_loop_delivers_inline(session_factory: sessionmaker) -> None:
     worker = _build_worker(session_factory, _ObservingStrategy())
     assert worker.delivery_alive is True
-    assert worker.delivery_idle_interval_seconds == 1.0
     assert worker.deliver_after_commit() is None  # runs relay_once synchronously
+
+
+def test_main_loop_wait_follows_the_catchup_floor_not_the_delivery_interval() -> None:
+    from indicator_runner.signal_worker import _seconds_until_catchup
+
+    # Far from the floor: one liveness tick, whatever the delivery idle interval is.
+    assert _seconds_until_catchup(100.0, 90.0, 30.0) == 1.0
+    # Close to the floor: wait exactly until it is due.
+    assert _seconds_until_catchup(119.5, 90.0, 30.0) == 0.5
+    # Overdue: run catch-up now.
+    assert _seconds_until_catchup(130.0, 90.0, 30.0) == 0.0
+    # A floor shorter than a tick is honoured too.
+    assert _seconds_until_catchup(100.0, 100.0, 0.25) == 0.25
 
 
 def test_delivery_failure_marks_the_worker_failed(session_factory: sessionmaker) -> None:

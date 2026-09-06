@@ -84,28 +84,55 @@ class SignalDeliveryLoop:
         """Ask the thread to drain; safe from any thread, never blocks."""
         self._wake_event.set()
 
-    def stop(self, *, timeout: float) -> None:
-        """Stop the thread and wait up to ``timeout`` seconds for the current pass."""
+    def request_stop(self) -> None:
+        """Ask the thread to stop after its current pass; never blocks.
+
+        Safe from a signal handler. :meth:`stop` joins the thread afterwards.
+        """
         self._stop_event.set()
         self._wake_event.set()
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=timeout)
-            if self._thread.is_alive():
-                logger.warning(
-                    "Signal delivery loop did not stop within %.1fs",
-                    timeout,
-                    worker_id=self._worker_id,
-                )
+
+    @property
+    def stop_requested(self) -> bool:
+        """True once a stop was requested; ``drain`` ends between passes."""
+        return self._stop_event.is_set()
+
+    def stop(self, *, timeout: float) -> bool:
+        """Stop the thread and wait up to ``timeout`` seconds for the current pass.
+
+        Returns True once the thread has exited (or never ran). False means a
+        pass is still in flight, typically one HTTP attempt against an
+        unresponsive scoring endpoint that the emitter's own timeout bounds.
+        The row that pass claimed stays leased in the outbox and is reclaimed
+        after the lease expires, so the caller may dispose the engine and exit.
+        """
+        self.request_stop()
+        if self._thread is None or not self._thread.is_alive():
+            return True
+        self._thread.join(timeout=timeout)
+        if self._thread.is_alive():
+            logger.error(
+                "Signal delivery loop still in flight %.1fs after stop; its claimed "
+                "outbox row is reclaimed when the lease expires",
+                timeout,
+                worker_id=self._worker_id,
+            )
+            return False
+        return True
 
     def drain(self) -> tuple[int, int]:
         """Run passes until one delivers nothing; return (delivered, failed) totals.
 
         A pass that only fails ends the drain so the relay's per-record backoff
         is respected. Hitting the pass cap re-arms the wake instead of spinning.
+        A stop request ends the drain between passes, so shutdown waits for at
+        most one pass.
         """
         delivered_total = 0
         failed_total = 0
         for _ in range(self._max_passes_per_wake):
+            if self._stop_event.is_set():
+                return delivered_total, failed_total
             delivered, failed = self._run_once()
             delivered_total += delivered
             failed_total += failed

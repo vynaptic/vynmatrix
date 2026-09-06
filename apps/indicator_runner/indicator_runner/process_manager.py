@@ -42,10 +42,16 @@ from .runtime_journal import StrategyOperationalStatus, StrategyOperationalStatu
 from .runtime_params import StrategyRuntimeParams
 from .signal_worker import (
     HISTORICAL_REBUILD_EXIT_CODE,
+    WORKER_STOP_BUDGET_SECONDS,
     parse_strategy_symbols,
 )
 
 logger = get_logger(__name__)
+
+# Every worker gets this long to stop before it is killed. It exceeds the
+# worker's own stop budget so a graceful stop completes inside it, and the
+# whole fleet shares one deadline instead of spending it per worker in turn.
+_STRATEGY_STOP_GRACE_SECONDS = WORKER_STOP_BUDGET_SECONDS + 5.0
 
 _MAX_VALIDATION_ERRORS_SHOWN = 5
 DEV_DISCOVERY_ENV = "INDICATOR_ALLOW_DEV_DISCOVERY"
@@ -774,16 +780,28 @@ class IndicatorRunner:
         logger.info("Shutting down all strategies...")
         self.shutdown_flag = True
 
-        for strategy in self.strategies:
-            if strategy.process and strategy.process.poll() is None:
-                logger.info("Terminating strategy %s (PID %s)", strategy.name, strategy.process.pid)
-                try:
-                    strategy.process.terminate()
-                    strategy.process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    logger.warning(
-                        "Strategy %s did not terminate gracefully, killing", strategy.name
-                    )
-                    strategy.process.kill()
+        running = [
+            strategy
+            for strategy in self.strategies
+            if strategy.process is not None and strategy.process.poll() is None
+        ]
+        for strategy in running:
+            process = strategy.process
+            if process is None:
+                continue
+            logger.info("Terminating strategy %s (PID %s)", strategy.name, process.pid)
+            process.terminate()
+        # The workers stop concurrently; wait for all of them against one
+        # deadline rather than granting the full grace to each in turn.
+        deadline = time.monotonic() + _STRATEGY_STOP_GRACE_SECONDS
+        for strategy in running:
+            process = strategy.process
+            if process is None:
+                continue
+            try:
+                process.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                logger.warning("Strategy %s did not terminate gracefully, killing", strategy.name)
+                process.kill()
 
         logger.info("All strategies shutdown complete")
