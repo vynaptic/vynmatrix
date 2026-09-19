@@ -83,7 +83,16 @@ running containers. The combined layout has PostgreSQL and one application
 group. Both retain `EXECUTION_MODE=paper` and
 `EXECUTION_ENGINE_ALLOW_LIVE=false`.
 
-## 5. Work locally
+## 5. Open the dashboard
+
+With the stack running, open http://127.0.0.1:8081/ in a browser on the same
+computer. The page asks once for the admin key: paste the value of
+`BACKEND_ADMIN_API_KEY` from your `.env`. It is read-only and shows your paper
+account, the strategies and their bindings, and profit and loss; the address is
+reachable from this computer only. After pulling a new version, rebuild the image
+and start the stack again to get the updated pages.
+
+## 6. Work locally
 
 Use [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) for supported commands,
 [docs/STRATEGY_READINESS.md](docs/STRATEGY_READINESS.md) before selecting a
