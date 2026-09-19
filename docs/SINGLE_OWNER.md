@@ -96,14 +96,18 @@ without partial writes; explicitly acknowledged repeats are no-ops.
 [DATABASE.md](DATABASE.md) is the complete contract for roles, transactions,
 existing databases, migration/rollback, and recovery.
 
-## Future owner UI
+## Owner UI
 
-A future local UI can use the existing backend administrative boundary for
-owner profile, account, broker credentials, strategy configuration/bindings,
-risk mandates, calendars, and execution visibility. It must authenticate to
-the backend's existing owner boundary and preserve the same current-state
-execution checks. Static UI assets can be served from the application group;
-they do not require a fourth container or the return of multi-tenancy.
+A read-only owner UI is served by the backend from the application group; it
+needs no fourth container and does not bring multi-tenancy back.
+[apps/backend/README.md](../apps/backend/README.md#owner-ui) owns its routes,
+authentication and data sources. It gives execution visibility only: the
+account, strategies and bindings, and recorded profit and loss.
+
+Write flows remain future work: owner profile, accounts, broker credentials,
+strategy configuration and bindings, risk mandates and calendars stay with the
+existing administrative API and CLI. Any such UI must authenticate to the same
+owner boundary and preserve the same current-state execution checks.
 
 ## Deferred decisions
 

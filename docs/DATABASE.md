@@ -107,7 +107,8 @@ the retired observational outbox topics published, 0106 does the same for
 their dead-lettered rows, and both downgrades are deliberate no-ops. 0107
 widens the backend role for the owner UI by column-level SELECT only, on the
 listed columns of daily_nav, execution_metrics, order_intents, orders,
-positions, executions, canonical_signals and prices, with owner-scoped SELECT
+positions, executions, canonical_signals and prices (timestamp and timeframe
+only), with owner-scoped SELECT
 policies on the row-secured tables; order payloads, client and broker order
 references, signal features and metric metadata stay unreadable to it.
 
