@@ -74,7 +74,7 @@ READ_COLUMNS: dict[str, tuple[str, ...]] = {
         "venue",
     ),
     "canonical_signals": ("strategy_id", "instr_id", "action", "confidence", "ts"),
-    "prices": ("ts",),
+    "prices": ("ts", "timeframe"),
 }
 
 # The column each row policy filters on; granted even where no query names it.

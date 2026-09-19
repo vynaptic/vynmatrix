@@ -49,6 +49,7 @@ _ACTIVITY_LIMIT = 10
 _TRADE_POINT_LIMIT = 500
 _TREND_POINTS = 30
 _TREND_DAYS = 90
+_FEED_WINDOW_DAYS = 14
 MAX_FILLS_PAGE = 200
 MAX_PNL_DAYS = 730
 
@@ -61,6 +62,11 @@ def iso_utc(value: datetime | date | None) -> str | None:
         aware = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
         return aware.isoformat().replace("+00:00", "Z")
     return value.isoformat()
+
+
+def _instant(value: datetime) -> datetime:
+    """A comparable UTC instant; naive columns are UTC by convention."""
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def money(value: Any) -> str | None:
@@ -166,8 +172,13 @@ def _realized_totals(rows: list[Any]) -> dict[int, dict[str, Any]]:
 
 
 def _latest_equity(session: Session, owner_id: str, account: Any) -> dict[str, Any] | None:
-    """Most recent recorded equity: execution snapshot, then daily NAV, then the
-    configured paper starting equity. The source is always named."""
+    """Most recent recorded equity, with its source always named.
+
+    An execution snapshot is timestamped, a daily NAV row is dated; the NAV row
+    wins only when its day is later than the snapshot's, so a quiet account does
+    not keep showing the equity of its last trade. With neither, the configured
+    paper starting equity is reported as such.
+    """
     snapshot = session.execute(
         select(ExecutionMetric.equity, ExecutionMetric.created_at)
         .where(
@@ -178,19 +189,28 @@ def _latest_equity(session: Session, owner_id: str, account: Any) -> dict[str, A
         .order_by(ExecutionMetric.created_at.desc())
         .limit(1)
     ).first()
-    if snapshot is not None:
-        return {
-            "value": money(snapshot.equity),
-            "as_of": iso_utc(snapshot.created_at),
-            "source": "execution_snapshot",
-        }
     nav = session.execute(
-        select(DailyNav.nav_value, DailyNav.nav_ccy, DailyNav.date)
-        .where(DailyNav.user_id == owner_id, DailyNav.account_id == account.account_id)
+        select(DailyNav.nav_value, DailyNav.date)
+        .where(
+            DailyNav.user_id == owner_id,
+            DailyNav.account_id == account.account_id,
+            DailyNav.nav_ccy == account.base_ccy,
+        )
         .order_by(DailyNav.date.desc())
         .limit(1)
     ).first()
-    if nav is not None and nav.nav_ccy == account.base_ccy:
+    if snapshot is not None:
+        recorded = snapshot.created_at
+        recorded_day = (
+            recorded.astimezone(UTC).date() if recorded.tzinfo is not None else recorded.date()
+        )
+        if nav is None or nav.date <= recorded_day:
+            return {
+                "value": money(snapshot.equity),
+                "as_of": iso_utc(recorded),
+                "source": "execution_snapshot",
+            }
+    if nav is not None:
         return {"value": money(nav.nav_value), "as_of": iso_utc(nav.date), "source": "daily_nav"}
     if account.paper_initial_equity is not None:
         return {
@@ -250,6 +270,7 @@ def _recent_signals(session: Session, limit: int) -> list[dict[str, Any]]:
     ).all()
     return [
         {
+            "_at": _instant(row.ts),
             "kind": "signal",
             "at": iso_utc(row.ts),
             "strategy_id": row.strategy_id,
@@ -323,6 +344,7 @@ def _fill_rows(
     ).all()
     return [
         {
+            "_at": _instant(row.fill_ts),
             "kind": "fill",
             "id": int(row.exec_id),
             "cursor": f"{row.fill_ts.isoformat()}_{int(row.exec_id)}",
@@ -342,11 +364,36 @@ def _fill_rows(
     ]
 
 
+def _price_feeds(session: Session) -> list[dict[str, Any]]:
+    """Latest stored price per timeframe, from a bounded recent window.
+
+    One overall maximum would let an hourly FX row hide a minute feed that is
+    days behind, so each cadence is reported on its own. A feed with nothing in
+    the window is simply absent, which the page reads as stale.
+    """
+    since = datetime.now(tz=UTC).replace(tzinfo=None) - timedelta(days=_FEED_WINDOW_DAYS)
+    rows = session.execute(
+        select(InstrumentPrice.timeframe, func.max(InstrumentPrice.ts))
+        .where(InstrumentPrice.ts >= since)
+        .group_by(InstrumentPrice.timeframe)
+        .order_by(InstrumentPrice.timeframe)
+    ).all()
+    return [{"timeframe": timeframe, "last_at": iso_utc(latest)} for timeframe, latest in rows]
+
+
+def _public(item: dict[str, Any]) -> dict[str, Any]:
+    """Drop the private sort and paging helpers before an item leaves the API."""
+    return {key: value for key, value in item.items() if key not in {"_at", "cursor"}}
+
+
 def _strategy_counts(session: Session, owner_id: str) -> dict[str, int]:
     catalogue = session.execute(select(func.count(Strategy.strategy_id))).scalar_one()
     bindings = session.execute(
         select(UserStrategyBinding.is_active, func.count(UserStrategyBinding.binding_id))
-        .where(UserStrategyBinding.user_id == owner_id)
+        .where(
+            UserStrategyBinding.user_id == owner_id,
+            UserStrategyBinding.strategy_id.is_not(None),
+        )
         .group_by(UserStrategyBinding.is_active)
     ).all()
     by_state = {bool(active): int(count) for active, count in bindings}
@@ -420,11 +467,12 @@ def overview(session: Session, owner_id: str, *, safety: dict[str, Any]) -> dict
         "recent_fills",
         lambda: _fill_rows(session, account_ids, limit=_ACTIVITY_LIMIT, before=None),
     )
-    for fill in fills or []:
-        del fill["cursor"]
+    # Order by the instant, never by its text: "…:00Z" sorts after "…:00.250Z".
     activity = sorted(
-        [*(signals or []), *(fills or [])], key=lambda item: item["at"] or "", reverse=True
+        [*(signals or []), *(fills or [])], key=lambda item: item["_at"], reverse=True
     )[:_ACTIVITY_LIMIT]
+    last_signal_at = signals[0]["at"] if signals else None
+    activity = [_public(item) for item in activity]
 
     return {
         "as_of": iso_utc(datetime.now(tz=UTC)),
@@ -437,14 +485,8 @@ def overview(session: Session, owner_id: str, *, safety: dict[str, Any]) -> dict
         "accounts": account_payload,
         "strategies": _section(session, "strategies", lambda: _strategy_counts(session, owner_id)),
         "freshness": {
-            "last_price_at": iso_utc(
-                _section(
-                    session,
-                    "prices",
-                    lambda: session.execute(select(func.max(InstrumentPrice.ts))).scalar_one(),
-                )
-            ),
-            "last_signal_at": signals[0]["at"] if signals else None,
+            "price_feeds": _section(session, "prices", partial(_price_feeds, session)),
+            "last_signal_at": last_signal_at,
             "last_fill_at": iso_utc(last_fill),
         },
         "activity": activity,
@@ -521,7 +563,10 @@ def strategies(session: Session, owner_id: str) -> dict[str, Any]:
             UserStrategyBinding.entries_enabled,
             UserStrategyBinding.exits_enabled,
         )
-        .where(UserStrategyBinding.user_id == owner_id)
+        .where(
+            UserStrategyBinding.user_id == owner_id,
+            UserStrategyBinding.strategy_id.is_not(None),
+        )
         .order_by(UserStrategyBinding.binding_id)
     ).all()
     bindings_by_strategy: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -665,6 +710,18 @@ def pnl(session: Session, owner_id: str, *, days: int) -> dict[str, Any]:
                     "equity_by_trade",
                     partial(_equity_by_trade, session, owner_id, account, since),
                 ),
+                "realized_total": None
+                if metric_rows is None
+                else money(
+                    sum(
+                        (
+                            Decimal(str(row.realized_pnl))
+                            for row in metric_rows
+                            if int(row.account_id) == account_id and row.realized_pnl is not None
+                        ),
+                        Decimal(0),
+                    )
+                ),
                 "realized": None
                 if metric_rows is None
                 else [
@@ -706,6 +763,8 @@ def fills(
     rows = _fill_rows(session, account_ids, limit=limit + 1, before=before)
     page = rows[:limit]
     next_before = page[-1]["cursor"] if len(rows) > limit and page else None
-    for row in page:
-        del row["cursor"]
-    return {"as_of": iso_utc(datetime.now(tz=UTC)), "fills": page, "next_before": next_before}
+    return {
+        "as_of": iso_utc(datetime.now(tz=UTC)),
+        "fills": [_public(row) for row in page],
+        "next_before": next_before,
+    }

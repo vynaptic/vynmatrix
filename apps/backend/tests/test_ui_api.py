@@ -17,7 +17,6 @@ from backend.api import create_app
 from backend.ui_api import CONTENT_SECURITY_POLICY, UI_DIRECTORY
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -60,6 +59,7 @@ def _fill(
     instr: int,
     side: str,
     hours_ago: int | None = None,
+    at: datetime | None = None,
 ) -> None:
     session.add(
         OrderIntent(
@@ -93,7 +93,7 @@ def _fill(
             exec_id=number,
             order_id=number,
             instr_id=instr,
-            fill_ts=_naive(NOW - timedelta(hours=hours_ago or 10 - number)),
+            fill_ts=_naive(at or NOW - timedelta(hours=hours_ago or 10 - number)),
             qty=Decimal("0.5"),
             price=Decimal("60000.10"),
             fee_ccy="USDC",
@@ -413,12 +413,66 @@ def test_overview_reports_only_the_owner_and_reads_projections_as_recorded(
     assert account["open_positions"] == 1
     assert account["fills"] == 4
     assert body["strategies"] == {"catalogue": 2, "bound": 1, "active": 1}
-    assert body["freshness"]["last_price_at"].endswith("Z")
-    assert body["freshness"]["last_signal_at"] == body["activity"][0]["at"] or body["activity"]
+    assert body["freshness"]["price_feeds"] == [
+        {"timeframe": "1m", "last_at": ui_queries.iso_utc(NOW - timedelta(minutes=2))}
+    ]
+    # The newest signal (one hour old) is newer than the newest fill (seven hours old).
+    assert body["activity"][0]["kind"] == "signal"
+    assert body["freshness"]["last_signal_at"] == body["activity"][0]["at"]
+    assert body["freshness"]["last_fill_at"] == max(
+        item["at"] for item in body["activity"] if item["kind"] == "fill"
+    )
     times = [item["at"] for item in body["activity"]]
     assert times == sorted(times, reverse=True)
     assert {item["kind"] for item in body["activity"]} == {"signal", "fill"}
     assert len(body["activity"]) <= 10
+
+
+def test_equity_prefers_a_daily_snapshot_that_is_newer_than_the_last_execution(
+    client: TestClient, factory: Any
+) -> None:
+    """A quiet account must not keep showing the equity of its last trade."""
+    with factory() as s:
+        s.add(
+            LinkedBrokerAccount(
+                account_id=3,
+                user_id="owner",
+                broker_id=6,
+                environment="paper",
+                display_name="Quiet EUR",
+                base_ccy="EUR",
+                paper_initial_equity=Decimal("1000"),
+                paper_initial_cash=Decimal("1000"),
+            )
+        )
+        _metric(
+            s,
+            key="q1",
+            user="owner",
+            account=3,
+            symbol="BTCUSDC",
+            mode="spot",
+            realized="0",
+            equity="1005",
+            minutes_ago=5 * 24 * 60,
+        )
+        s.add(
+            DailyNav(
+                user_id="owner",
+                account_id=3,
+                date=date.today() - timedelta(days=1),
+                nav_ccy="EUR",
+                nav_value=Decimal("1010.00"),
+            )
+        )
+        s.commit()
+
+    accounts = client.get("/api/ui/overview", headers=AUTH).json()["accounts"]
+    quiet = next(account for account in accounts if account["account_id"] == 3)
+    assert quiet["equity"]["source"] == "daily_nav"
+    assert Decimal(quiet["equity"]["value"]) == Decimal("1010.00")
+    busy = next(account for account in accounts if account["account_id"] == 1)
+    assert busy["equity"]["source"] == "execution_snapshot"  # same day: the timestamped row wins
 
 
 def test_no_secret_or_internal_field_reaches_any_payload(client: TestClient) -> None:
@@ -433,6 +487,8 @@ def test_no_secret_or_internal_field_reaches_any_payload(client: TestClient) -> 
             "secret_feature",
             "@example.invalid",
             "Peer account",
+            '"_at"',
+            '"cursor"',
         ):
             assert forbidden not in text, (route, forbidden)
 
@@ -488,6 +544,7 @@ def test_pnl_is_per_account_in_the_account_currency(client: TestClient) -> None:
         ("BTCUSDC", Decimal("-25")),
         ("ETHUSDC", Decimal("5")),
     }
+    assert Decimal(account["realized_total"]) == Decimal("-20")
     assert [position["symbol"] for position in account["positions"]] == ["BTCUSDC"]
     assert account["fees"] == [{"currency": "USDC", "value": "5.00000000"}]
 
@@ -517,18 +574,90 @@ def test_fills_page_by_fill_time_not_by_insertion_order_and_stay_owner_only(
         assert client.get(f"/api/ui/fills?{query}", headers=AUTH).status_code == 422
 
 
-def test_a_failing_section_degrades_to_null_instead_of_failing_the_page(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+def test_a_failing_section_degrades_to_null_inside_a_savepoint(
+    client: TestClient, factory: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def _refused(*_args: Any, **_kwargs: Any) -> Any:
-        raise OperationalError("SELECT", {}, Exception("permission denied for table executions"))
+    """On PostgreSQL a failed statement aborts the transaction; only a savepoint keeps the
+    later sections, and the transaction-local tenant scope, alive."""
+    from sqlalchemy import event, text
+
+    def _refused(session: Any, _account_ids: Any) -> Any:
+        return session.execute(text("SELECT nothing FROM a_table_that_is_not_there")).all()
+
+    statements: list[str] = []
+    engine = factory.kw["bind"]
+
+    def _capture(_conn: Any, _cursor: Any, statement: str, *_rest: Any) -> None:
+        statements.append(statement)
 
     monkeypatch.setattr(ui_queries, "_fill_stats", _refused)
-    body = client.get("/api/ui/overview", headers=AUTH).json()
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        body = client.get("/api/ui/overview", headers=AUTH).json()
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
     account = body["accounts"][0]
     assert account["fills"] is None
     assert account["open_positions"] == 1  # later sections still ran in the same transaction
     assert Decimal(account["realized_pnl"]["value"]) == Decimal("-20")
+    assert body["freshness"]["last_fill_at"] is None
+    failing = next(i for i, sql in enumerate(statements) if "a_table_that_is_not_there" in sql)
+    assert statements[failing - 1].startswith("SAVEPOINT")
+    assert statements[failing + 1].startswith("ROLLBACK TO SAVEPOINT")
+
+
+def test_activity_is_ordered_by_the_instant_not_by_its_text(
+    client: TestClient, factory: Any
+) -> None:
+    """A whole-second signal and a fractional fill in the same second: "...:00Z" sorts after
+    "...:00.250000Z" as text, yet the fill happened later."""
+    moment = NOW - timedelta(minutes=5)
+    with factory() as s:
+        s.add(
+            CanonicalSignal(
+                signal_id=90,
+                strategy_id="swing_v1",
+                instr_id=1,
+                action="long",
+                external_signal_id="ext-same-second",
+                ts=_naive(moment),
+            )
+        )
+        _fill(
+            s,
+            number=6,
+            user="owner",
+            account=1,
+            instr=1,
+            side="BUY",
+            at=moment + timedelta(milliseconds=250),
+        )
+        s.commit()
+
+    activity = client.get("/api/ui/overview", headers=AUTH).json()["activity"]
+    assert [item["kind"] for item in activity[:2]] == ["fill", "signal"]
+
+
+def test_a_binding_without_a_strategy_is_counted_nowhere(client: TestClient, factory: Any) -> None:
+    """Both pages must agree; an unassigned binding cannot be listed under a strategy."""
+    with factory() as s:
+        s.add(
+            UserStrategyBinding(
+                user_id="owner",
+                strategy_id=None,
+                broker_account_id=1,
+                is_active=False,
+                autopilot=False,
+                entries_enabled=False,
+                exits_enabled=False,
+            )
+        )
+        s.commit()
+
+    assert client.get("/api/ui/overview", headers=AUTH).json()["strategies"]["bound"] == 1
+    rows = client.get("/api/ui/strategies", headers=AUTH).json()["strategies"]
+    assert sum(len(row["bindings"]) for row in rows) == 1
 
 
 def test_the_shell_is_public_static_and_carries_the_ui_content_security_policy(
