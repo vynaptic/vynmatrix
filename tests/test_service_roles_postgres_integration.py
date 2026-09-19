@@ -464,3 +464,126 @@ def test_runtime_logins_enforce_privilege_matrix_and_backend_tenant_rls() -> Non
         for engine in runtime_engines.values():
             engine.dispose()
         admin.dispose()
+
+
+_UI_COLUMN_EXPECTATIONS = (
+    ("executions", "price", True),
+    ("orders", "settlement_currency", True),
+    ("order_intents", "side", True),
+    ("execution_metrics", "realized_pnl", True),
+    ("daily_nav", "nav_value", True),
+    ("positions", "qty", True),
+    ("canonical_signals", "action", True),
+    ("prices", "ts", True),
+    # Everything the owner UI has no reason to see stays unreadable.
+    ("orders", "client_order_id", False),
+    ("orders", "broker_order_ref", False),
+    ("order_intents", "payload", False),
+    ("canonical_signals", "features", False),
+    ("execution_metrics", "metadata", False),
+    ("prices", "close", False),
+)
+_UI_TABLES = (
+    "daily_nav",
+    "execution_metrics",
+    "order_intents",
+    "orders",
+    "positions",
+    "executions",
+    "canonical_signals",
+    "prices",
+)
+
+
+@pytest.mark.integration
+def test_backend_owner_ui_reads_are_column_scoped_and_owner_only() -> None:
+    """Revision 0107: the UI read models run as the backend login and see one owner."""
+    from backend import ui_queries
+    from sqlalchemy.orm import Session
+
+    from lib_application.services.account_onboarding import owner_scope
+
+    admin = sa.create_engine(_admin_url(), future=True)
+    backend = _runtime_engine(_admin_url(), "vm_backend_login")
+    try:
+        with backend.connect() as connection:
+            for table, column, expected in _UI_COLUMN_EXPECTATIONS:
+                actual = connection.execute(
+                    sa.text("SELECT has_column_privilege(current_user, :table, :column, 'SELECT')"),
+                    {"table": f"public.{table}", "column": column},
+                ).scalar_one()
+                assert bool(actual) is expected, f"{table}.{column}"
+            for table in _UI_TABLES:
+                for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                    # Column grants never amount to a table-wide privilege.
+                    assert not connection.execute(
+                        sa.text("SELECT has_table_privilege(current_user, :table, :privilege)"),
+                        {"table": f"public.{table}", "privilege": privilege},
+                    ).scalar_one(), f"{privilege} on {table}"
+
+        with _tenant_rows(admin) as (own_user, other_user, own_account, other_account):
+            with admin.begin() as connection:
+                connection.execute(
+                    sa.text(
+                        """
+                        INSERT INTO daily_nav (user_id, account_id, date, nav_ccy, nav_value)
+                        VALUES (:own_user, :own_account, CURRENT_DATE, 'EUR', 1234.50),
+                               (:other_user, :other_account, CURRENT_DATE, 'INR', 999.00)
+                        """
+                    ),
+                    {
+                        "own_user": own_user,
+                        "own_account": own_account,
+                        "other_user": other_user,
+                        "other_account": other_account,
+                    },
+                )
+            try:
+                with Session(backend) as session, owner_scope(session) as owner_id:
+                    assert owner_id == own_user
+                    overview = ui_queries.overview(session, owner_id, safety={})
+                    (account,) = overview["accounts"]
+                    assert account["account_id"] == own_account
+                    # A refused query would degrade its section to None.
+                    assert account["equity"] == {
+                        "value": "1234.50",
+                        "as_of": account["equity"]["as_of"],
+                        "source": "daily_nav",
+                    }
+                    assert account["realized_pnl"] == {"value": "0", "as_of": None}
+                    assert account["open_positions"] == 0
+                    assert account["fills"] == 0
+                    assert account["equity_trend"] == []
+                    assert overview["strategies"] is not None
+                    assert overview["activity"] == []
+
+                    (pnl_account,) = ui_queries.pnl(session, owner_id, days=30)["accounts"]
+                    assert [point["value"] for point in pnl_account["equity_daily"]] == ["1234.50"]
+                    assert pnl_account["equity_by_trade"] == []
+                    assert pnl_account["realized"] == []
+                    assert pnl_account["positions"] == []
+                    assert pnl_account["fees"] == []
+
+                    assert ui_queries.fills(session, owner_id, limit=5, before=None)["fills"] == []
+                    assert isinstance(ui_queries.strategies(session, owner_id)["strategies"], list)
+                    assert ui_queries._last_signals(session) == {}
+                    assert ui_queries._latest_versions(session) is not None
+
+                with backend.begin() as connection:
+                    # Forging the tenant setting cannot select another user's rows.
+                    connection.execute(
+                        sa.text("SELECT set_config('app.current_tenant', :tenant, true)"),
+                        {"tenant": other_user},
+                    )
+                    assert connection.scalar(sa.text("SELECT count(*) FROM daily_nav")) == 0
+                    connection.execute(sa.text("SELECT set_config('app.current_tenant', '', true)"))
+                    assert connection.scalar(sa.text("SELECT count(*) FROM daily_nav")) == 0
+            finally:
+                with admin.begin() as connection:
+                    connection.execute(
+                        sa.text("DELETE FROM daily_nav WHERE account_id IN (:own, :other)"),
+                        {"own": own_account, "other": other_account},
+                    )
+    finally:
+        backend.dispose()
+        admin.dispose()
