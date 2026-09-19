@@ -98,13 +98,18 @@ cannot change after relevant activity. Never place a secret in a command line.
 
 ## Existing databases, migrations, and rollback
 
-The current linear Alembic head is 0106_retire_topic_dead_letters. Verify the
+The current linear Alembic head is 0107_backend_ui_read. Verify the
 revision from scripts/db/alembic/versions rather than copying a transient
 command result. Revisions 0099 through 0104 introduce single-owner controls,
 safe reference registration, control-plane guards, commercial-tenancy removal,
 and a guarded Saxo capability correction; 0105 marks the undelivered rows of
 the retired observational outbox topics published, 0106 does the same for
-their dead-lettered rows, and both downgrades are deliberate no-ops.
+their dead-lettered rows, and both downgrades are deliberate no-ops. 0107
+widens the backend role for the owner UI by column-level SELECT only, on the
+listed columns of daily_nav, execution_metrics, order_intents, orders,
+positions, executions, canonical_signals and prices, with owner-scoped SELECT
+policies on the row-secured tables; order payloads, client and broker order
+references, signal features and metric metadata stay unreadable to it.
 
 For an existing database, configure its actual maintenance authority and use:
 
