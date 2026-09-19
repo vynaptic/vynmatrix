@@ -66,6 +66,8 @@ from lib_common.config_validation import BrokerType, ExecutionMode, normalize_br
 from lib_common.env_utils import parse_bool_env
 from lib_common.logging import get_logger
 
+from .ui_api import register_ui
+
 logger = get_logger(__name__)
 
 SessionFactory = Callable[[], Any]
@@ -696,6 +698,7 @@ def create_app(  # noqa: PLR0915
         session_factory=session_factory,
         require_admin=_require_admin,
     )
+    register_ui(app, session_factory=session_factory, require_admin=_require_admin)
 
     @app.get("/bindings", dependencies=[Depends(_require_admin)])
     def list_bindings() -> list[BindingOut]:

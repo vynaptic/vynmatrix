@@ -6,6 +6,8 @@ setup(
     name="backend",
     version="0.1.0",
     packages=find_packages(exclude=["tests", "tests.*"]),
+    # The owner UI is plain static files; ship them with a non-editable install too.
+    package_data={"backend": ["ui/*", "ui/pages/*"]},
     python_requires=">=3.11",
     install_requires=[
         "lib-common>=0.1.0",
