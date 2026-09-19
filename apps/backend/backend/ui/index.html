@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>vynmatrix</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="app.css">
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <div class="shell">
+      <aside class="rail" aria-label="Primary">
+        <a class="brand" href="#/dashboard" aria-label="vynmatrix home">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+            <path d="M5 8l7 16 4-9 4 9 7-16" />
+          </svg>
+          <span class="brand-name">vynmatrix</span>
+        </a>
+        <nav id="nav" class="nav" aria-label="Pages"></nav>
+        <p class="rail-note">Read-only view of your own deployment. Nothing here can place or change an order.</p>
+      </aside>
+
+      <div class="stage">
+        <header class="topbar">
+          <div class="topbar-title">
+            <p id="page-kicker" class="kicker"></p>
+            <h1 id="page-title"></h1>
+          </div>
+          <div class="topbar-tools">
+            <span id="mode-badge" class="badge badge-paper" hidden></span>
+            <span id="updated" class="updated" aria-live="polite"></span>
+            <button id="refresh" class="tool" type="button" title="Refresh now">Refresh</button>
+            <button id="theme" class="tool" type="button" title="Switch between light and dark">Theme</button>
+            <button id="lock" class="tool" type="button" title="Forget the admin key in this tab" hidden>Lock</button>
+          </div>
+        </header>
+
+        <div id="banner" class="banner" role="status" hidden></div>
+        <main id="main" class="page" tabindex="-1"></main>
+
+        <footer class="footnote">
+          Figures are recorded by the execution engine and shown with the time they were recorded.
+          They are not tax or investment advice.
+        </footer>
+      </div>
+    </div>
+
+    <div id="login" class="login" hidden>
+      <form id="login-form" class="login-card" autocomplete="off">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M5 8l7 16 4-9 4 9 7-16" />
+        </svg>
+        <h2>Unlock your dashboard</h2>
+        <p>
+          Paste the admin key of this installation. It is the value of
+          <code>BACKEND_ADMIN_API_KEY</code> in your <code>.env</code> file.
+        </p>
+        <label for="login-key">Admin key</label>
+        <input id="login-key" name="key" type="password" required spellcheck="false" autocapitalize="off">
+        <p id="login-error" class="login-error" role="alert" hidden></p>
+        <button class="primary" type="submit">Unlock</button>
+        <p class="login-note">
+          The key stays in this browser tab only, is sent to this computer only, and is forgotten
+          when you close the tab or press Lock.
+        </p>
+      </form>
+    </div>
+
+    <div id="tooltip" class="tooltip" role="presentation" hidden></div>
+
+    <noscript>
+      <p class="noscript">This page needs JavaScript. Nothing is loaded from the internet.</p>
+    </noscript>
+  </body>
+</html>
