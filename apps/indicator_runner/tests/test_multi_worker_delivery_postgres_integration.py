@@ -598,19 +598,22 @@ def test_twenty_workers_wake_together_with_bounded_connections(  # noqa: PLR0915
             detail=lambda: f"baseline={baseline} now={sampler.latest} {_activity(control)}",
         )
 
-        # 8. Restart after a simulated crash: worker 00's oldest pending row is
-        #    turned into a dead worker's stale claim. A fresh fleet reclaims it
-        #    and drains the backlog with no duplicate or missing delivery.
+        # 8. Restart after a simulated crash: the oldest row still queued anywhere
+        #    in the fleet becomes a dead worker's stale claim. A fresh fleet
+        #    reclaims it and drains the backlog with no duplicate or missing
+        #    delivery. Which worker still has queued work depends on drain timing,
+        #    so the row is chosen by query rather than assumed to be worker 00's.
         with control() as session:
             crashed = session.execute(
                 text(
                     "UPDATE outbox_events SET status = 'in_progress', claim_owner = 'dead-worker', "
                     "claimed_at = now() - interval '10 minutes' WHERE event_id = ("
                     "SELECT event_id FROM outbox_events WHERE topic = 'signals.submit' "
-                    "AND ordering_key = :key AND status = 'pending' ORDER BY created_at LIMIT 1) "
+                    "AND ordering_key LIKE :prefix AND status = 'pending' "
+                    "ORDER BY created_at, event_id LIMIT 1) "
                     "RETURNING event_id, attempts"
                 ),
-                {"key": f"{_WORKER_PREFIX}-00"},
+                {"prefix": f"{_WORKER_PREFIX}-%"},
             ).one()
             session.commit()
         stub.delay_seconds = 0.0

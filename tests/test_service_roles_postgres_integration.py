@@ -556,7 +556,10 @@ def test_backend_owner_ui_reads_are_column_scoped_and_owner_only() -> None:
                     assert account["fills"] == 0
                     assert account["equity_trend"] == []
                     assert overview["strategies"] is not None
-                    assert overview["activity"] == []
+                    # canonical_signals is a shared pipeline table with no owner
+                    # column, so another suite's rows may appear here; a fill may
+                    # not, because fills are reached only through this owner's orders.
+                    assert all(item["kind"] == "signal" for item in overview["activity"])
 
                     (pnl_account,) = ui_queries.pnl(session, owner_id, days=30)["accounts"]
                     assert [point["value"] for point in pnl_account["equity_daily"]] == ["1234.50"]
@@ -567,8 +570,11 @@ def test_backend_owner_ui_reads_are_column_scoped_and_owner_only() -> None:
 
                     assert ui_queries.fills(session, owner_id, limit=5, before=None)["fills"] == []
                     assert isinstance(ui_queries.strategies(session, owner_id)["strategies"], list)
-                    assert ui_queries._last_signals(session) == {}
-                    assert ui_queries._latest_versions(session) is not None
+                    # Shared pipeline and catalogue tables: the point is that the
+                    # grants cover their joins, not that another suite left no rows.
+                    assert isinstance(ui_queries._last_signals(session), dict)
+                    assert isinstance(ui_queries._latest_versions(session), dict)
+                    assert isinstance(ui_queries._price_feeds(session), list)
 
                     # A refused column degrades one section; the savepoint keeps the
                     # transaction and its tenant scope usable for the next one.
