@@ -3,6 +3,7 @@
 // add one entry to PAGES, and add its route in backend/ui_api.py.
 
 import * as api from "./api.js";
+import { hideTip } from "./charts.js";
 import { fmtClock, h, svg } from "./format.js";
 
 const PAGES = [
@@ -33,7 +34,9 @@ const REFRESH_MS = 30000;
 const THEME_KEY = "vynmatrix.theme";
 
 const el = (id) => document.getElementById(id);
-const state = { page: PAGES[0], busy: false, loadedOnce: false };
+// `generation` names the newest request. A response from an older one (the user
+// navigated, pressed Lock, or a newer refresh started) is discarded, never drawn.
+const state = { page: PAGES[0], generation: 0 };
 
 function currentPage() {
   const id = window.location.hash.replace(/^#\/?/, "").split("?")[0];
@@ -75,7 +78,13 @@ function showSafety(safety) {
   badge.hidden = false;
 }
 
+// The unlock prompt is modal: what is behind it is emptied, inert and unread.
 function showLogin(message) {
+  state.generation += 1;
+  hideTip();
+  el("main").replaceChildren();
+  el("main").classList.remove("is-loading");
+  el("shell").inert = true;
   const error = el("login-error");
   error.textContent = message || "";
   error.hidden = !message;
@@ -83,6 +92,13 @@ function showLogin(message) {
   el("lock").hidden = true;
   el("login-key").value = "";
   el("login-key").focus();
+}
+
+function hideLogin() {
+  const wasShown = !el("login").hidden;
+  el("login").hidden = true;
+  el("shell").inert = false;
+  return wasShown;
 }
 
 function explain(error) {
@@ -93,25 +109,31 @@ function explain(error) {
   return `Could not refresh (${error.message}). Showing what was loaded last.`;
 }
 
-async function render() {
-  if (state.busy) return;
-  state.busy = true;
+// quiet: a timed refresh. It neither dims the page nor replays the entry animation.
+async function render({ quiet = false } = {}) {
+  state.generation += 1;
+  const generation = state.generation;
+  const page = state.page;
+  const hadKey = api.hasKey();
   const main = el("main");
-  main.classList.add("is-loading");
+  if (!quiet) main.classList.add("is-loading");
   try {
-    const module = await import(state.page.module);
+    const module = await import(page.module);
     const data = await module.load(api);
-    const context = { api, refresh: render };
-    main.replaceChildren(...module.view(data, context));
+    if (generation !== state.generation) return;
+    hideTip();
+    main.classList.toggle("is-fresh", !quiet);
+    main.replaceChildren(...module.view(data, { api, refresh: render }));
     if (data && data.safety) showSafety(data.safety);
     el("updated").textContent = `Updated ${fmtClock(new Date())}`;
     el("lock").hidden = !api.hasKey();
-    el("login").hidden = true;
+    if (hideLogin()) main.focus();
     showBanner(null);
-    state.loadedOnce = true;
   } catch (error) {
+    if (generation !== state.generation) return;
     if (error instanceof api.ApiError && error.status === 401) {
-      showLogin(state.loadedOnce || api.hasKey() ? error.message : null);
+      // Only a key that was actually presented can have been refused.
+      showLogin(hadKey ? error.message : null);
     } else if (error instanceof api.ApiError) {
       showBanner(explain(error));
     } else {
@@ -119,8 +141,7 @@ async function render() {
       throw error;
     }
   } finally {
-    main.classList.remove("is-loading");
-    state.busy = false;
+    if (generation === state.generation) main.classList.remove("is-loading");
   }
 }
 
@@ -139,6 +160,12 @@ async function primeSafety() {
   } catch {
     // The page render reports the problem; the badge simply stays hidden.
   }
+}
+
+// A timed refresh must not pull the page out from under someone using it.
+function readerIsBusy() {
+  const main = el("main");
+  return main.contains(document.activeElement) || main.querySelector("details[open]") !== null;
 }
 
 function applyTheme(theme) {
@@ -172,10 +199,9 @@ function initTheme() {
 function boot() {
   buildNav();
   initTheme();
-  el("refresh").addEventListener("click", render);
+  el("refresh").addEventListener("click", () => render());
   el("lock").addEventListener("click", () => {
     api.clearKey();
-    el("main").replaceChildren();
     showLogin(null);
   });
   el("login-form").addEventListener("submit", async (event) => {
@@ -188,7 +214,8 @@ function boot() {
   });
   window.addEventListener("hashchange", route);
   window.setInterval(() => {
-    if (document.visibilityState === "visible" && el("login").hidden) render();
+    const idle = document.visibilityState === "visible" && el("login").hidden && !readerIsBusy();
+    if (idle) render({ quiet: true });
   }, REFRESH_MS);
   route();
   if (state.page.id !== "dashboard") primeSafety();

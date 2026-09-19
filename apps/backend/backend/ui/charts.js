@@ -18,7 +18,7 @@ function showTip(clientX, clientY, value, label) {
   tip.style.top = `${top}px`;
 }
 
-function hideTip() {
+export function hideTip() {
   const tip = tooltip();
   if (tip) tip.hidden = true;
 }
@@ -27,13 +27,17 @@ function hideTip() {
 function responsive(draw) {
   const host = h("div", { class: "chart" });
   let drawn = 0;
-  const paint = () => {
+  const observer = new ResizeObserver(() => {
+    if (!host.isConnected) {
+      observer.disconnect();
+      return;
+    }
     const width = Math.max(260, Math.floor(host.clientWidth || 640));
     if (width === drawn) return;
     drawn = width;
-    host.replaceChildren(draw(width));
-  };
-  new ResizeObserver(paint).observe(host);
+    host.replaceChildren(...draw(width));
+  });
+  observer.observe(host);
   return host;
 }
 
@@ -71,6 +75,8 @@ function drawLine(points, { format, tickFormat, ariaLabel }, width) {
   const innerH = height - margin.top - margin.bottom;
   const values = points.map((point) => point.value);
   const scaleTicks = ticks(Math.min(...values), Math.max(...values));
+  const step = scaleTicks[1] - scaleTicks[0];
+  const tickDigits = Math.min(8, Math.max(0, -Math.floor(Math.log10(step))));
   const low = scaleTicks[0];
   const high = scaleTicks[scaleTicks.length - 1];
   const xAt = (index) =>
@@ -80,7 +86,7 @@ function drawLine(points, { format, tickFormat, ariaLabel }, width) {
   const root = svg("svg", {
     viewBox: `0 0 ${width} ${height}`,
     role: "img",
-    "aria-label": ariaLabel,
+    "aria-label": `${ariaLabel}. Use the left and right arrow keys to read each point.`,
     tabindex: "0",
   });
   for (const tick of scaleTicks) {
@@ -97,7 +103,7 @@ function drawLine(points, { format, tickFormat, ariaLabel }, width) {
         x: margin.left - 10,
         y: yAt(tick) + 4,
         "text-anchor": "end",
-        text: (tickFormat || format)(tick),
+        text: tickFormat ? tickFormat(tick, tickDigits) : format(tick),
       }),
     );
   }
@@ -155,6 +161,7 @@ function drawLine(points, { format, tickFormat, ariaLabel }, width) {
   });
   root.append(cross, marker, hit);
 
+  const spoken = h("span", { class: "sr-only", "aria-live": "polite" });
   let active = last;
   const focusPoint = (index, clientX, clientY) => {
     active = Math.min(last, Math.max(0, index));
@@ -195,8 +202,9 @@ function drawLine(points, { format, tickFormat, ariaLabel }, width) {
     event.preventDefault();
     const next = Math.min(last, Math.max(0, active + move));
     focusPoint(next, ...screenPoint(next));
+    spoken.textContent = `${points[next].label}: ${format(points[next].value)}`;
   });
-  return root;
+  return [root, spoken];
 }
 
 export function sparkline(values, ariaLabel) {
@@ -255,7 +263,7 @@ function drawBars(rows, { format, ariaLabel }, width) {
   const root = svg("svg", {
     viewBox: `0 0 ${width} ${height}`,
     height,
-    role: "img",
+    role: "group",
     "aria-label": ariaLabel,
   });
   rows.forEach((row, index) => {
@@ -278,6 +286,7 @@ function drawBars(rows, { format, ariaLabel }, width) {
       width,
       height: rowHeight - 4,
       tabindex: "0",
+      role: "img",
       "aria-label": `${row.label}: ${format(row.value)}`,
     });
     hit.addEventListener("pointermove", readout);
@@ -301,7 +310,7 @@ function drawBars(rows, { format, ariaLabel }, width) {
     );
   });
   root.append(svg("line", { class: "chart-axis", x1: zero, x2: zero, y1: top + 18, y2: height - 4 }));
-  return root;
+  return [root];
 }
 
 function clip(text, limit) {

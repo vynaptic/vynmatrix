@@ -42,28 +42,40 @@ export function toNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function digitsFor(number, maxDigits) {
-  const magnitude = Math.abs(number);
-  if (magnitude !== 0 && magnitude < 1) return Math.max(maxDigits, 4);
-  return maxDigits;
+const TINY = 0.01;
+
+function magnitudeText(magnitude, digits, allowTiny) {
+  // A very small price or quantity keeps its significant digits instead of "0.00".
+  if (allowTiny && magnitude !== 0 && magnitude < TINY && digits > 0) {
+    return new Intl.NumberFormat(undefined, { maximumSignificantDigits: 4 }).format(magnitude);
+  }
+  return new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: Math.min(2, digits),
+    maximumFractionDigits: digits,
+  }).format(magnitude);
 }
 
-export function fmtNumber(value, { digits = 2, sign = false } = {}) {
+// True when the value shows as zero at this precision; such a value carries no sign.
+export function roundsToZero(value, digits = 2) {
+  const number = toNumber(value);
+  return number === null || Math.abs(number) < 0.5 * 10 ** -digits;
+}
+
+// money: a rounding residue is simply zero, never a signed or tiny-magnitude figure.
+export function fmtNumber(value, { digits = 2, sign = false, money = false } = {}) {
   const number = toNumber(value);
   if (number === null) return DASH;
-  const places = digitsFor(number, digits);
-  const text = new Intl.NumberFormat(undefined, {
-    minimumFractionDigits: Math.min(2, places),
-    maximumFractionDigits: places,
-  }).format(Math.abs(number));
+  const magnitude = money && roundsToZero(number, digits) ? 0 : Math.abs(number);
+  const text = magnitudeText(magnitude, digits, !money);
+  if (magnitude === 0) return text;
   if (number < 0) return `−${text}`;
-  return sign && number > 0 ? `+${text}` : text;
+  return sign ? `+${text}` : text;
 }
 
 // Currency codes here include non-ISO ones (USDC), so the code is a suffix
 // rather than an Intl currency style, which rejects them.
 export function fmtMoney(value, currency, options = {}) {
-  const text = fmtNumber(value, options);
+  const text = fmtNumber(value, { ...options, money: true });
   return text === DASH || !currency ? text : `${text} ${currency}`;
 }
 
@@ -140,7 +152,7 @@ export function titleCase(text) {
 export function delta(value, currency) {
   const number = toNumber(value);
   if (number === null) return h("span", { class: "delta delta-flat", text: "Not recorded yet" });
-  const direction = number > 0 ? "up" : number < 0 ? "down" : "flat";
+  const direction = roundsToZero(number) ? "flat" : number > 0 ? "up" : "down";
   const glyph = { up: "▲", down: "▼", flat: "●" }[direction];
   return h(
     "span",

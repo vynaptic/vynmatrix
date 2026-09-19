@@ -19,15 +19,41 @@ import {
 
 const RANGES = [30, 90, 365];
 const PAGE_SIZE = 50;
-const MAX_PAGE = 200;
-const local = { days: 90, fillsWanted: PAGE_SIZE };
+const MAX_ROWS = 1000;
+// Trades already loaded survive a refresh; `next` is the cursor for older ones.
+const local = { days: 90, rows: [], next: null };
 
 export async function load(api) {
-  const [pnl, fills] = await Promise.all([
+  const [pnl, head] = await Promise.all([
     api.get("pnl", { days: local.days }),
-    api.get("fills", { limit: Math.min(local.fillsWanted, MAX_PAGE) }),
+    api.get("fills", { limit: PAGE_SIZE }),
   ]);
-  return { pnl, fills };
+  mergeNewest(head);
+  return { pnl, fills: { rows: local.rows, more: local.next !== null } };
+}
+
+function mergeNewest(head) {
+  const known = new Set(local.rows.map((row) => row.id));
+  const joins = head.fills.some((row) => known.has(row.id));
+  if (!local.rows.length || !joins) {
+    // First load, or so much new activity that the loaded pages no longer join up.
+    local.rows = head.fills;
+    local.next = head.next_before;
+    return;
+  }
+  const fresh = head.fills.filter((row) => !known.has(row.id));
+  local.rows = [...fresh, ...local.rows].slice(0, MAX_ROWS);
+}
+
+async function loadOlder(context) {
+  try {
+    const page = await context.api.get("fills", { limit: PAGE_SIZE, before: local.next });
+    local.rows = [...local.rows, ...page.fills].slice(0, MAX_ROWS);
+    local.next = local.rows.length >= MAX_ROWS ? null : page.next_before;
+  } finally {
+    // A refused or failed request is reported by the normal render path.
+    context.refresh();
+  }
 }
 
 function asTable(columns, rows) {
@@ -74,7 +100,7 @@ function equityPanel(account) {
     ),
     lineChart(points, {
       format,
-      tickFormat: (value) => fmtNumber(value, { digits: 0 }),
+      tickFormat: (value, digits) => fmtNumber(value, { digits }),
       ariaLabel: `Account equity in ${account.currency}`,
     }),
     asTable(
@@ -88,7 +114,7 @@ function equityPanel(account) {
 }
 
 function realizedPanel(account) {
-  if (account.realized === null) {
+  if (!account.realized) {
     return h("div", { class: "panel" }, empty("Realized profit and loss is not available right now.", "Try again in a moment."));
   }
   const rows = account.realized
@@ -129,11 +155,9 @@ function summaryStrip(account) {
   const equity = account.equity ? toNumber(account.equity.value) : null;
   const start = toNumber(account.starting_equity);
   const change = equity !== null && start ? equity - start : null;
-  const realizedTotal =
-    account.realized === null
-      ? null
-      : account.realized.reduce((sum, row) => sum + (toNumber(row.value) || 0), 0);
-  const fees = account.fees || [];
+  // Summed on the server in exact decimals; never re-added here in floating point.
+  const realizedTotal = account.realized_total;
+  const fees = account.fees;
   return h(
     "div",
     { class: "panel strip" },
@@ -155,7 +179,11 @@ function summaryStrip(account) {
       "div",
       { class: "tile" },
       h("span", { class: "tile-label", text: "Realized profit and loss" }),
-      h("span", { class: "tile-value" }, realizedTotal === null ? "Not available" : delta(realizedTotal, account.currency)),
+      h(
+        "span",
+        { class: "tile-value" },
+        realizedTotal == null ? "Not available" : delta(realizedTotal, account.currency),
+      ),
       h("span", { class: "tile-note", text: "Closed trades only." }),
     ),
     h(
@@ -165,21 +193,28 @@ function summaryStrip(account) {
       h(
         "span",
         { class: "tile-value" },
-        fees.length ? fees.map((fee) => h("div", {}, fmtNumber(fee.value), h("small", { text: fee.currency }))) : "0",
+        fees == null
+          ? "Not available"
+          : fees.length
+            ? fees.map((fee) => h("div", {}, fmtNumber(fee.value), h("small", { text: fee.currency })))
+            : "0",
       ),
-      h("span", { class: "tile-note", text: "In the currency each fee was charged." }),
+      h("span", {
+        class: "tile-note",
+        text: fees == null ? "Try again in a moment." : "In the currency each fee was charged.",
+      }),
     ),
     h(
       "div",
       { class: "tile" },
       h("span", { class: "tile-label", text: "Open positions" }),
-      h("span", { class: "tile-value", text: account.positions === null ? "Not available" : fmtNumber(account.positions.length, { digits: 0 }) }),
+      h("span", { class: "tile-value", text: account.positions == null ? "Not available" : fmtNumber(account.positions.length, { digits: 0 }) }),
     ),
   );
 }
 
 function positionsPanel(account) {
-  if (account.positions === null) {
+  if (!account.positions) {
     return h("div", { class: "panel" }, empty("Positions are not available right now.", "Try again in a moment."));
   }
   if (!account.positions.length) {
@@ -222,24 +257,23 @@ function rangeFilter(context) {
 }
 
 function blotter(fills, context) {
-  if (!fills.fills.length) {
+  if (!fills.rows.length) {
     return h("div", { class: "panel" }, empty("No trades yet.", "Every filled order is listed here, newest first."));
   }
-  const more =
-    fills.next_before && local.fillsWanted < MAX_PAGE
-      ? h(
-          "div",
-          { class: "more" },
-          h("button", {
-            class: "tool",
-            type: "button",
-            text: "Load more trades",
-            onclick: () => {
-              local.fillsWanted = Math.min(MAX_PAGE, local.fillsWanted + PAGE_SIZE);
-              context.refresh();
-            },
-          }),
-        )
+  const capped = !fills.more && fills.rows.length >= MAX_ROWS;
+  const footer = fills.more
+    ? h(
+        "div",
+        { class: "more" },
+        h("button", {
+          class: "tool",
+          type: "button",
+          text: "Load older trades",
+          onclick: () => loadOlder(context),
+        }),
+      )
+    : capped
+      ? h("div", { class: "more muted", text: `Showing the newest ${fmtNumber(MAX_ROWS, { digits: 0 })} trades.` })
       : null;
   return h(
     "div",
@@ -248,21 +282,21 @@ function blotter(fills, context) {
       [
         { label: "When", cell: (row) => fmtDateTime(row.at) },
         { label: "Symbol", cell: (row) => h("span", { class: "cell-main", text: row.symbol }) },
-        { label: "Side", cell: (row) => h("span", { class: `side-${row.side}`, text: titleCase(row.side) }) },
+        { label: "Side", cell: (row) => h("span", { class: "side", text: titleCase(row.side) }) },
         { label: "Quantity", numeric: true, cell: (row) => fmtQuantity(row.quantity) },
         { label: "Price", numeric: true, cell: (row) => fmtMoney(row.price, row.currency) },
         { label: "Fee", numeric: true, cell: (row) => fmtMoney(row.fee, row.fee_currency) },
         { label: "Strategy", cell: (row) => row.strategy_id },
       ],
-      fills.fills,
+      fills.rows,
     ),
-    more,
+    footer,
   );
 }
 
 export function view(data, context) {
   const { pnl, fills } = data;
-  if (!pnl.accounts.length) {
+  if (!(pnl.accounts || []).length) {
     return [
       section(
         "Profit and loss",
@@ -279,6 +313,7 @@ export function view(data, context) {
       section("Open positions", null, positionsPanel(account)),
     );
   }
-  nodes.push(section("Trades", "Every filled order, newest first.", blotter(fills, context)));
+  const loaded = `${fmtNumber(fills.rows.length, { digits: 0 })} loaded, newest first.`;
+  nodes.push(section("Trades", fills.rows.length ? loaded : null, blotter(fills, context)));
   return nodes;
 }

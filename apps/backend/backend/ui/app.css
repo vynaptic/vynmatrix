@@ -7,7 +7,7 @@
   --surface: #fcfcfb;
   --ink: #14140f;
   --ink-2: #52514e;
-  --ink-3: #898781;
+  --ink-3: #6b6a65;
   --rule: #e1e0d9;
   --rule-strong: #c3c2b7;
   --wash: rgba(20, 20, 15, 0.045);
@@ -365,22 +365,26 @@ h1 {
 
 .section {
   margin-bottom: 2.2rem;
+}
+
+/* The entry animation belongs to navigation; a timed refresh swaps in silently. */
+.is-fresh .section {
   animation: rise 0.45s ease both;
 }
 
-.section:nth-child(2) {
+.is-fresh .section:nth-child(2) {
   animation-delay: 0.05s;
 }
 
-.section:nth-child(3) {
+.is-fresh .section:nth-child(3) {
   animation-delay: 0.1s;
 }
 
-.section:nth-child(4) {
+.is-fresh .section:nth-child(4) {
   animation-delay: 0.15s;
 }
 
-.section:nth-child(n + 5) {
+.is-fresh .section:nth-child(n + 5) {
   animation-delay: 0.2s;
 }
 
@@ -396,7 +400,7 @@ h1 {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .section {
+  .is-fresh .section {
     animation: none;
   }
   * {
@@ -656,8 +660,7 @@ td.wrap .chip {
   font-weight: 400;
 }
 
-.side-buy,
-.side-sell {
+.side {
   font-weight: 650;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -680,6 +683,10 @@ td.wrap .chip {
   justify-content: center;
   padding: 0.8rem;
   border-top: 1px solid var(--rule);
+}
+
+.more.muted {
+  font-size: 0.85rem;
 }
 
 details.as-table {
@@ -733,7 +740,17 @@ details.as-table summary {
 
 .chart {
   position: relative;
+  min-height: 6rem;
   padding: 0.6rem 0.4rem 0.2rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .chart svg {

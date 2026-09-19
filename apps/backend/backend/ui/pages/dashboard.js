@@ -17,8 +17,25 @@ import {
   toNumber,
 } from "../format.js";
 
-const FRESH_SECONDS = 10 * 60;
-const DELAYED_SECONDS = 60 * 60;
+// A feed is judged against its own cadence: a one-minute feed an hour behind is
+// stale, a daily reference rate an hour old is perfectly fresh.
+const UNIT_SECONDS = { m: 60, h: 3600, d: 86400, w: 604800 };
+const FLOOR_FRESH = 10 * 60;
+const FLOOR_DELAYED = 60 * 60;
+const LEVELS = ["good", "warning", "critical"];
+
+function cadenceSeconds(timeframe) {
+  const match = /^(\d+)\s*([mhdw])/i.exec(String(timeframe || ""));
+  return match ? Number(match[1]) * UNIT_SECONDS[match[2].toLowerCase()] : 60;
+}
+
+function feedLevel(feed) {
+  const age = ageSeconds(feed.last_at);
+  const cadence = cadenceSeconds(feed.timeframe);
+  if (age === null) return 2;
+  if (age <= Math.max(FLOOR_FRESH, cadence * 2)) return 0;
+  return age <= Math.max(FLOOR_DELAYED, cadence * 6) ? 1 : 2;
+}
 
 export function load(api) {
   return api.get("overview");
@@ -89,36 +106,44 @@ function accountSection(account) {
       ),
       tile(
         "Open positions",
-        account.open_positions === null ? "Not available" : fmtNumber(account.open_positions, { digits: 0 }),
+        account.open_positions == null
+          ? "Not available"
+          : fmtNumber(account.open_positions, { digits: 0 }),
         account.open_positions === 0 ? "Nothing is held right now." : null,
       ),
       tile(
         "Trades filled",
-        account.fills === null ? "Not available" : fmtNumber(account.fills, { digits: 0 }),
+        account.fills == null ? "Not available" : fmtNumber(account.fills, { digits: 0 }),
         "All time, this account.",
       ),
     ),
   );
 }
 
-function marketStatus(iso) {
-  const age = ageSeconds(iso);
-  if (age === null) {
-    return ["status", "No prices yet", "Prices arrive once the market-data worker is running."];
+function marketStatus(feeds) {
+  if (!feeds) {
+    return ["status", "Not available", "Price freshness could not be read just now."];
   }
-  if (age <= FRESH_SECONDS) return ["status status-good", "Fresh", `Last price ${fmtAgo(iso)}.`];
-  if (age <= DELAYED_SECONDS) {
-    return ["status status-warning", "Delayed", `Last price ${fmtAgo(iso)}.`];
+  if (!feeds.length) {
+    return [
+      "status status-critical",
+      "No recent prices",
+      "Nothing stored in the last two weeks. Prices arrive once the market-data worker is running.",
+    ];
   }
-  return [
-    "status status-critical",
-    "Stale",
-    `No new prices since ${fmtDateTime(iso)}. The market-data worker may be stopped.`,
-  ];
+  const worst = Math.max(...feeds.map(feedLevel));
+  const detail = [...feeds]
+    .sort((a, b) => cadenceSeconds(a.timeframe) - cadenceSeconds(b.timeframe))
+    .map((feed) => `${feed.timeframe} prices ${fmtAgo(feed.last_at)}`)
+    .join(" \u00B7 ");
+  const label = ["Fresh", "Delayed", "Behind"][worst];
+  const hint = worst === 2 ? " A feed this far behind is still catching up or has stopped." : "";
+  return [`status status-${LEVELS[worst]}`, label, `${detail}.${hint}`];
 }
 
 function pulseSection(data) {
-  const [statusClass, statusText, statusNote] = marketStatus(data.freshness.last_price_at);
+  const freshness = data.freshness || {};
+  const [statusClass, statusText, statusNote] = marketStatus(freshness.price_feeds);
   const counts = data.strategies;
   return section(
     "Is everything running?",
@@ -129,16 +154,16 @@ function pulseSection(data) {
       tile("Market data", h("span", { class: statusClass, text: statusText }), statusNote),
       tile(
         "Last signal",
-        fmtAgo(data.freshness.last_signal_at),
-        data.freshness.last_signal_at
-          ? fmtDateTime(data.freshness.last_signal_at)
+        fmtAgo(freshness.last_signal_at),
+        freshness.last_signal_at
+          ? fmtDateTime(freshness.last_signal_at)
           : "Strategies have not signalled yet.",
       ),
       tile(
         "Last trade",
-        fmtAgo(data.freshness.last_fill_at),
-        data.freshness.last_fill_at
-          ? fmtDateTime(data.freshness.last_fill_at)
+        fmtAgo(freshness.last_fill_at),
+        freshness.last_fill_at
+          ? fmtDateTime(freshness.last_fill_at)
           : "No order has been filled yet.",
       ),
       tile(
@@ -184,7 +209,8 @@ function activityItem(item) {
 }
 
 export function view(data) {
-  const accounts = data.accounts.length
+  const activity = data.activity || [];
+  const accounts = (data.accounts || []).length
     ? data.accounts.map(accountSection)
     : [
         section(
@@ -197,8 +223,8 @@ export function view(data) {
           ),
         ),
       ];
-  const feed = data.activity.length
-    ? h("ul", { class: "feed" }, data.activity.map(activityItem))
+  const feed = activity.length
+    ? h("ul", { class: "feed" }, activity.map(activityItem))
     : empty("Nothing has happened yet.", "Signals and trades appear here as soon as a strategy acts.");
   return [
     ...accounts,

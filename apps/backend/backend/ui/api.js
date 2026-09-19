@@ -10,6 +10,9 @@ export class ApiError extends Error {
   }
 }
 
+// Fallback for browsers that refuse site storage: the key then lives in memory.
+let volatileKey = null;
+
 function read() {
   try {
     return window.sessionStorage.getItem(STORAGE_KEY);
@@ -19,14 +22,14 @@ function read() {
 }
 
 export function hasKey() {
-  return Boolean(read());
+  return Boolean(read() || volatileKey);
 }
 
 export function setKey(value) {
   try {
     window.sessionStorage.setItem(STORAGE_KEY, value);
   } catch {
-    // Storage can be unavailable (private mode); the key then lasts one request.
+    // Storage can be unavailable; the in-memory copy below still unlocks this tab.
   }
   volatileKey = value;
 }
@@ -39,8 +42,6 @@ export function clearKey() {
     // Nothing stored, nothing to clear.
   }
 }
-
-let volatileKey = null;
 
 export async function get(path, params = {}) {
   const url = new URL(`/api/ui/${path}`, window.location.origin);
