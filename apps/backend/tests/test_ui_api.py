@@ -199,8 +199,18 @@ def factory() -> Any:
                     strategy_name="Swing High Low",
                     asset_class="crypto",
                     description="Trades swing breaks.",
+                    is_active=True,
                 ),
                 Strategy(strategy_id="quiet_v1", strategy_name="Quiet One", asset_class="equity"),
+                Strategy(
+                    strategy_id="ported_v1",
+                    strategy_name="Freshly Ported",
+                    asset_class="crypto",
+                    description="Registered from disk, never activated.",
+                ),
+                StrategyVersion(
+                    strategy_id="ported_v1", semver="1.0.0", param_schema={}, status="registered"
+                ),
                 StrategyVersion(
                     strategy_id="swing_v1", semver="1.0.0", param_schema={}, status="deprecated"
                 ),
@@ -412,7 +422,7 @@ def test_overview_reports_only_the_owner_and_reads_projections_as_recorded(
     assert account["equity"]["source"] == "execution_snapshot"
     assert account["open_positions"] == 1
     assert account["fills"] == 4
-    assert body["strategies"] == {"catalogue": 2, "bound": 1, "active": 1}
+    assert body["strategies"] == {"catalogue": 3, "released": 1, "bound": 1, "active": 1}
     assert body["freshness"]["price_feeds"] == [
         {"timeframe": "1m", "last_at": ui_queries.iso_utc(NOW - timedelta(minutes=2))}
     ]
@@ -502,6 +512,7 @@ def test_strategies_lists_the_catalogue_with_binding_signal_and_recorded_pnl(
     swing = by_id["swing_v1"]
     # The deprecated 1.0.0 row was released later in this fixture; the active version wins.
     assert (swing["version"], swing["status"]) == ("1.1.0", "active")
+    assert swing["released"] is True
     assert swing["bindings"] == [
         {
             "account_id": 1,
@@ -523,6 +534,29 @@ def test_strategies_lists_the_catalogue_with_binding_signal_and_recorded_pnl(
     assert quiet["last_signal"] is None
     assert quiet["version"] is None
     assert quiet["realized_pnl"] == []
+
+
+def test_a_newly_registered_strategy_is_listed_with_its_version_before_it_ever_trades(
+    client: TestClient,
+) -> None:
+    """The state every freshly ported strategy is in: registered, unbound, silent.
+
+    It must still appear, with its version and status, or an owner who added
+    strategies cannot tell registration from a failed import.
+    """
+    rows = client.get("/api/ui/strategies", headers=AUTH).json()["strategies"]
+    ported = next(row for row in rows if row["strategy_id"] == "ported_v1")
+
+    assert (ported["version"], ported["status"]) == ("1.0.0", "registered")
+    assert ported["name"] == "Freshly Ported"
+    # Fail-closed: the admin API refuses to bind a strategy that is not released.
+    assert ported["released"] is False
+    assert ported["bindings"] == []
+    assert ported["last_signal"] is None
+    assert ported["realized_pnl"] == []
+
+    counts = client.get("/api/ui/overview", headers=AUTH).json()["strategies"]
+    assert counts == {"catalogue": 3, "released": 1, "bound": 1, "active": 1}
 
 
 def test_pnl_is_per_account_in_the_account_currency(client: TestClient) -> None:
