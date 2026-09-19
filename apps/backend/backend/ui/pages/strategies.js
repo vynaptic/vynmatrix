@@ -12,7 +12,7 @@ function statusChip(status) {
 }
 
 function bindingCell(row) {
-  if (!row.bindings.length) {
+  if (!(row.bindings || []).length) {
     return h("span", { class: "muted", text: "Not bound to an account" });
   }
   return row.bindings.map((binding) =>
@@ -36,7 +36,7 @@ function bindingCell(row) {
 }
 
 function signalCell(row) {
-  if (row.last_signal === null) return h("span", { class: "muted", text: "None yet" });
+  if (!row.last_signal) return h("span", { class: "muted", text: "None yet" });
   return [
     h("span", { class: "cell-main", text: `${titleCase(row.last_signal.action)} ${row.last_signal.symbol}` }),
     h("span", { class: "cell-sub", title: fmtDateTime(row.last_signal.at), text: fmtAgo(row.last_signal.at) }),
@@ -44,13 +44,13 @@ function signalCell(row) {
 }
 
 function pnlCell(row) {
-  if (row.realized_pnl === null) return h("span", { class: "muted", text: "Not available" });
+  if (!row.realized_pnl) return h("span", { class: "muted", text: "Not available" });
   if (!row.realized_pnl.length) return h("span", { class: "muted", text: "No closed trades" });
   return row.realized_pnl.map((entry) => h("div", {}, delta(entry.value, entry.currency)));
 }
 
 export function view(data) {
-  const rows = data.strategies;
+  const rows = data.strategies || [];
   const trading = rows.filter((row) => row.bindings.some((binding) => binding.active)).length;
   const bound = rows.filter((row) => row.bindings.length).length;
 
