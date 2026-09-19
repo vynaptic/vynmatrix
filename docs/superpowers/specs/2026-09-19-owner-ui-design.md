@@ -72,11 +72,13 @@ registry, and one route in `ui_api.py`.
 
 All responses are JSON, read-only and carry `as_of` (UTC). Money is a decimal
 string with an explicit `currency`; values of different currencies are never added.
-A section that cannot be computed is `null` with a `reason`, never a guessed zero.
+A section that cannot be computed is `null`, never a guessed zero; the cause is
+logged on the server as "Owner UI section unavailable" and the page shows that
+section as not available.
 
 | Route | Returns |
 | --- | --- |
-| `GET /api/ui/overview` | safety block (`execution_mode`, `allow_live`, `environment`), owner display name and base currency, per-account KPIs (equity with as-of and source, realized P&L, open positions, fills), strategy counts, freshness (`last_price_at`, `last_signal_at`, `last_fill_at`), and the latest 10 signals and fills merged as activity |
+| `GET /api/ui/overview` | safety block (`execution_mode`, `allow_live`, `environment`), owner display name and base currency, per-account KPIs (equity with as-of and source, realized P&L, open positions, fills), strategy counts, freshness (`price_feeds`: the latest stored price per timeframe, because one overall maximum lets an hourly FX row hide a minute feed that is days behind; `last_signal_at`; `last_fill_at`), and the latest 10 signals and fills merged as activity |
 | `GET /api/ui/strategies` | catalogue rows: id, name, asset class, description, latest version and status, the owner's binding (active, account, entries, exits, autopilot) or `null`, last signal (time, action, symbol), realized P&L for that strategy |
 | `GET /api/ui/pnl?days=90` | per account: equity series from `daily_nav`, equity-by-trade series and realized P&L by strategy and symbol from `execution_metrics` (latest row per partition, `blocked` excluded), open positions, fee totals by currency |
 | `GET /api/ui/fills?limit=50&before=<cursor>` | fills blotter joined to orders, intents and instruments, newest first by fill time (replayed history is inserted out of time order, so the execution id only breaks ties), keyset-paginated with the opaque cursor the previous page returned |
@@ -100,7 +102,7 @@ the style of `0102`:
 | `positions` | account_id, instr_id, qty, avg_price, last_mark, gross_notional, notional_currency, updated_at | owner account |
 | `executions` | exec_id, order_id, instr_id, fill_ts, qty, price, fee_ccy, fee_amount, venue | order of an owner account |
 | `canonical_signals` | strategy_id, instr_id, action, confidence, ts | none (no RLS; single-owner pipeline rows) |
-| `prices` | ts | none (shared reference data; only the latest timestamp is read) |
+| `prices` | ts, timeframe | none (shared reference data; only the latest timestamp per timeframe is read) |
 
 Direct owner means `user_id = public.vm_deployment_owner_id() AND user_id =
 current_setting('app.current_tenant', true)`. No INSERT, UPDATE, DELETE, sequence or
@@ -127,13 +129,15 @@ inline script or style. The loopback binding is unchanged.
 
 Shell: left navigation (Dashboard, Strategies, P&L) that collapses to a top bar on
 narrow screens, a permanent **PAPER · live orders disabled** badge, last-refreshed
-time with a manual refresh, light and dark themes following the system, and
-automatic refresh every 30 seconds while the tab is visible.
+time with a manual refresh, light and dark themes following the system, and a
+silent refresh every 30 seconds while the tab is visible and nobody is reading
+inside the page (focus in the content or an open table pauses it). A response
+that arrives after the owner navigated or pressed Lock is discarded.
 
 - **Dashboard (phase 1).** KPI tiles per account (equity, realized P&L, open
   positions, active strategies), three freshness tiles in plain language (market
-  data, signals, trades; only market data is graded fresh/delayed/stale, because
-  quiet strategies are normal), an equity sparkline, and recent activity.
+  data, signals, trades; only market data is graded fresh/delayed/stale, each feed
+  against its own cadence, because quiet strategies are normal), an equity sparkline, and recent activity.
 - **Strategies (phase 2).** One row per catalogue strategy with status, binding
   state, last signal and realized P&L; a row expands to its description and the
   binding's entry/exit/autopilot switches, read-only.
@@ -146,8 +150,9 @@ Projections are labelled "recorded by the execution engine" with their as-of tim
 
 ## 9. Error handling
 
-The API isolates each overview section: a failing query yields `null` with a reason
-for that section and the page still renders. The frontend shows one inline banner
+The API builds each degradable section inside a savepoint: a failing query yields
+`null` for that section, the transaction and its tenant scope survive, and the page
+still renders. The frontend shows one inline banner
 for network failures and keeps the last good data visible with its age.
 
 ## 10. Testing and acceptance
