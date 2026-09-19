@@ -7,7 +7,19 @@ paper soak, broker certification, deployment, or performance record.
 | --- | --- | --- |
 | [SwingHighLowPMO](../strategies/indicator/SwingHighLowPMO/README.md) | enabled in dev, E2E pipeline canary, 1.1.0 | Development pipeline canary |
 | [USQualityCompounder](../strategies/indicator/USQualityCompounder/README.md) | disabled in dev | Equity portfolio research |
+| [ATRBreakout](../strategies/indicator/ATRBreakout/README.md) | disabled in dev, 1.0.0 | Backtrader port |
+| [AdaptiveVWAPMeanReversion](../strategies/indicator/AdaptiveVWAPMeanReversion/README.md) | disabled in dev, 1.0.0 | Backtrader port |
+| [BBSqueezeBreakout](../strategies/indicator/BBSqueezeBreakout/README.md) | disabled in dev, 1.0.0 | Backtrader port |
+| [EngulfingPattern](../strategies/indicator/EngulfingPattern/README.md) | disabled in dev, 1.0.0 | Backtrader port |
+| [HurstRegime](../strategies/indicator/HurstRegime/README.md) | disabled in dev, 1.0.0 | Backtrader port |
+| [TimeDecayAdaptiveEMA](../strategies/indicator/TimeDecayAdaptiveEMA/README.md) | disabled in dev, 1.0.0 | Backtrader port |
+| [VolatilityClusteringReversion](../strategies/indicator/VolatilityClusteringReversion/README.md) | disabled in dev, 1.0.0 | Backtrader port |
+| [VortexTrendCapture](../strategies/indicator/VortexTrendCapture/README.md) | disabled in dev, 1.0.0 | Backtrader port |
+| [WilliamsPullback](../strategies/indicator/WilliamsPullback/README.md) | disabled in dev, 1.0.0 | Backtrader port |
+| [ZScoreMeanReversion](../strategies/indicator/ZScoreMeanReversion/README.md) | disabled in dev, 1.0.0 | Backtrader port |
 | [_template](../strategies/indicator/_template/config.json) | disabled in dev | Development scaffold |
+
+The ten ports are detailed under [Backtrader migration](#backtrader-migration).
 
 Current boundaries:
 
@@ -22,6 +34,27 @@ The shared platform image shipping a strategy is not authority. STRATEGY_LIST,
 strategy/version state, owner, binding, exact account, instrument route, session
 coverage, entitlement, and current execution checks are independent. Bootstrap
 registers inactive references; it creates no broker account, binding, or route.
+
+## From a shipped file to a visible, tradable strategy
+
+Shipping a strategy directory does three separate things, in this order, and
+stopping after the first is why a newly added strategy can be absent from the
+owner UI:
+
+1. **On disk and in the image.** `vmdev build strategies` then
+   `vmdev build docker --from-config --tag latest` put the directory in the
+   platform image. The signal worker can now import it; nothing lists it.
+2. **Registered in the database.** `vmdev db catalogue --check` reports missing
+   references and `vmdev db catalogue --apply` registers them as immutable
+   `strategies` and `strategy_versions` rows. This is also part of
+   `vmdev db bootstrap`. Only now does the strategy appear in the owner UI, as
+   "Not released", because registration is deliberately fail-closed:
+   `strategies.is_active` stays false.
+3. **Released, bound and switched on.** Release is a maintenance action, not a
+   CLI or UI action; the admin API refuses to bind a strategy whose row is
+   inactive or whose release is not active (HTTP 409). Binding, account,
+   instrument route, session coverage and the execution checks above remain
+   independent of every earlier step.
 
 The maintenance canary action applies only to the exact eligible Swing release
 with paper mode and the live gate false. It enables no account/binding and does
@@ -93,6 +126,30 @@ The checked-in Coinbase BTC-USD minute fixture contains 1,501 real bars. It
 supports component and decision-parity checks. The daily research evidence below
 adds multi-year comparisons; neither evidence set is a production attestation.
 New strategies remain disabled and independently unapproved.
+
+### Known corrections deferred to a re-capture
+
+Two contract defects are recorded rather than fixed, because
+`tests/test_migrated_strategy_source_reference.py` pins the byte hash of every
+ported `config.json` and of the reference fixture itself, so any edit to those
+files requires re-running the capture against the out-of-tree Backtrader source
+under the pinned `backtrader` 1.9.78.123 / TA-Lib 0.6.8 environment. Correct
+them in the same change as that re-capture:
+
+- **Bootstrap window.** All ten ship `market_data.bootstrap_bars` 500 with
+  `consolidation_minutes` 1440. The worker fetches
+  `bootstrap_bars * consolidation_minutes` raw rows when the feed is `1m`
+  (`signal_worker.py` `_bootstrap`), so each cold start and each correction
+  replay loads 720,000 one-minute rows per symbol. The measured warm-up is at
+  most 60 consolidated bars (BBSqueezeBreakout; the others need 15 to 45), so
+  the `_template` default of 120 already carries double the worst case at
+  172,800 rows. SwingHighLowPMO reaches only 7,500 rows because it consolidates
+  15 minutes, which is where the 500 was copied from.
+- **Evidence binding.** The pin covers whole files, so an operational field such
+  as `bootstrap_bars`, which cannot change a decision, is as immovable as a
+  strategy parameter. Binding the decision-relevant contract instead (the
+  `parameters` block and the core hash, both already captured) would keep the
+  evidence meaningful while leaving such fields correctable in-tree.
 
 ### Implementation verification
 
