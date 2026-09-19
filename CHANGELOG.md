@@ -12,6 +12,9 @@ Git history.
 - Ten disabled native signal strategies selected from the Backtrader catalogue;
   selection, deviations and validation evidence are tracked in
   [strategy readiness](docs/STRATEGY_READINESS.md#backtrader-migration).
+- The owner UI's Strategies page reports whether each strategy is released for
+  trading, counts what is registered rather than what ships on disk, and says
+  why an unreleased strategy cannot be bound.
 - A read-only owner UI served by the backend at `http://127.0.0.1:8081/`:
   Dashboard, Strategies and Profit and loss pages with no build step, new
   container, port or dependency. It unlocks with `BACKEND_ADMIN_API_KEY` and
