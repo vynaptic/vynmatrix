@@ -59,10 +59,16 @@ class VolatilityClusteringReversionCore(BarSignalStrategy):
             returns[1] * math.sqrt(self.trading_days_per_year) if returns is not None else None
         )
         stats = indicators["volatility"].update(volatility) if volatility is not None else None
+        # The cluster length is indicator state, not a decision: it has to rebuild
+        # from replayed bars exactly as the rolling statistics above do. Advancing
+        # it below the ``can_decide`` gate would reset it to zero on every cold
+        # start, so a worker restarted inside a volatility cluster would count a
+        # fresh one and enter where a continuously running worker never would.
+        if stats is not None and volatility is not None:
+            high_vol = volatility > stats[0] + self.vol_cluster_threshold_factor * stats[1]
+            indicators["high_vol_streak"] = indicators["high_vol_streak"] + 1 if high_vol else 0
         if not self.can_decide(bar.symbol) or stats is None or sma is None or atr is None:
             return
-        high_vol = volatility > stats[0] + self.vol_cluster_threshold_factor * stats[1]
-        indicators["high_vol_streak"] = indicators["high_vol_streak"] + 1 if high_vol else 0
         if self.state_for(bar.symbol).position:
             self.trail(bar, distance=atr * self.atr_multiplier_sl, intrabar=True)
             return
