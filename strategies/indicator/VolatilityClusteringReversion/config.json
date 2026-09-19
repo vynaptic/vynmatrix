@@ -1,0 +1,41 @@
+{
+  "strategy_id": "volatility_clustering_reversion_v1",
+  "strategy_version": "1.0.0",
+  "description": "Fade net movement after an exact high-volatility streak when aligned with the longer SMA trend.",
+  "schema_version": "2",
+  "runner_kind": "signal_worker",
+  "enabled": false,
+  "environments": [
+    "dev"
+  ],
+  "trade_direction_mode": "long_short",
+  "parameters": {
+    "universe": "BTC-USDC",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_short",
+    "vol_window": "7",
+    "vol_stats_window": "30",
+    "vol_cluster_threshold_factor": "1.0",
+    "vol_cluster_days_trigger": "3",
+    "trend_filter_sma_window": "30",
+    "atr_window_sl": "14",
+    "atr_multiplier_sl": "2.0",
+    "trading_days_per_year": "252"
+  },
+  "market_data": {
+    "source": "coinbase_live",
+    "timeframe": "1m",
+    "consolidation_minutes": 1440,
+    "bootstrap_bars": 500
+  },
+  "feedback_loop": {
+    "evaluation_horizon": "5d"
+  },
+  "metadata": {
+    "decision": "INSUFFICIENT_EVIDENCE",
+    "readiness": "STATIC_REVIEW_ONLY",
+    "source_file": "VolatilityClusteringReversion.py",
+    "source_sha256": "3d5eba86b6f29797b05b945aa02dbe71dd81af6e09b9adab0ad04f0f0ded59a9",
+    "manual_section": 211
+  }
+}

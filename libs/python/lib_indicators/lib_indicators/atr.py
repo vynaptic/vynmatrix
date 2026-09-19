@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from typing import ClassVar
+
+from .checkpoint import CheckpointedIndicator
 
 
-class AverageTrueRange:
+class AverageTrueRange(CheckpointedIndicator):
     """Wilder-smoothed Average True Range (backtrader-compatible).
 
     Attributes:
@@ -37,6 +40,13 @@ class AverageTrueRange:
             if atr.is_ready:
                 print(atr.value)
     """
+
+    STATE_CONFIG = ("_period",)
+    STATE_FIELDS: ClassVar[dict[str, str]] = {
+        "_prev_close": "number?",
+        "_seed": "numbers",
+        "_value": "number?",
+    }
 
     def __init__(self, period: int) -> None:
         if period < 1:
@@ -77,6 +87,16 @@ class AverageTrueRange:
         alpha = 1.0 / self._period
         self._value = self._value * (1.0 - alpha) + tr * alpha
         return self._value
+
+    def validate_checkpoint(self) -> None:
+        if (
+            (len(self._seed) == self.period) != (self._value is not None)
+            or (self._seed and self._prev_close is None)
+            or any(value < 0 for value in self._seed)
+            or (self._value is not None and self._value < 0)
+        ):
+            msg = "ATR checkpoint readiness or range is invalid"
+            raise ValueError(msg)
 
     def reset(self) -> None:
         """Reset the indicator to its initial state."""

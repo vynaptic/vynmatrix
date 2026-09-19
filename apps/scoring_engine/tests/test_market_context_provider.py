@@ -5,13 +5,16 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy.orm import Session
 
+from lib_application.db import models
+from lib_application.db.session import dispose_engine
 from lib_common.config_validation import (
     RunMode,
     ScoringMarketContextConfig,
 )
 from scoring_engine.domain import MarketRegime
-from scoring_engine.main import _build_market_context_meta_service
+from scoring_engine.main import _build_market_context_meta_service, _make_price_history_loader
 from scoring_engine.pipeline import PipelineConfig
 from scoring_engine.services.meta_label_service import (
     AssetClassRoutingMarketContextProvider,
@@ -19,6 +22,7 @@ from scoring_engine.services.meta_label_service import (
     PriceBasedMarketContextProvider,
     PriceObservation,
 )
+from scoring_engine.storage import AppScoreStore
 from scoring_engine.storage_memory import InMemoryScoreStore
 
 WINDOW = 5
@@ -200,3 +204,73 @@ def test_router_without_overrides_never_resolves_asset_class() -> None:
     )
     router.get_context("BTCUSDC", NOW)
     assert calls["BTCUSDC"] == "default"
+
+
+@pytest.mark.parametrize(
+    ("timeframe", "interval"), [("1d", timedelta(days=1)), ("1m", timedelta(minutes=1))]
+)
+def test_sql_history_only_exposes_completed_closes(
+    timeframe, interval, provision_scoring_catalogue
+):
+    store = AppScoreStore("sqlite+pysqlite:///:memory:")
+    try:
+        provision_scoring_catalogue(store, strategy_ids=[])
+        instr_id = store.resolve_instrument_id("BTCUSD")
+        with Session(store._engine) as session:
+            session.add_all(
+                models.InstrumentPrice(
+                    instr_id=instr_id,
+                    ts=(NOW - offset * interval).replace(tzinfo=None),
+                    close=close,
+                    source="coinbase_live",
+                    timeframe=timeframe,
+                )
+                for offset, close in [(2, 99), (1, 100), (0, 999)]
+            )
+            session.add(
+                models.InstrumentPrice(
+                    instr_id=instr_id,
+                    ts=(NOW - interval).replace(tzinfo=None),
+                    close=500,
+                    source="other_feed",
+                    timeframe=timeframe,
+                )
+            )
+            session.commit()
+        load = _make_price_history_loader(store, source="coinbase_live", timeframe=timeframe)
+        assert load("BTCUSD", 2, NOW) == [
+            PriceObservation(timestamp=NOW - interval, close=99),
+            PriceObservation(timestamp=NOW, close=100),
+        ]
+        assert load("BTCUSD", 2, NOW - timedelta(seconds=1)) == [
+            PriceObservation(timestamp=NOW - interval, close=99),
+        ]
+        assert load("BTCUSD", 1, NOW) == [PriceObservation(timestamp=NOW, close=100)]
+    finally:
+        dispose_engine(store._engine)
+
+
+@pytest.mark.parametrize("asset_class", ["equity", "fx"])
+def test_sql_daily_context_requires_authoritative_session_close(
+    asset_class, provision_scoring_catalogue
+):
+    store = AppScoreStore("sqlite+pysqlite:///:memory:")
+    try:
+        provision_scoring_catalogue(
+            store, strategy_ids=[], canonical="SESSION_ASSET", asset_class=asset_class
+        )
+        with Session(store._engine) as session:
+            session.add(
+                models.InstrumentPrice(
+                    instr_id=store.resolve_instrument_id("SESSION_ASSET"),
+                    ts=(NOW - timedelta(days=2)).replace(tzinfo=None),
+                    close=100,
+                    source="session_feed",
+                    timeframe="1d",
+                )
+            )
+            session.commit()
+        load = _make_price_history_loader(store, source="session_feed", timeframe="1d")
+        assert load("SESSION_ASSET", 2, NOW) == []
+    finally:
+        dispose_engine(store._engine)

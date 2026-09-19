@@ -350,10 +350,10 @@ class AuditReport:
 
 
 def _repo_root() -> Path:
-    """Locate the repo root by walking up to ``.git``."""
+    """Locate the repo root, including linked worktrees with a ``.git`` file."""
     here = Path(__file__).resolve()
     for parent in (here, *here.parents):
-        if (parent / ".git").is_dir():
+        if (parent / ".git").exists():
             return parent
     return here.parents[3]
 

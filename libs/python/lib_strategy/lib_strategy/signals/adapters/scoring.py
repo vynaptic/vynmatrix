@@ -10,6 +10,7 @@ from typing import Any
 
 from lib_strategy.signals.normalization import normalize_signal_action
 from lib_strategy.signals.signal import Signal, SignalAction
+from lib_strategy.signals.utils import parse_signal_horizon_days
 
 
 @dataclass(frozen=True)
@@ -47,19 +48,6 @@ class ScoringSignalView:
         return self.direction * (self.expected_return / self.predicted_risk)
 
 
-_HORIZON_MAP = {
-    "1H": 1 / 24,
-    "4H": 4 / 24,
-    "1D": 1.0,
-    "1W": 5.0,
-    "2W": 10.0,
-    "1M": 21.0,
-    "INTRADAY": 0.5,
-    "SWING": 5.0,
-    "POSITION": 21.0,
-}
-
-
 def _direction_from_action(action: SignalAction) -> int:
     if action == SignalAction.LONG:
         return 1
@@ -72,21 +60,9 @@ def _horizon_days(signal: Signal) -> float:
     if signal.horizon_days:
         return float(signal.horizon_days)
     if signal.horizon:
-        key = signal.horizon.strip().upper()
-        if key in _HORIZON_MAP:
-            return _HORIZON_MAP[key]
-        # Strategy configs commonly use compact explicit durations such as
-        # ``5d``. Parse them instead of silently falling back to one day and
-        # contradicting the configured feedback horizon.
-        if len(key) > 1:
-            try:
-                amount = float(key[:-1])
-            except ValueError:
-                amount = 0.0
-            if amount > 0:
-                unit_days = {"H": 1 / 24, "D": 1.0, "W": 5.0, "M": 21.0}
-                if key[-1] in unit_days:
-                    return amount * unit_days[key[-1]]
+        parsed = parse_signal_horizon_days(signal.horizon)
+        if parsed is not None:
+            return parsed
     return 1.0
 
 

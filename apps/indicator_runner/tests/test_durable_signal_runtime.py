@@ -149,26 +149,31 @@ def _build_worker(
     lease_seconds: int = 60,
     config_overrides: dict[str, Any] | None = None,
     consolidation_minutes: int = 0,
+    bootstrap_bars: int = 500,
+    strategy_dir: Path = _STRATEGY_DIR,
+    symbols: list[str] | None = None,
 ) -> tuple[
     SignalWorker,
     BacktestSignalEmitter,
     StrategyRuntimeStore,
     OutboxStore,
 ]:
-    config_payload = json.loads((_STRATEGY_DIR / "config.json").read_text())
+    config_payload = json.loads((strategy_dir / "config.json").read_text())
+    strategy_id = config_payload["strategy_id"]
     config = dict(config_payload["parameters"])
     config["strategy_version"] = config_payload["strategy_version"]
     config.update(config_overrides or {})
+    worker_symbols = symbols or [_SYMBOL]
     buffer = BufferedSignalEmitter()
-    strategy = load_pure_strategy_core(_STRATEGY_DIR)(
-        strategy_id=_STRATEGY_ID,
+    strategy = load_pure_strategy_core(strategy_dir)(
+        strategy_id=strategy_id,
         config=config,
         emitter=buffer,
     )
     identity = StrategyRuntimeIdentity.from_strategy(
         worker_id=_WORKER_ID,
         strategy=strategy,
-        symbols=[_SYMBOL],
+        symbols=worker_symbols,
         source=_SOURCE,
         timeframe=_TIMEFRAME,
         consolidation_minutes=consolidation_minutes,
@@ -180,17 +185,17 @@ def _build_worker(
         outbox=outbox,
         emitter=delivery,
         worker_id=_WORKER_ID,
-        strategy_id=_STRATEGY_ID,
+        strategy_id=strategy_id,
         lease_seconds=lease_seconds,
     )
     worker = SignalWorker(
         strategy=strategy,
         session_factory=session_factory,
         worker_id=_WORKER_ID,
-        symbols=[_SYMBOL],
+        symbols=worker_symbols,
         consolidation_minutes=consolidation_minutes,
         dsn="",
-        bootstrap_bars=500,
+        bootstrap_bars=bootstrap_bars,
         source=_SOURCE,
         timeframe=_TIMEFRAME,
         clock=lambda: _PROCESSING_AT,
@@ -1150,3 +1155,386 @@ def test_postgres_runtime_crash_recovery_and_tenant_independence(  # noqa: PLR09
                 session.commit()
         finally:
             dispose_engine(engine)
+
+
+_NATIVE_DIR = _REPO / "strategies/indicator/TimeDecayAdaptiveEMA"
+
+
+def _seed_native_catalogue(factory):
+    instr_id = _seed_catalogue(factory)
+    with factory() as session:
+        session.add(
+            Strategy(
+                strategy_id="time_decay_adaptive_ema_v1",
+                strategy_name="TimeDecayAdaptiveEMA",
+                asset_class="crypto",
+                is_active=False,
+            )
+        )
+        session.commit()
+    return instr_id
+
+
+def test_native_restart_restores_partial_bucket_without_recent_history(
+    session_factory, monkeypatch
+):
+    rows = _public_rows()
+    instr_id = _seed_native_catalogue(session_factory)
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[:800])
+    first, _, _, _ = _build_worker(
+        session_factory, strategy_dir=_NATIVE_DIR, consolidation_minutes=5, bootstrap_bars=150
+    )
+    first.start()
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[800:803])
+    first._catchup_symbol(_SYMBOL)
+    expected_model = first._strategy.serialize_model_state()
+    expected_bucket = first._consolidators[_SYMBOL].snapshot_state()
+    assert expected_bucket["working_bar"] is not None
+
+    restarted, delivery, _, _ = _build_worker(
+        session_factory, strategy_dir=_NATIVE_DIR, consolidation_minutes=5, bootstrap_bars=1
+    )
+
+    def forbidden_recent_history(*args, **kwargs):
+        pytest.fail(
+            "Exact restart must restore the durable streams before any recent-history bootstrap"
+        )
+
+    monkeypatch.setattr(restarted, "_fetch_historical_bars", forbidden_recent_history)
+    restarted.start()
+    assert restarted._strategy.serialize_model_state() == expected_model
+    assert restarted._consolidators[_SYMBOL].snapshot_state() == expected_bucket
+
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[803:850])
+    # Continue the original in-memory state without changing its already shared
+    # durable journal, then compare the recovered worker's actual journaled path.
+    raw = first._fetch_historical_range(
+        _SYMBOL,
+        start=datetime.fromtimestamp(rows[803]["ts"], UTC),
+        through=datetime.fromtimestamp(rows[849]["ts"], UTC),
+    )
+    for bar in raw:
+        first._consolidators[_SYMBOL].update(bar)
+    restarted._catchup_symbol(_SYMBOL)
+    assert restarted._strategy.serialize_model_state() == first._strategy.serialize_model_state()
+    assert (
+        restarted._consolidators[_SYMBOL].snapshot_state()
+        == first._consolidators[_SYMBOL].snapshot_state()
+    )
+    assert [s.external_signal_id for s in delivery.get_signals()] == [
+        s.external_signal_id for s in first._signal_buffer.pending()
+    ]
+
+
+def test_native_empty_checkpoint_restores_without_rebootstrap(session_factory, monkeypatch):
+    _seed_native_catalogue(session_factory)
+    first, _, _, _ = _build_worker(session_factory, strategy_dir=_NATIVE_DIR)
+    first.start()
+    restarted, _, _, _ = _build_worker(session_factory, strategy_dir=_NATIVE_DIR)
+
+    def forbidden_recent_history(*args, **kwargs):
+        pytest.fail("An explicit empty durable checkpoint is still a checkpoint")
+
+    monkeypatch.setattr(restarted, "_fetch_historical_bars", forbidden_recent_history)
+    restarted.start()
+    assert not restarted._strategy.warmup_complete()
+
+
+def test_native_correction_preserves_original_flat_boundary_and_recursive_origin(session_factory):
+    rows = _public_rows()
+    instr_id = _seed_native_catalogue(session_factory)
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[:600])
+    first, _, _, _ = _build_worker(
+        session_factory,
+        strategy_dir=_NATIVE_DIR,
+        bootstrap_bars=100,
+        config_overrides={"atr_multiplier": "100"},
+    )
+    first.start()
+    assert first._strategy.state_for(_SYMBOL).position == 0
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[600:900])
+    first._catchup_symbol(_SYMBOL)
+    expected = first._strategy.serialize_model_state()
+    with session_factory() as session:
+        before_decisions = session.scalar(select(func.count()).select_from(StrategyDecision))
+        before_outbox = session.scalar(select(func.count()).select_from(OutboxEvent))
+    first._watermark.request_rebuilds(
+        [(_SYMBOL, _TIMEFRAME, instr_id)], rebuild_from=datetime.fromtimestamp(rows[500]["ts"], UTC)
+    )
+    rebuilt, delivery, _, _ = _build_worker(
+        session_factory,
+        strategy_dir=_NATIVE_DIR,
+        bootstrap_bars=1,
+        config_overrides={"atr_multiplier": "100"},
+    )
+    rebuilt.start()
+    assert rebuilt._strategy.serialize_model_state() == expected
+    assert delivery.get_signals() == []
+    with session_factory() as session:
+        assert (
+            session.scalar(select(func.count()).select_from(StrategyDecision)) == before_decisions
+        )
+        assert session.scalar(select(func.count()).select_from(OutboxEvent)) == before_outbox
+    assert not rebuilt._watermark.get_state(_SYMBOL, _TIMEFRAME).rebuild_pending
+
+
+@pytest.mark.parametrize("consolidation", [0, 5])
+def test_native_checkpoint_cannot_lose_a_flat_indicator_stream(session_factory, consolidation):
+    rows = _public_rows()
+    instr_id = _seed_native_catalogue(session_factory)
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[:300])
+    first, _, _, _ = _build_worker(
+        session_factory, strategy_dir=_NATIVE_DIR, consolidation_minutes=consolidation
+    )
+    first.start()
+    with session_factory() as session:
+        row = session.get(StrategyRuntimeState, _WORKER_ID)
+        payload = json.loads(json.dumps(row.state_payload))
+        assert payload["symbol_states"][_SYMBOL]["position"] == 0
+        del payload["streams"]["symbols"][_SYMBOL]
+        row.state_payload = payload
+        session.commit()
+    restarted, _, _, _ = _build_worker(
+        session_factory, strategy_dir=_NATIVE_DIR, consolidation_minutes=consolidation
+    )
+    with pytest.raises(ModelStateContractError, match="stream"):
+        restarted.start()
+
+
+def test_native_restore_checks_the_other_symbols_empty_watermark(session_factory):
+    rows = _public_rows()
+    instr_id = _seed_native_catalogue(session_factory)
+    with session_factory() as session:
+        session.add(Instrument(asset_class="crypto", canonical="ETHUSD", settlement_currency="USD"))
+        session.commit()
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[:30])
+    first, _, _, _ = _build_worker(
+        session_factory, strategy_dir=_NATIVE_DIR, symbols=[_SYMBOL, "ETHUSD"]
+    )
+    first.start()
+    with session_factory() as session:
+        other = session.scalar(
+            select(ConsumerWatermark).where(
+                ConsumerWatermark.worker_id == _WORKER_ID, ConsumerWatermark.symbol == "ETHUSD"
+            )
+        )
+        other.last_ts = datetime.fromtimestamp(rows[5]["ts"], UTC).replace(tzinfo=None)
+        session.commit()
+    restarted, _, _, _ = _build_worker(
+        session_factory, strategy_dir=_NATIVE_DIR, symbols=[_SYMBOL, "ETHUSD"]
+    )
+    with pytest.raises(ModelStateContractError, match="watermark"):
+        restarted.start()
+
+
+@pytest.mark.parametrize("rebuild", [False, True])
+def test_native_restore_requires_its_recorded_inception_row(session_factory, rebuild):
+    rows = _public_rows()
+    instr_id = _seed_native_catalogue(session_factory)
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[:100])
+    first, _, _, _ = _build_worker(session_factory, strategy_dir=_NATIVE_DIR)
+    first.start()
+    with session_factory() as session:
+        session.execute(
+            delete(InstrumentPrice).where(
+                InstrumentPrice.instr_id == instr_id,
+                InstrumentPrice.ts
+                == datetime.fromtimestamp(rows[0]["ts"], UTC).replace(tzinfo=None),
+            )
+        )
+        session.commit()
+    if rebuild:
+        first._watermark.request_rebuilds(
+            [(_SYMBOL, _TIMEFRAME, instr_id)],
+            rebuild_from=datetime.fromtimestamp(rows[0]["ts"], UTC),
+        )
+    restarted, _, _, _ = _build_worker(session_factory, strategy_dir=_NATIVE_DIR)
+    with pytest.raises(ModelStateContractError, match="anchor"):
+        restarted.start()
+
+
+def test_native_empty_feed_establishes_a_flat_boundary_when_history_arrives(session_factory):
+    rows = _public_rows()
+    instr_id = _seed_native_catalogue(session_factory)
+    first, _, _, _ = _build_worker(session_factory, strategy_dir=_NATIVE_DIR)
+    first.start()
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[:100])
+    first._watermark.request_rebuilds(
+        [(_SYMBOL, _TIMEFRAME, instr_id)], rebuild_from=datetime.fromtimestamp(rows[0]["ts"], UTC)
+    )
+    restarted, delivery, _, _ = _build_worker(session_factory, strategy_dir=_NATIVE_DIR)
+    restarted.start()
+    assert restarted._strategy.warmup_complete(_SYMBOL)
+    assert restarted._strategy.state_for(_SYMBOL).position == 0
+    assert delivery.get_signals() == []
+    with session_factory() as session:
+        feed = session.get(StrategyRuntimeState, _WORKER_ID).state_payload["bar_runtime"]["feeds"][
+            _SYMBOL
+        ]
+        assert (
+            feed["inception"]["timestamp"] == datetime.fromtimestamp(rows[0]["ts"], UTC).isoformat()
+        )
+        assert (
+            feed["bootstrap_through"]["timestamp"]
+            == datetime.fromtimestamp(rows[99]["ts"], UTC).isoformat()
+        )
+
+
+def test_native_bootstrap_read_error_cannot_be_persisted_as_empty_history(
+    session_factory, monkeypatch
+):
+    from sqlalchemy.exc import OperationalError
+
+    _seed_native_catalogue(session_factory)
+    worker, _, _, _ = _build_worker(session_factory, strategy_dir=_NATIVE_DIR)
+
+    def fail_read(*args, **kwargs):
+        raise OperationalError("SELECT prices", {}, OSError("unavailable"))
+
+    monkeypatch.setattr(worker._ingestion_service, "fetch_recent_bars", fail_read)
+    with pytest.raises(OperationalError):
+        worker.start()
+    with session_factory() as session:
+        assert session.get(StrategyRuntimeState, _WORKER_ID) is None
+        assert session.scalar(select(func.count()).select_from(ConsumerWatermark)) == 0
+
+
+def test_native_failed_commit_recovers_core_bucket_and_source_anchor_together(
+    session_factory, monkeypatch
+):
+    from sqlalchemy.exc import OperationalError
+
+    rows = _public_rows()
+    instr_id = _seed_native_catalogue(session_factory)
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[:100])
+    first, _, _, _ = _build_worker(
+        session_factory, strategy_dir=_NATIVE_DIR, consolidation_minutes=5
+    )
+    first.start()
+    with session_factory() as session:
+        before = json.loads(json.dumps(session.get(StrategyRuntimeState, _WORKER_ID).state_payload))
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[100:101])
+
+    def fail_ack(*args, **kwargs):
+        raise OperationalError("UPDATE watermarks", {}, OSError("commit failed"))
+
+    monkeypatch.setattr(first._watermark, "advance_locked", fail_ack)
+    with pytest.raises(OperationalError):
+        first._catchup_symbol(_SYMBOL)
+    assert first.failed
+    expected_bucket = first._consolidators[_SYMBOL].snapshot_state()
+    with session_factory() as session:
+        assert session.get(StrategyRuntimeState, _WORKER_ID).state_payload == before
+    restarted, _, _, _ = _build_worker(
+        session_factory, strategy_dir=_NATIVE_DIR, consolidation_minutes=5
+    )
+    restarted.start()
+    restarted._catchup_symbol(_SYMBOL)
+    assert restarted._consolidators[_SYMBOL].snapshot_state() == expected_bucket
+    with session_factory() as session:
+        after = session.get(StrategyRuntimeState, _WORKER_ID).state_payload
+        assert (
+            after["bar_runtime"]["feeds"][_SYMBOL]["acknowledged"]["timestamp"]
+            == datetime.fromtimestamp(rows[100]["ts"], UTC).isoformat()
+        )
+        assert after["streams"] == before["streams"]
+
+
+def test_native_rebuild_generation_race_cannot_commit_candidate_state(session_factory, monkeypatch):
+    from lib_data.watermark import RebuildGenerationChangedError
+
+    rows = _public_rows()
+    instr_id = _seed_native_catalogue(session_factory)
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[:100])
+    first, _, _, _ = _build_worker(session_factory, strategy_dir=_NATIVE_DIR)
+    first.start()
+    with session_factory() as session:
+        before = json.loads(json.dumps(session.get(StrategyRuntimeState, _WORKER_ID).state_payload))
+    boundary = datetime.fromtimestamp(rows[0]["ts"], UTC)
+    first._watermark.request_rebuilds([(_SYMBOL, _TIMEFRAME, instr_id)], rebuild_from=boundary)
+    rebuilding, delivery, _, _ = _build_worker(session_factory, strategy_dir=_NATIVE_DIR)
+    original_rebuild = rebuilding._bar_recovery.rebuild
+
+    def mutate_after_replay(*args, **kwargs):
+        result = original_rebuild(*args, **kwargs)
+        # A provider mutation increments the generation even when its earliest
+        # boundary is unchanged; request_rebuilds only expands that boundary.
+        with session_factory() as session:
+            watermark = session.scalar(
+                select(ConsumerWatermark).where(
+                    ConsumerWatermark.worker_id == _WORKER_ID,
+                    ConsumerWatermark.symbol == _SYMBOL,
+                )
+            )
+            watermark.rebuild_generation += 1
+            session.commit()
+        return result
+
+    monkeypatch.setattr(rebuilding._bar_recovery, "rebuild", mutate_after_replay)
+    with pytest.raises(RebuildGenerationChangedError):
+        rebuilding.start()
+    assert delivery.get_signals() == []
+    with session_factory() as session:
+        assert session.get(StrategyRuntimeState, _WORKER_ID).state_payload == before
+    assert first._watermark.get_state(_SYMBOL, _TIMEFRAME).rebuild_pending
+
+
+def test_native_rebuild_uses_live_trigger_for_a_bucket_from_bootstrap(session_factory):
+    rows = _public_rows()
+    instr_id = _seed_native_catalogue(session_factory)
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[:129])
+    first, delivery, _, _ = _build_worker(
+        session_factory,
+        strategy_dir=_NATIVE_DIR,
+        consolidation_minutes=5,
+    )
+    first.start()
+    assert first._strategy.state_for(_SYMBOL).position == 0
+    # Omit row 129: the live row 130 flushes the partial bootstrap bucket,
+    # whose last constituent (128) is also the original flat boundary.
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[130:131])
+    first._catchup_symbol(_SYMBOL)
+    assert [signal.action for signal in delivery.get_signals()] == [SignalAction.SHORT]
+    expected = first._strategy.serialize_model_state()
+    expected_bucket = first._consolidators[_SYMBOL].snapshot_state()
+    first._watermark.request_rebuilds(
+        [(_SYMBOL, _TIMEFRAME, instr_id)],
+        rebuild_from=datetime.fromtimestamp(rows[0]["ts"], UTC),
+    )
+    rebuilt, replay_delivery, _, _ = _build_worker(
+        session_factory,
+        strategy_dir=_NATIVE_DIR,
+        consolidation_minutes=5,
+    )
+    rebuilt.start()
+    assert rebuilt._strategy.serialize_model_state() == expected
+    assert rebuilt._consolidators[_SYMBOL].snapshot_state() == expected_bucket
+    assert replay_delivery.get_signals() == []
+
+
+def test_native_restore_rejects_a_dropped_partial_bucket(session_factory):
+    rows = _public_rows()
+    instr_id = _seed_native_catalogue(session_factory)
+    _insert_public_rows(session_factory, instr_id=instr_id, rows=rows[:803])
+    first, _, _, _ = _build_worker(
+        session_factory,
+        strategy_dir=_NATIVE_DIR,
+        consolidation_minutes=5,
+    )
+    first.start()
+    with session_factory() as session:
+        row = session.get(StrategyRuntimeState, _WORKER_ID)
+        payload = json.loads(json.dumps(row.state_payload))
+        bucket = payload["bar_runtime"]["feeds"][_SYMBOL]["consolidator"]
+        assert bucket["bar_count"] == 3
+        bucket.update(working_bar=None, current_period_end=None, bar_count=0)
+        row.state_payload = payload
+        session.commit()
+    restarted, _, _, _ = _build_worker(
+        session_factory,
+        strategy_dir=_NATIVE_DIR,
+        consolidation_minutes=5,
+    )
+    with pytest.raises(ModelStateContractError, match="partial bucket"):
+        restarted.start()
+    assert not restarted._strategy.warmup_complete()

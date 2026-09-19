@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from typing import ClassVar
+
+from .checkpoint import CheckpointedIndicator
 
 
-class Vortex:
+class Vortex(CheckpointedIndicator):
     """Vortex VI+/VI- using rolling sums (backtrader-compatible).
 
     Attributes:
@@ -35,6 +38,18 @@ class Vortex:
             if vx.is_ready:
                 print(vx.vi_plus, vx.vi_minus)
     """
+
+    STATE_CONFIG = ("_period",)
+    STATE_FIELDS: ClassVar[dict[str, str]] = {
+        "_prev_high": "number?",
+        "_prev_low": "number?",
+        "_prev_close": "number?",
+        "_vm_plus": "numbers",
+        "_vm_minus": "numbers",
+        "_tr": "numbers",
+        "vi_plus": "number?",
+        "vi_minus": "number?",
+    }
 
     def __init__(self, period: int) -> None:
         if period < 1:
@@ -76,7 +91,25 @@ class Vortex:
             if tr_sum > 0:
                 self.vi_plus = math.fsum(self._vm_plus) / tr_sum
                 self.vi_minus = math.fsum(self._vm_minus) / tr_sum
+            else:
+                self.vi_plus = None
+                self.vi_minus = None
         return self.vi_plus
+
+    def validate_checkpoint(self) -> None:
+        size = len(self._tr)
+        ready = size == self.period and math.fsum(self._tr) > 0
+        if (
+            len(self._vm_plus) != size
+            or len(self._vm_minus) != size
+            or ready != (self.vi_plus is not None)
+            or ready != (self.vi_minus is not None)
+            or len({value is None for value in (self._prev_high, self._prev_low, self._prev_close)})
+            != 1
+            or (size and self._prev_close is None)
+        ):
+            msg = "Vortex checkpoint readiness or window coverage is invalid"
+            raise ValueError(msg)
 
     def reset(self) -> None:
         self._prev_high = None

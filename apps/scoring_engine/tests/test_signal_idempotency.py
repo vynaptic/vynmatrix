@@ -71,3 +71,22 @@ def test_identity_less_signal_fails_closed(
         store.add_signal(_signal(0.40, None))
 
     assert _rows(store) == []
+
+
+@pytest.mark.parametrize("original_run", ["original-run", None])
+def test_redelivery_preserves_canonical_origin_lineage(app_store_with_btcusd, original_run):
+    first = _signal(0.4, "stable-bar-identity")
+    first.signal_id = "original-signal"
+    first.run_id = original_run
+    first_id = app_store_with_btcusd.add_signal(first)
+    retry = _signal(0.9, "stable-bar-identity")
+    retry.signal_id = "retry-envelope"
+    retry.run_id = "retry-run"
+    assert app_store_with_btcusd.add_signal(retry) == first_id
+    (row,) = _rows(app_store_with_btcusd)
+    assert row.run_id == original_run
+    assert row.signal_meta.get("run_id") == original_run
+    assert row.signal_meta["signal_id"] == "original-signal"
+    assert float(row.raw_score) == 0.9
+    assert retry.run_id == original_run
+    assert retry.signal_id == "original-signal"

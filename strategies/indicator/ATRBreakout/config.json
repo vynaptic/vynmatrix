@@ -1,0 +1,39 @@
+{
+  "strategy_id": "atr_breakout_v1",
+  "strategy_version": "1.0.0",
+  "description": "Prior close-channel breakout gated by ATR expansion; close-based ATR trail or a holding-bar limit.",
+  "schema_version": "2",
+  "runner_kind": "signal_worker",
+  "enabled": false,
+  "environments": [
+    "dev"
+  ],
+  "trade_direction_mode": "long_short",
+  "parameters": {
+    "universe": "BTC-USDC",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_short",
+    "atr_period": "14",
+    "lookback": "30",
+    "atr_thresh": "1.2",
+    "trail_atr_mult": "5.0",
+    "use_time_exit": "true",
+    "max_hold_days": "7"
+  },
+  "market_data": {
+    "source": "coinbase_live",
+    "timeframe": "1m",
+    "consolidation_minutes": 1440,
+    "bootstrap_bars": 500
+  },
+  "feedback_loop": {
+    "evaluation_horizon": "5d"
+  },
+  "metadata": {
+    "decision": "INSUFFICIENT_EVIDENCE",
+    "readiness": "STATIC_REVIEW_ONLY",
+    "source_file": "ATRBreakoutStrategy.py",
+    "source_sha256": "722c95bd34310be6cfff9e751a68e486a63ee4ffbc110f4dd15d73281ebe9d23",
+    "manual_section": 30
+  }
+}

@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from typing import ClassVar
+
+from .checkpoint import CheckpointedIndicator
 
 
-class ExponentialMovingAverage:
+class ExponentialMovingAverage(CheckpointedIndicator):
     """SMA-seeded Exponential Moving Average matching LEAN semantics.
 
     Attributes:
@@ -36,6 +39,13 @@ class ExponentialMovingAverage:
             if ema.is_ready:
                 print(ema.value)
     """
+
+    STATE_CONFIG = ("_period",)
+    STATE_FIELDS: ClassVar[dict[str, str]] = {
+        "_seed_buffer": "numbers",
+        "_value": "number?",
+        "_samples": "integer",
+    }
 
     def __init__(self, period: int) -> None:
         if period < 1:
@@ -88,6 +98,13 @@ class ExponentialMovingAverage:
         # Standard EMA recursion
         self._value = self._value * (1.0 - self._k) + price * self._k
         return self._value
+
+    def validate_checkpoint(self) -> None:
+        if len(self._seed_buffer) != min(self._samples, self.period) or (
+            self._samples >= self.period
+        ) != (self._value is not None):
+            msg = "EMA checkpoint readiness differs from its sample count"
+            raise ValueError(msg)
 
     def reset(self) -> None:
         """Reset the indicator to its initial state."""

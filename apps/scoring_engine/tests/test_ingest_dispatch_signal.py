@@ -104,3 +104,43 @@ def test_ingest_dispatches_the_ingested_signal_not_latest_for_symbol(
         )
     assert dispatched.metadata["canonical_signal_id"] == canonical.signal_id
     assert retired_events == 0
+
+
+def test_redelivery_dispatches_persisted_origin_to_a_new_account(provision_scoring_catalogue):
+    store = AppScoreStore("sqlite+pysqlite:///:memory:")
+    engine = ScoreEngine(store=store)
+    provision_scoring_catalogue(store, strategy_ids=["rsi_strat"])
+    account = {"id": 1}
+    store.list_bindings = lambda: [
+        ScoringUserBinding(
+            user_id="u1",
+            strategy_id="rsi_strat",
+            broker_account_id=account["id"],
+            asset_score_threshold=0,
+            autopilot=True,
+        )
+    ]
+    seen = []
+
+    class Recorder:
+        async def resolve_provider_contexts(self, **kwargs):
+            return DispatchProviderContexts()
+
+        def dispatch_resolved(self, *, signal, decisions, **kwargs):
+            seen.append((signal, decisions[0].broker_account_id))
+            return []
+
+    client = TestClient(create_app(engine, dispatcher=Recorder()))
+    payload = _payload("rsi_strat", dt.datetime.now(dt.UTC))
+    payload["context"]["external_signal_id"] = "same-bar-new-account"
+    for account_id, run_id in [(1, "first-run"), (2, "retry-run")]:
+        account["id"] = account_id
+        assert (
+            client.post("/api/v1/signals", json=payload, headers={"x-run-id": run_id}).status_code
+            == 200
+        )
+    assert [account_id for _, account_id in seen] == [1, 2]
+    first, retry = (signal for signal, _ in seen)
+    assert first.run_id == retry.run_id == "first-run"
+    assert first.signal_id == retry.signal_id
+    assert first.external_signal_id == retry.external_signal_id == "same-bar-new-account"

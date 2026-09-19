@@ -192,6 +192,9 @@ def _provision_catalogue(
     session_factory: Any,
     *,
     strategy_configs: dict[str, dict[str, Any]],
+    symbol: str = _SYMBOL,
+    owner_id: str = "ci-public-pipeline-owner",
+    strategy_names: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, _Route]]:
     with session_factory() as session:
         instrument = (
@@ -214,14 +217,14 @@ def _provision_catalogue(
             session.flush()
         if (
             session.query(app_models.InstrumentAlias)
-            .filter(app_models.InstrumentAlias.alias == _SYMBOL)
+            .filter(app_models.InstrumentAlias.alias == symbol)
             .one_or_none()
             is None
         ):
             session.add(
                 app_models.InstrumentAlias(
                     instr_id=instrument.instr_id,
-                    alias=_SYMBOL,
+                    alias=symbol,
                     source="canonical",
                 )
             )
@@ -264,7 +267,7 @@ def _provision_catalogue(
 
         # One designated individual owns independent strategy accounts. Keep
         # account boundaries and ledger attribution without multi-tenant routing.
-        user_id = "ci-public-pipeline-owner"
+        user_id = owner_id
         session.add(
             app_models.User(
                 user_id=user_id,
@@ -278,8 +281,9 @@ def _provision_catalogue(
         )
         session.flush()
         routes: dict[str, _Route] = {}
-        for index, (strategy_name, strategy_id) in enumerate(_STRATEGIES, start=1):
-            config = strategy_configs[strategy_id]
+        names = strategy_names or {strategy_id: name for name, strategy_id in _STRATEGIES}
+        for index, (strategy_id, config) in enumerate(strategy_configs.items(), start=1):
+            strategy_name = names.get(strategy_id, strategy_id)
             session.add(
                 app_models.Strategy(
                     strategy_id=strategy_id,
@@ -371,7 +375,9 @@ def _normal_execution_engine(session_factory: Any) -> ExecutionEngine:
     )
 
 
-async def _relay_historical_commands(store: Any, engine: ExecutionEngine) -> int:
+async def _relay_historical_commands(
+    store: Any, engine: ExecutionEngine, *, limit: int = 10
+) -> int:
     transport = httpx.ASGITransport(app=create_execution_app(engine))
     try:
         async with httpx.AsyncClient(
@@ -383,7 +389,7 @@ async def _relay_historical_commands(store: Any, engine: ExecutionEngine) -> int
                 exec_engine_url="http://execution.test",
                 http_client=client,
             )
-            return await worker.drain_once(topics=["execution.commands"], limit=10)
+            return await worker.drain_once(topics=["execution.commands"], limit=limit)
     finally:
         await engine.close()
 
@@ -432,7 +438,14 @@ def _ingest_public_prices(
     assert PriceIngestionService(session_factory).upsert_candles(candles) == _EXPECTED_BARS
 
 
-def _build_scoring_surface(database_url: str, session_factory: Any) -> Any:
+def _build_scoring_surface(
+    database_url: str,
+    session_factory: Any,
+    *,
+    source: str = _SOURCE,
+    timeframe: str = "1m",
+    max_age_seconds: int = 60,
+) -> Any:
     scoring = build_scoring_engine(
         ScoringEngineConfig(
             mode=RunMode.PAPER,
@@ -441,10 +454,10 @@ def _build_scoring_surface(database_url: str, session_factory: Any) -> Any:
             runtime=ScoringRuntimeConfig(
                 bindings_cache_ttl_seconds=0,
                 market_context=ScoringMarketContextConfig(
-                    source=_SOURCE,
-                    timeframe="1m",
+                    source=source,
+                    timeframe=timeframe,
                     window=20,
-                    max_age_seconds=60,
+                    max_age_seconds=max_age_seconds,
                 ),
             ),
         )

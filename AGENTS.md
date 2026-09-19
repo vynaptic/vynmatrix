@@ -27,8 +27,8 @@ fail-closed behaviour over convenience.
   Deterministic fixtures are correct at unit boundaries; backtests, soaks, and end-to-end
   proofs must use recorded real historical data.
 - Keep execution in paper mode with `EXECUTION_ENGINE_ALLOW_LIVE=false`. This
-  migration authorizes local development only; never arm or change a live-order gate.
-  Publishing, pushing, releasing, and deploying require separate owner authorization.
+  migration grants no live authority; never arm or change a live-order gate.
+  Releases and deployments require separate owner authorization.
 - Preserve unrelated user changes. Never rewrite or delete work merely to obtain a clean
   tree.
 
@@ -118,6 +118,13 @@ treat `graphify path` as unreliable for architecture claims, and never bulk-read
 
 ## Change discipline
 
+- Work directly in `/Users/virendrayadav/workspace/VisionMaverick/vynmatrix`; never
+  create a separate worktree for this repository. It is independent of the platform
+  repository: do not reuse that repository's users, credentials, or operational authority.
+- The owner authorizes the complete contribution lifecycle: verify changes, commit on
+  local `main`, submit a pull request to this repository's remote `main`, merge after
+  required checks pass, then pull remote `main` into local `main`. Follow
+  [CONTRIBUTING.md](CONTRIBUTING.md#branch-and-submit); do not bypass branch protection.
 - Update code, schemas, event contracts, configuration, tests, and documentation only where
   the behaviour being changed genuinely reaches them. Do not make unrelated edits to satisfy
   a blanket sync rule.

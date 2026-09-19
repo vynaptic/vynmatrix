@@ -13,7 +13,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
-from sqlalchemy import text
+from sqlalchemy import DateTime, bindparam, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -38,6 +38,7 @@ from lib_common.paper_promotion import (
 )
 from lib_common.shutdown import get_shutdown_coordinator
 from lib_common.task_supervision import supervise_background_task
+from lib_data.dataset import fixed_duration_interval
 
 from .api import create_app
 from .dispatcher import ExecutionDispatcher
@@ -309,8 +310,10 @@ def _make_price_history_loader(
     """Load point-in-time close observations oldest→newest.
 
     Source and timeframe are explicit so parallel broker feeds or bar cadences
-    cannot be silently mixed. ``as_of`` prevents historical replay look-ahead.
-    Storage failures return no observations, which the provider treats as an
+    cannot be silently mixed. Prices are stamped at bar open: only completed
+    bars are visible, with observation timestamps at close. Session-based daily
+    bars require authoritative close times unavailable in this table and fail
+    closed. Storage failures return no observations, which the provider treats as an
     unavailable context and therefore a non-actionable score.
     """
 
@@ -323,7 +326,11 @@ def _make_price_history_loader(
                 instr_id = store.resolve_instrument_id(asset)
                 if instr_id is None:
                     return []
-                cutoff = as_of.astimezone(UTC).replace(tzinfo=None)
+                asset_class = store.resolve_instrument_asset_class(asset)
+                if asset_class is None:
+                    return []
+                interval = fixed_duration_interval(timeframe, asset_class=asset_class)
+                cutoff = (as_of.astimezone(UTC) - interval).replace(tzinfo=None)
                 rows = session.execute(
                     text(
                         """
@@ -336,7 +343,9 @@ def _make_price_history_loader(
                         ORDER BY ts DESC
                         LIMIT :n
                         """
-                    ),
+                    )
+                    .bindparams(bindparam("as_of", type_=DateTime()))
+                    .columns(ts=DateTime()),
                     {
                         "i": instr_id,
                         "source": source,
@@ -351,7 +360,8 @@ def _make_price_history_loader(
                             row[0].replace(tzinfo=UTC)
                             if row[0].tzinfo is None
                             else row[0].astimezone(UTC)
-                        ),
+                        )
+                        + interval,
                         close=float(row[1]),
                     )
                     for row in reversed(rows)

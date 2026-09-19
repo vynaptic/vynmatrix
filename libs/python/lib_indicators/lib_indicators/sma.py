@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from typing import ClassVar
+
+from .checkpoint import CheckpointedIndicator
 
 
-class SimpleMovingAverage:
+class SimpleMovingAverage(CheckpointedIndicator):
     """Rolling arithmetic mean.
 
     Attributes:
@@ -28,6 +31,9 @@ class SimpleMovingAverage:
             if sma.is_ready:
                 print(sma.value)
     """
+
+    STATE_CONFIG = ("_period",)
+    STATE_FIELDS: ClassVar[dict[str, str]] = {"_window": "numbers", "_value": "number?"}
 
     def __init__(self, period: int) -> None:
         if period < 1:
@@ -56,6 +62,15 @@ class SimpleMovingAverage:
             # math.fsum mirrors backtrader's Average (bit-exact parity).
             self._value = math.fsum(self._window) / self._period
         return self._value
+
+    def validate_checkpoint(self) -> None:
+        ready = len(self._window) == self.period
+        if ready != (self._value is not None):
+            msg = "SMA checkpoint readiness differs from its window"
+            raise ValueError(msg)
+        if ready and self._value != math.fsum(self._window) / self.period:
+            msg = "SMA checkpoint value differs from its window"
+            raise ValueError(msg)
 
     def reset(self) -> None:
         """Reset the indicator to its initial state."""

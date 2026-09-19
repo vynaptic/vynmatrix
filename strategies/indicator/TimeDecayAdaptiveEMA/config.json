@@ -1,0 +1,40 @@
+{
+  "strategy_id": "time_decay_adaptive_ema_v1",
+  "strategy_version": "1.0.0",
+  "description": "Price crossover of a volatility-adaptive exponential filter; trailing distance fixed from entry ATR.",
+  "schema_version": "2",
+  "runner_kind": "signal_worker",
+  "enabled": false,
+  "environments": [
+    "dev"
+  ],
+  "trade_direction_mode": "long_short",
+  "parameters": {
+    "universe": "BTC-USDC",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_short",
+    "vol_calc_window": "20",
+    "vol_ema_period": "10",
+    "alpha_base_period": "10",
+    "lambda_decay": "50.0",
+    "max_period_cap": "150",
+    "atr_period": "14",
+    "atr_multiplier": "2.0"
+  },
+  "market_data": {
+    "source": "coinbase_live",
+    "timeframe": "1m",
+    "consolidation_minutes": 1440,
+    "bootstrap_bars": 500
+  },
+  "feedback_loop": {
+    "evaluation_horizon": "5d"
+  },
+  "metadata": {
+    "decision": "INSUFFICIENT_EVIDENCE",
+    "readiness": "STATIC_REVIEW_ONLY",
+    "source_file": "TimeDecayAdaptiveEMAStrategy.py",
+    "source_sha256": "1c640b16f7f8827f2328875c982f89ec032ff7765a3ac056354d8db5424bfd30",
+    "manual_section": 190
+  }
+}

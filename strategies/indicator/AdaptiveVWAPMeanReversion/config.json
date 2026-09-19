@@ -1,0 +1,48 @@
+{
+  "strategy_id": "adaptive_vwap_mean_reversion_v1",
+  "strategy_version": "1.0.0",
+  "description": "Rolling close-volume VWAP, rolling squared VWAP residuals, RSI/ADX entry gates, and tightening ATR protection.",
+  "schema_version": "2",
+  "runner_kind": "signal_worker",
+  "enabled": false,
+  "environments": [
+    "dev"
+  ],
+  "trade_direction_mode": "long_short",
+  "parameters": {
+    "universe": "BTC-USDC",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_short",
+    "vwap_period": "20",
+    "std_dev_period": "20",
+    "entry_std_threshold": "1.0",
+    "tight_trail_threshold": "0.5",
+    "adx_period": "14",
+    "adx_weak_threshold": "30",
+    "adx_strong_threshold": "35",
+    "rsi_period": "14",
+    "rsi_oversold": "45",
+    "rsi_overbought": "55",
+    "atr_period": "14",
+    "atr_stop_mult": "2.5",
+    "atr_trail_mult_wide": "1.5",
+    "atr_trail_mult_tight": "0.5",
+    "volume_semantics": "traded"
+  },
+  "market_data": {
+    "source": "coinbase_live",
+    "timeframe": "1m",
+    "consolidation_minutes": 1440,
+    "bootstrap_bars": 500
+  },
+  "feedback_loop": {
+    "evaluation_horizon": "5d"
+  },
+  "metadata": {
+    "decision": "INSUFFICIENT_EVIDENCE",
+    "readiness": "STATIC_REVIEW_ONLY",
+    "source_file": "AdaptiveVWAPMeanReversionStrategy.py",
+    "source_sha256": "37b12382309a9ab093428206aa27d3974044f5ae259f720433102b6c1d0c460e",
+    "manual_section": 12
+  }
+}
