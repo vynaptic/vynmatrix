@@ -475,6 +475,7 @@ _UI_COLUMN_EXPECTATIONS = (
     ("positions", "qty", True),
     ("canonical_signals", "action", True),
     ("prices", "ts", True),
+    ("prices", "timeframe", True),
     # Everything the owner UI has no reason to see stays unreadable.
     ("orders", "client_order_id", False),
     ("orders", "broker_order_ref", False),
@@ -568,6 +569,18 @@ def test_backend_owner_ui_reads_are_column_scoped_and_owner_only() -> None:
                     assert isinstance(ui_queries.strategies(session, owner_id)["strategies"], list)
                     assert ui_queries._last_signals(session) == {}
                     assert ui_queries._latest_versions(session) is not None
+
+                    # A refused column degrades one section; the savepoint keeps the
+                    # transaction and its tenant scope usable for the next one.
+                    refused = ui_queries._section(
+                        session,
+                        "ungranted-column-probe",
+                        lambda: session.execute(
+                            sa.text("SELECT client_order_id FROM orders")
+                        ).all(),
+                    )
+                    assert refused is None
+                    assert session.execute(sa.text("SELECT count(*) FROM daily_nav")).scalar() == 1
 
                 with backend.begin() as connection:
                     # Forging the tenant setting cannot select another user's rows.
