@@ -79,7 +79,7 @@ A section that cannot be computed is `null` with a `reason`, never a guessed zer
 | `GET /api/ui/overview` | safety block (`execution_mode`, `allow_live`, `environment`), owner display name and base currency, per-account KPIs (equity with as-of and source, realized P&L, open positions, fills), strategy counts, freshness (`last_price_at`, `last_signal_at`, `last_fill_at`), and the latest 10 signals and fills merged as activity |
 | `GET /api/ui/strategies` | catalogue rows: id, name, asset class, description, latest version and status, the owner's binding (active, account, entries, exits, autopilot) or `null`, last signal (time, action, symbol), realized P&L for that strategy |
 | `GET /api/ui/pnl?days=90` | per account: equity series from `daily_nav`, equity-by-trade series and realized P&L by strategy and symbol from `execution_metrics` (latest row per partition, `blocked` excluded), open positions, fee totals by currency |
-| `GET /api/ui/fills?limit=50&before=<exec_id>` | fills blotter joined to orders, intents and instruments, newest first, keyset-paginated |
+| `GET /api/ui/fills?limit=50&before=<cursor>` | fills blotter joined to orders, intents and instruments, newest first by fill time (replayed history is inserted out of time order, so the execution id only breaks ties), keyset-paginated with the opaque cursor the previous page returned |
 
 Never returned: credential references (`external_ref`, `config_key`), secret or
 credential tables, `order_intents.payload`, `client_order_id`, `broker_order_ref`,
@@ -93,19 +93,21 @@ the style of `0102`:
 
 | Table | Columns | Policy predicate |
 | --- | --- | --- |
-| `daily_nav` | user_id, account_id, date, nav_ccy, nav_value, drawdown | direct owner |
-| `execution_metrics` | user_id, account_id, strategy_id, symbol, execution_mode, equity, available_cash, unrealized_pnl, realized_pnl, orders_filled, total_commission, commission_currency, created_at | direct owner |
-| `order_intents` | intent_id, user_id, account_id, strategy_id, side | direct owner |
-| `orders` | order_id, intent_id, account_id, settlement_currency, state | owner account |
+| `daily_nav` | user_id, account_id, date, nav_ccy, nav_value | direct owner |
+| `execution_metrics` | user_id, account_id, strategy_id, symbol, execution_mode, equity, realized_pnl, created_at | direct owner |
+| `order_intents` | intent_id, user_id, strategy_id, side | direct owner |
+| `orders` | order_id, intent_id, account_id, settlement_currency | owner account |
 | `positions` | account_id, instr_id, qty, avg_price, last_mark, gross_notional, notional_currency, updated_at | owner account |
 | `executions` | exec_id, order_id, instr_id, fill_ts, qty, price, fee_ccy, fee_amount, venue | order of an owner account |
-| `canonical_signals` | signal_id, strategy_id, instr_id, action, confidence, ts | none (no RLS; single-owner pipeline rows) |
-| `prices` | instr_id, ts, close, timeframe, source | none (shared reference data) |
+| `canonical_signals` | strategy_id, instr_id, action, confidence, ts | none (no RLS; single-owner pipeline rows) |
+| `prices` | ts | none (shared reference data; only the latest timestamp is read) |
 
 Direct owner means `user_id = public.vm_deployment_owner_id() AND user_id =
 current_setting('app.current_tenant', true)`. No INSERT, UPDATE, DELETE, sequence or
 default grant is added, the downgrade is symmetric, and the migration is a no-op
-outside PostgreSQL. A statement-recording contract test and new rows in the
+outside PostgreSQL. The grant list is exact: a backend test captures the SQL the
+read models emit and fails on any ungranted column and on any unused grant, the
+row policy's own key column excepted. A statement-recording contract test and new rows in the
 service-role integration expectations cover it; `docs/DATABASE.md` records the
 wider read surface.
 

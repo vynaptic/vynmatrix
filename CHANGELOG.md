@@ -7,6 +7,14 @@ Git history.
 
 ## [Unreleased]
 
+### Added
+
+- A read-only owner UI served by the backend at `http://127.0.0.1:8081/`:
+  Dashboard, Strategies and Profit and loss pages with no build step, new
+  container, port or dependency. It unlocks with `BACKEND_ADMIN_API_KEY` and
+  reads through `/api/ui/*`; migration `0107` grants the backend role
+  column-level, owner-scoped SELECT on exactly the columns those pages read.
+
 ### Fixed
 
 - Close and flatten transitions now durably cancel obsolete local-paper

@@ -49,6 +49,10 @@ and existing-database rules are defined in [DATABASE.md](DATABASE.md).
 
 ## Runtime inspection
 
+The read-only owner dashboard is http://127.0.0.1:${BACKEND_PORT:-8081}/ and
+unlocks with `BACKEND_ADMIN_API_KEY`; [apps/backend/README.md](../apps/backend/README.md)
+describes it.
+
 ~~~text
 docker compose --env-file .env -f docker/docker-compose.stack.yml ps
 docker compose --env-file .env -f docker/docker-compose.stack.yml logs --tail 100 application workers
