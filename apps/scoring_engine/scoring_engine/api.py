@@ -17,6 +17,7 @@ Module layout:
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from time import perf_counter
 from typing import Any
@@ -501,7 +502,14 @@ def create_app(  # noqa: PLR0915
                 _record_scored(sig, _t0)
                 # Dispatch the signal just ingested. A latest-for-symbol lookup can
                 # select another strategy's concurrent signal and lose this decision.
-                _dispatch_if_configured(sig, score, sector, provider_contexts)
+                dispatch_signal = sig
+                if getattr(engine.store, "supports_canonical_signals", False):
+                    dispatch_signal = replace(
+                        sig,
+                        run_id=sig.metadata["run_id"],
+                        signal_id=sig.metadata["signal_id"],
+                    )
+                _dispatch_if_configured(dispatch_signal, score, sector, provider_contexts)
             return score.to_dict()
 
         return await asyncio.to_thread(_run_ingest_unit)

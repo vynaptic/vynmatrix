@@ -72,6 +72,8 @@ strategy_validation:
   external_requirements:
   - pandas==3.0.3
   - exchange_calendars==4.13.2
+  - backtrader==1.9.78.123
+  - TA-Lib==0.6.8
   libraries:
   - lib_common
   - lib_data

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from lib_data.bars import Bar
 from lib_data.consolidation import BarConsolidator
 
@@ -124,3 +126,70 @@ def test_min_coverage_out_of_range_rejected() -> None:
 
     with pytest.raises(ValueError, match="min_coverage"):
         BarConsolidator(period_minutes=15, min_coverage=1.5)
+
+
+# Checkpoint recovery must retain both OHLCV and the latest constituent identity.
+@pytest.mark.parametrize("offsets", [[], list(range(5)), list(range(15)), [0, 1, 2, 29]])
+@pytest.mark.parametrize("coverage", [0.0, 0.6, 1.0])
+def test_json_checkpoint_continues_partial_completed_and_gap_buckets(offsets, coverage):
+    import json
+
+    start = datetime(2026, 1, 1, 9, tzinfo=UTC)
+    uninterrupted = BarConsolidator(15, min_coverage=coverage)
+    for offset in offsets:
+        bar = _minute(start + timedelta(minutes=offset))
+        bar.high += offset
+        bar.volume = offset + 1
+        bar.metadata = {
+            "price_id": 1000 + offset,
+            "content_revision": 3,
+            "feed": {"venue": "coinbase"},
+        }
+        uninterrupted.update(bar)
+    snapshot = json.loads(json.dumps(uninterrupted.snapshot_state(), allow_nan=False))
+    emitted = []
+    recovered = BarConsolidator(15, emitted.append, min_coverage=coverage)
+    recovered.restore_state(snapshot)
+    assert emitted == []
+    assert recovered.snapshot_state() == snapshot
+    for offset in range(30, 61):
+        bar = _minute(start + timedelta(minutes=offset))
+        bar.metadata = {"price_id": 1000 + offset, "content_revision": 4}
+        before_count = len(emitted)
+        expected = uninterrupted.update(bar)
+        actual = recovered.update(bar)
+        assert actual == expected
+        assert len(emitted) - before_count == int(actual is not None)
+        assert recovered.snapshot_state() == uninterrupted.snapshot_state()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["period", "coverage", "nan", "metadata", "count", "timezone", "boundary", "duration"],
+)
+def test_bad_consolidation_checkpoint_cannot_mutate_a_working_bucket(corruption):
+    import copy
+
+    consolidator = BarConsolidator(15, min_coverage=0.6)
+    consolidator.update(_minute(datetime(2026, 1, 1, 9, tzinfo=UTC)))
+    before = consolidator.snapshot_state()
+    snapshot = copy.deepcopy(before)
+    if corruption == "period":
+        snapshot["period_minutes"] = 30
+    elif corruption == "coverage":
+        snapshot["min_coverage"] = 0
+    elif corruption == "nan":
+        snapshot["working_bar"]["high"] = float("nan")
+    elif corruption == "metadata":
+        snapshot["working_bar"]["metadata"]["invalid"] = float("inf")
+    elif corruption == "duration":
+        snapshot["source_minutes"] = 15
+    elif corruption == "count":
+        snapshot["bar_count"] = True
+    elif corruption == "timezone":
+        snapshot["working_bar"]["timestamp"] = "2026-01-01T09:01:00"
+    else:
+        snapshot["current_period_end"] = "2026-01-01T09:30:00+00:00"
+    with pytest.raises(ValueError, match="checkpoint"):
+        consolidator.restore_state(snapshot)
+    assert consolidator.snapshot_state() == before

@@ -5,6 +5,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import cast, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -284,6 +286,8 @@ class _StoreOps(_RebalanceStoreOps, _StoreInfra):
                 if value is not None:
                     meta.setdefault(key, value)
 
+            # These trace fields are owned by the signal envelope, never caller metadata.
+            meta.update(run_id=signal.run_id, signal_id=signal.signal_id)
             signal.action = normalize_scoring_action(signal.action)
             direction = signal.action if signal.action in {"long", "short"} else "flat"
             horizon_seconds = (
@@ -330,14 +334,28 @@ class _StoreOps(_RebalanceStoreOps, _StoreInfra):
                         set_={
                             "confidence": signal.confidence,
                             "raw_score": signal.score_value,
-                            "signal_meta": meta,
-                            "run_id": signal.run_id,
+                            # Retries may refresh scoring, but commands already refer
+                            # to the first accepted envelope's immutable origin.
+                            "signal_meta": cast(meta, JSONB).op("||")(
+                                func.jsonb_build_object(
+                                    "run_id",
+                                    app_models.CanonicalSignal.run_id,
+                                    "signal_id",
+                                    app_models.CanonicalSignal.signal_meta["signal_id"],
+                                )
+                            ),
                             "expires_at": signal.expires_at,
                         },
                     )
-                    .returning(app_models.CanonicalSignal.signal_id)
+                    .returning(
+                        app_models.CanonicalSignal.signal_id,
+                        app_models.CanonicalSignal.run_id,
+                        app_models.CanonicalSignal.signal_meta["signal_id"].as_string(),
+                    )
                 )
-                canonical_signal_id = int(s.execute(stmt).scalar_one())
+                origin = s.execute(stmt).one()
+                canonical_signal_id = int(origin[0])
+                signal.run_id, signal.signal_id = origin[1], origin[2]
                 self._maybe_commit(s)
                 return canonical_signal_id
 
@@ -350,8 +368,10 @@ class _StoreOps(_RebalanceStoreOps, _StoreInfra):
             if existing is not None:
                 existing.confidence = signal.confidence
                 existing.raw_score = signal.score_value
+                signal.run_id = existing.run_id
+                signal.signal_id = existing.signal_meta["signal_id"]
+                meta.update(run_id=signal.run_id, signal_id=signal.signal_id)
                 existing.signal_meta = meta
-                existing.run_id = signal.run_id
                 existing.expires_at = signal.expires_at
                 self._maybe_commit(s)
                 return int(existing.signal_id)

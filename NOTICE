@@ -24,6 +24,10 @@ recorded test purpose on either of these incomplete records:
   source revision or reuse record.
 - `tests/fixtures/market_data/` contains frozen Coinbase-related fixtures with
   incomplete capture and redistribution records.
+- The ten Backtrader ports identified in `docs/STRATEGY_READINESS.md` retain source
+  hashes and manual references from the local `backtrader_strategies` collection.
+  No verified license or attribution record is attached to these source bindings;
+  local porting and reference captures do not resolve redistribution provenance.
 
 [docs/MIGRATION.md](docs/MIGRATION.md) records the historical review and the
 remaining provenance work.

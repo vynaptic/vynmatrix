@@ -1,0 +1,42 @@
+{
+  "strategy_id": "williams_pullback_v1",
+  "strategy_version": "1.0.0",
+  "description": "Williams %R recovery aligned with the EMA trend and MACD histogram; close-based ATR trail.",
+  "schema_version": "2",
+  "runner_kind": "signal_worker",
+  "enabled": false,
+  "environments": [
+    "dev"
+  ],
+  "trade_direction_mode": "long_short",
+  "parameters": {
+    "universe": "BTC-USDC",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_short",
+    "trend_period": "30",
+    "wr_period": "7",
+    "wr_overbought": "-20",
+    "wr_oversold": "-80",
+    "macd_fast": "7",
+    "macd_slow": "30",
+    "macd_signal": "7",
+    "atr_period": "7",
+    "atr_stop_multiplier": "3.0"
+  },
+  "market_data": {
+    "source": "coinbase_live",
+    "timeframe": "1m",
+    "consolidation_minutes": 1440,
+    "bootstrap_bars": 500
+  },
+  "feedback_loop": {
+    "evaluation_horizon": "5d"
+  },
+  "metadata": {
+    "decision": "INSUFFICIENT_EVIDENCE",
+    "readiness": "STATIC_REVIEW_ONLY",
+    "source_file": "WilliamsPullbackStrategy.py",
+    "source_sha256": "ee0af7ff892b03e31469d4f9f848a5b585c8f68ef2a76e27b407f5ae5dbe83b7",
+    "manual_section": 242
+  }
+}

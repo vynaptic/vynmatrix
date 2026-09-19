@@ -244,6 +244,15 @@ class StrategyRuntimeStore:
         self.identity = identity
         self._outbox = OutboxStore(session_factory)
 
+    def load_state_payload(self, strategy: PureSignalStrategy) -> dict[str, Any] | None:
+        """Read compatible state before any bootstrap mutates a checkpointed core."""
+        with self._session_factory() as session:
+            row = session.get(StrategyRuntimeState, self.identity.worker_id)
+            if row is None:
+                return None
+            self._validate_row(row, strategy=strategy)
+            return _canonical_json_object(row.state_payload, field_name="strategy runtime state")
+
     def restore(
         self,
         strategy: PureSignalStrategy,
@@ -857,12 +866,14 @@ class StrategyRuntimeStore:
         *,
         strategy: PureSignalStrategy,
         source_bar: Bar | None = None,
+        bar_runtime: Mapping[str, Any] | None = None,
     ) -> StrategyRuntimeState:
         """Create or validate an initial snapshot in the caller's transaction."""
         return self._persist_state_on_session(
             session,
             strategy=strategy,
             source_bar=source_bar,
+            bar_runtime=bar_runtime,
         )
 
     def persist_rebuild_on_session(
@@ -871,12 +882,14 @@ class StrategyRuntimeStore:
         *,
         strategy: PureSignalStrategy,
         source_bar: Bar | None,
+        bar_runtime: Mapping[str, Any] | None = None,
     ) -> StrategyRuntimeState:
         """Persist a rebuilt state snapshot without creating signal envelopes."""
         return self._persist_state_on_session(
             session,
             strategy=strategy,
             source_bar=source_bar,
+            bar_runtime=bar_runtime,
         )
 
     def persist_transition_on_session(
@@ -886,12 +899,14 @@ class StrategyRuntimeStore:
         strategy: PureSignalStrategy,
         source_bar: Bar,
         decisions: Sequence[StrategyBarDecision],
+        bar_runtime: Mapping[str, Any] | None = None,
     ) -> StrategyRuntimeState:
         """Persist state, decision journal, and signal envelopes atomically."""
         row = self._persist_state_on_session(
             session,
             strategy=strategy,
             source_bar=source_bar,
+            bar_runtime=bar_runtime,
         )
         price_id, content_revision = _source_identity(source_bar)
         for decision in decisions:
@@ -975,8 +990,11 @@ class StrategyRuntimeStore:
         *,
         strategy: PureSignalStrategy,
         source_bar: Bar | None,
+        bar_runtime: Mapping[str, Any] | None = None,
     ) -> StrategyRuntimeState:
         snapshot = strategy.serialize_model_state()
+        if bar_runtime is not None:
+            snapshot["bar_runtime"] = _canonical_json_object(bar_runtime, field_name="bar runtime")
         row = cast(
             StrategyRuntimeState | None,
             session.get(StrategyRuntimeState, self.identity.worker_id),

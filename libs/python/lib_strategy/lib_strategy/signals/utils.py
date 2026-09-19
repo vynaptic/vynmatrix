@@ -9,12 +9,44 @@ These functions were consolidated from:
 """
 
 import hashlib
+import math
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
 from lib_strategy.signals.signal import SignalAction
+
+_HORIZON_MAP = {
+    "1H": 1 / 24,
+    "4H": 4 / 24,
+    "1D": 1.0,
+    "1W": 5.0,
+    "2W": 10.0,
+    "1M": 21.0,
+    "INTRADAY": 0.5,
+    "SWING": 5.0,
+    "POSITION": 21.0,
+}
+
+
+def parse_signal_horizon_days(horizon: str) -> float | None:
+    """Parse canonical scoring labels/durations using its existing trading-day units.
+
+    Unknown or nonfinite/nonpositive durations have no valid interpretation.
+    Callers choose whether that means a legacy fallback or rejected configuration.
+    """
+    key = horizon.strip().upper()
+    if key in _HORIZON_MAP:
+        return _HORIZON_MAP[key]
+    if len(key) <= 1 or key[-1] not in {"H", "D", "W", "M"}:
+        return None
+    try:
+        amount = float(key[:-1])
+    except ValueError:
+        return None
+    days = amount * {"H": 1 / 24, "D": 1.0, "W": 5.0, "M": 21.0}[key[-1]]
+    return days if math.isfinite(days) and days > 0 else None
 
 
 def extract_price_provenance(metadata: Mapping[str, Any] | None) -> dict[str, Any]:

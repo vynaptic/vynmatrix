@@ -1,0 +1,45 @@
+{
+  "strategy_id": "hurst_regime_v1",
+  "strategy_version": "1.0.0",
+  "description": "Hurst-gated MACD trend cross or slow-stochastic reversion cross; close-based ATR protection.",
+  "schema_version": "2",
+  "runner_kind": "signal_worker",
+  "enabled": false,
+  "environments": [
+    "dev"
+  ],
+  "trade_direction_mode": "long_short",
+  "parameters": {
+    "universe": "BTC-USDC",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_short",
+    "hurst_period": "30",
+    "hurst_trend_threshold": "0.55",
+    "hurst_reversion_threshold": "0.45",
+    "macd_fast": "12",
+    "macd_slow": "26",
+    "macd_signal": "9",
+    "stoch_period": "14",
+    "stoch_dfast": "3",
+    "stoch_overbought": "80",
+    "stoch_oversold": "20",
+    "atr_period": "14",
+    "atr_stop_multiplier": "3.0"
+  },
+  "market_data": {
+    "source": "coinbase_live",
+    "timeframe": "1m",
+    "consolidation_minutes": 1440,
+    "bootstrap_bars": 500
+  },
+  "feedback_loop": {
+    "evaluation_horizon": "5d"
+  },
+  "metadata": {
+    "decision": "INSUFFICIENT_EVIDENCE",
+    "readiness": "STATIC_REVIEW_ONLY",
+    "source_file": "HurstRegimeStrategy.py",
+    "source_sha256": "348597c78dcbbf122b84ab9aea2f792fe0f4637843031074fd21c3f308480e4e",
+    "manual_section": 90
+  }
+}

@@ -9,6 +9,9 @@ Git history.
 
 ### Added
 
+- Ten disabled native signal strategies selected from the Backtrader catalogue;
+  selection, deviations and validation evidence are tracked in
+  [strategy readiness](docs/STRATEGY_READINESS.md#backtrader-migration).
 - A read-only owner UI served by the backend at `http://127.0.0.1:8081/`:
   Dashboard, Strategies and Profit and loss pages with no build step, new
   container, port or dependency. It unlocks with `BACKEND_ADMIN_API_KEY` and
@@ -17,6 +20,10 @@ Git history.
 
 ### Fixed
 
+- Historical scoring observes candle closes only after their interval completes;
+  signal redelivery preserves the canonical origin used by durable execution commands.
+- Native bar strategies preserve their configured evaluation horizon through scoring
+  and feedback instead of falling back to a one-day horizon.
 - Close and flatten transitions now durably cancel obsolete local-paper
   protective orders; a reduce-only row with no remaining position is terminally
   cancelled instead of retried.

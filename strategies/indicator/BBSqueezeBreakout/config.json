@@ -1,0 +1,40 @@
+{
+  "strategy_id": "bb_squeeze_breakout_v1",
+  "strategy_version": "1.0.0",
+  "description": "Prior low bandwidth percentile followed by a band breakout, optionally confirmed by OBV; close at the middle band.",
+  "schema_version": "2",
+  "runner_kind": "signal_worker",
+  "enabled": false,
+  "environments": [
+    "dev"
+  ],
+  "trade_direction_mode": "long_short",
+  "parameters": {
+    "universe": "BTC-USDC",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_short",
+    "bb_period": "20",
+    "bb_devfactor": "2.0",
+    "squeeze_lookback": "40",
+    "squeeze_threshold_pct": "10.0",
+    "obv_lookback": "10",
+    "use_volume_confirm": "true",
+    "volume_semantics": "traded"
+  },
+  "market_data": {
+    "source": "coinbase_live",
+    "timeframe": "1m",
+    "consolidation_minutes": 1440,
+    "bootstrap_bars": 500
+  },
+  "feedback_loop": {
+    "evaluation_horizon": "5d"
+  },
+  "metadata": {
+    "decision": "INSUFFICIENT_EVIDENCE",
+    "readiness": "STATIC_REVIEW_ONLY",
+    "source_file": "BBSqueezeBreakout.py",
+    "source_sha256": "0f003ada314fadda7794923caab8b0a56085050198c3e591747c1e35daacb7d7",
+    "manual_section": 36
+  }
+}

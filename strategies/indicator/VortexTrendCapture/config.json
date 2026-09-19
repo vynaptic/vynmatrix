@@ -1,0 +1,38 @@
+{
+  "strategy_id": "vortex_trend_capture_v1",
+  "strategy_version": "1.0.0",
+  "description": "Vortex crossover aligned with SMA trend and an ATR/price ceiling; close-based high/low ATR ratchet.",
+  "schema_version": "2",
+  "runner_kind": "signal_worker",
+  "enabled": false,
+  "environments": [
+    "dev"
+  ],
+  "trade_direction_mode": "long_short",
+  "parameters": {
+    "universe": "BTC-USDC",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_short",
+    "vortex_period": "30",
+    "long_term_ma_period": "30",
+    "atr_period": "7",
+    "atr_threshold": "0.05",
+    "atr_stop_multiplier": "3.0"
+  },
+  "market_data": {
+    "source": "coinbase_live",
+    "timeframe": "1m",
+    "consolidation_minutes": 1440,
+    "bootstrap_bars": 500
+  },
+  "feedback_loop": {
+    "evaluation_horizon": "5d"
+  },
+  "metadata": {
+    "decision": "INSUFFICIENT_EVIDENCE",
+    "readiness": "STATIC_REVIEW_ONLY",
+    "source_file": "VortexTrendCaptureStrategy.py",
+    "source_sha256": "819e5f5d631ce7da11a4591c705aaa1f90bd18fe6c0015fd17abb88612b07618",
+    "manual_section": 233
+  }
+}

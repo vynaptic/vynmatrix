@@ -1,0 +1,38 @@
+{
+  "strategy_id": "z_score_mean_reversion_v1",
+  "strategy_version": "1.0.0",
+  "description": "Current-window price z-score extremes under an ADX range gate; mean or percentage-trail exit.",
+  "schema_version": "2",
+  "runner_kind": "signal_worker",
+  "enabled": false,
+  "environments": [
+    "dev"
+  ],
+  "trade_direction_mode": "long_short",
+  "parameters": {
+    "universe": "BTC-USDC",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_short",
+    "z_period": "7",
+    "z_entry_threshold": "1.0",
+    "adx_period": "14",
+    "adx_filter_level": "20",
+    "trail_percent": "0.02"
+  },
+  "market_data": {
+    "source": "coinbase_live",
+    "timeframe": "1m",
+    "consolidation_minutes": 1440,
+    "bootstrap_bars": 500
+  },
+  "feedback_loop": {
+    "evaluation_horizon": "5d"
+  },
+  "metadata": {
+    "decision": "INSUFFICIENT_EVIDENCE",
+    "readiness": "STATIC_REVIEW_ONLY",
+    "source_file": "ZScoreMeanReversionStrategy.py",
+    "source_sha256": "1ae883613a734a6b7c52d0cc182da75cb16bce8ec42a39be3156f19f9e67516e",
+    "manual_section": 245
+  }
+}

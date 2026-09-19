@@ -1,0 +1,37 @@
+{
+  "strategy_id": "engulfing_pattern_v1",
+  "strategy_version": "1.0.0",
+  "description": "Strict real-body engulfing confirmed by RSI extremes; percentage trailing protection.",
+  "schema_version": "2",
+  "runner_kind": "signal_worker",
+  "enabled": false,
+  "environments": [
+    "dev"
+  ],
+  "trade_direction_mode": "long_short",
+  "parameters": {
+    "universe": "BTC-USDC",
+    "asset_class": "crypto",
+    "trade_direction_mode": "long_short",
+    "rsi_period": "14",
+    "rsi_oversold": "30",
+    "rsi_overbought": "70",
+    "trail_percent": "0.02"
+  },
+  "market_data": {
+    "source": "coinbase_live",
+    "timeframe": "1m",
+    "consolidation_minutes": 1440,
+    "bootstrap_bars": 500
+  },
+  "feedback_loop": {
+    "evaluation_horizon": "5d"
+  },
+  "metadata": {
+    "decision": "INSUFFICIENT_EVIDENCE",
+    "readiness": "STATIC_REVIEW_ONLY",
+    "source_file": "EngulfingPatternStrategy.py",
+    "source_sha256": "1fe3dacd56051ff286d85fa553a71ef9699586972d1ebca839940368d3b0c495",
+    "manual_section": 64
+  }
+}

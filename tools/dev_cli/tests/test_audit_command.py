@@ -626,3 +626,28 @@ def test_first_party_dependency_contract_passes_when_declared(fake_repo: Path) -
     report = audit_module.run_audit(staged=False, root=fake_repo)
     findings = [f for f in report.findings if f.rule == "first-party-dependency-contract"]
     assert not findings, [f.message for f in findings]
+
+
+def test_default_audit_checks_repository_files_in_a_linked_worktree(fake_repo, monkeypatch):
+    import subprocess
+
+    _git_add_all(fake_repo)
+    linked = fake_repo.parent / f"{fake_repo.name}-linked"
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(linked), "HEAD"],
+        cwd=fake_repo,
+        check=True,
+        capture_output=True,
+    )
+    module_path = linked / "tools/dev_cli/dev_cli/commands/audit.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text("", encoding="utf-8")
+    rogue = linked / "apps/rogue/signal.py"
+    rogue.parent.mkdir(parents=True)
+    rogue.write_text("class SignalAction: pass\n", encoding="utf-8")
+    monkeypatch.setattr(audit_module, "__file__", str(module_path))
+    report = audit_module.run_audit(staged=False)
+    assert any(
+        finding.rule == "duplicate-signal-type" and finding.path == "apps/rogue/signal.py"
+        for finding in report.errors
+    )

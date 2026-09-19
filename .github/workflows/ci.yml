@@ -229,6 +229,23 @@ jobs:
           apps/indicator_runner/tests/test_postgres_notify_integration.py
           tests/test_service_roles_postgres_integration.py
           tests/test_public_strategy_pipeline_postgres_integration.py
+      - name: Verify native ports against isolated historical paper pipeline
+        env:
+          ADMIN_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/postgres
+          MIGRATION_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/vm_ports_pipeline_test_ci
+          DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/vm_ports_pipeline_test_ci
+          VM_PORTS_PIPELINE_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/vm_ports_pipeline_test_ci
+          VM_PORTS_PIPELINE_FEEDBACK_DATABASE_URL: postgresql://vm_feedback_login:vm_feedback_ci@localhost:5432/vm_ports_pipeline_test_ci
+          VM_PORTS_PIPELINE_BACKEND_DATABASE_URL: postgresql://vm_backend_login:vm_backend_ci@localhost:5432/vm_ports_pipeline_test_ci
+        run: |
+          python - <<'PY'
+          import os
+          from dev_cli.core.bootstrap import BootstrapSettings, provision_database
+          provision_database(BootstrapSettings.parse(os.environ))
+          PY
+          alembic -c scripts/db/alembic.ini upgrade head
+          sh docker/provision-runtime-roles.sh
+          pytest -v -m integration tests/test_migrated_strategy_pipeline_postgres_integration.py
 
   schema-drift:
     name: model <-> migration drift

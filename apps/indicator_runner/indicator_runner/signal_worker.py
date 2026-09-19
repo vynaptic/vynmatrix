@@ -30,6 +30,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
+from indicator_runner.bar_recovery import BarRecovery
 from indicator_runner.panel_binding import PanelRuntimeBinding, scoped_panel_worker_id
 from indicator_runner.panel_runtime import SynchronizedPanelRuntime
 from indicator_runner.runtime_journal import (
@@ -68,9 +69,14 @@ from lib_data.watermark import (
     WatermarkState,
 )
 from lib_strategy.panels import SynchronizedPanelStrategy
+from lib_strategy.signals.bar_strategy import BarSignalStrategy
 from lib_strategy.signals.emitter import HttpSignalEmitter
 from lib_strategy.signals.loading import load_pure_strategy_core
-from lib_strategy.signals.pure_strategy import MarketState, PureSignalStrategy
+from lib_strategy.signals.pure_strategy import (
+    MarketState,
+    ModelStateContractError,
+    PureSignalStrategy,
+)
 from lib_strategy.signals.signal import Signal
 from lib_strategy.signals.utils import normalize_signal_api_base_url
 
@@ -265,6 +271,21 @@ class SignalWorker:
                     on_bar=self._on_consolidated_bar,
                     min_coverage=min_bar_coverage,
                 )
+
+        self._bar_recovery = (
+            BarRecovery(
+                strategy=strategy,
+                symbols=self._symbols,
+                source=self._source,
+                timeframe=self._timeframe,
+                consolidators=self._consolidators,
+                read_range=lambda symbol, start, through: self._fetch_historical_range(
+                    symbol, start=start, through=through
+                ),
+            )
+            if isinstance(strategy, BarSignalStrategy)
+            else None
+        )
 
     def start(self) -> None:
         """Bootstrap history, start LISTEN loop."""
@@ -491,6 +512,14 @@ class SignalWorker:
         raw_limit: int,
     ) -> None:
         """Run the existing bounded startup path when no revision is pending."""
+        if self._bar_recovery is not None:
+            snapshot = self._runtime_store.load_state_payload(self._strategy)
+            if snapshot is not None:
+                self._bar_recovery.restore(snapshot, states)
+                return
+            if any(state.instr_id is not None for state in states.values()):
+                msg = f"Missing durable model state for acknowledged worker {self._worker_id!r}"
+                raise ModelStateContractError(msg)
         had_durable_checkpoint = any(
             not self._watermark.is_initial(state.last_ts) for state in states.values()
         )
@@ -504,6 +533,8 @@ class SignalWorker:
                 limit=raw_limit,
                 through=None if is_cold_start else state.last_ts,
             )
+            if self._bar_recovery is not None:
+                self._bar_recovery.seed(symbol, bars)
             if bars:
                 candidate = bars[-1]
                 if latest_source_bar is None or (
@@ -584,6 +615,7 @@ class SignalWorker:
                 session,
                 strategy=self._strategy,
                 source_bar=latest_source_bar,
+                **self._bar_runtime_options(),
             )
             session.commit()
         for initialized in initialized_states:
@@ -597,6 +629,9 @@ class SignalWorker:
         raw_limit: int,
     ) -> None:
         """Replay authoritative history into this fresh core, then CAS-ack it."""
+        if self._bar_recovery is not None:
+            self._bootstrap_exact_rebuild(states, instruments=instruments, raw_limit=raw_limit)
+            return
         by_symbol = {state.symbol: state for state in states}
         earliest_changed = min(
             state.rebuild_from_ts for state in states if state.rebuild_from_ts is not None
@@ -704,6 +739,69 @@ class SignalWorker:
             strategy_bars=len(replay_bars),
         )
 
+    def _bar_runtime_options(self) -> dict[str, Any]:
+        return {"bar_runtime": self._bar_recovery.snapshot()} if self._bar_recovery else {}
+
+    def _bootstrap_exact_rebuild(
+        self,
+        states: list[WatermarkState],
+        *,
+        instruments: dict[str, int],
+        raw_limit: int,
+    ) -> None:
+        recovery = self._bar_recovery
+        assert recovery is not None
+        snapshot = self._runtime_store.load_state_payload(self._strategy)
+        if snapshot is None:
+            msg = "Historical rebuild has no anchored native runtime checkpoint"
+            raise ModelStateContractError(msg)
+        targets = {}
+        for state in states:
+            target = state.last_ts
+            if self._watermark.is_initial(target):
+                latest = self._ingestion_service.latest_candle_ts(
+                    instruments[state.symbol],
+                    source=self._source,
+                    timeframe=self._timeframe,
+                )
+                if latest is not None:
+                    target = _coerce_timestamp(latest)
+            targets[state.symbol] = target
+        latest_bar = recovery.rebuild(
+            snapshot,
+            {state.symbol: state for state in states},
+            targets,
+            recent=lambda symbol, through: self._fetch_historical_bars(
+                symbol, limit=raw_limit, through=through
+            ),
+            to_market_state=lambda bar: self._bar_to_market_state(
+                bar, processing_timestamp=bar.timestamp
+            ),
+        )
+        with self._session_factory() as session:
+            self._runtime_store.persist_rebuild_on_session(
+                session,
+                strategy=self._strategy,
+                source_bar=latest_bar,
+                **self._bar_runtime_options(),
+            )
+            acknowledged = self._watermark.acknowledge_rebuilds_on_session(
+                session,
+                states,
+                target_last_ts={
+                    (symbol, self._timeframe): target for symbol, target in targets.items()
+                },
+            )
+            session.commit()
+        for state in acknowledged:
+            self._watermark.remember(state)
+        if any(
+            self._watermark.get_state(state.symbol, state.timeframe).rebuild_pending
+            for state in acknowledged
+        ):
+            msg = "Historical mutation arrived while rebuilding native strategy streams"
+            raise RebuildGenerationChangedError(msg)
+
     def _fetch_historical_range(
         self,
         symbol: str,
@@ -778,6 +876,8 @@ class SignalWorker:
                     for row in rows  # already oldest first
                 ]
         except (SQLAlchemyError, OSError):
+            if self._bar_recovery is not None:
+                raise
             logger.exception("Failed to fetch historical bars for %s", symbol)
             return []
 
@@ -910,11 +1010,14 @@ class SignalWorker:
                 if self.failed:
                     return
 
+                if self._bar_recovery is not None:
+                    self._bar_recovery.advance(bar)
                 self._runtime_store.persist_transition_on_session(
                     session,
                     strategy=self._strategy,
                     source_bar=bar,
                     decisions=tuple(self._uncommitted_decisions),
+                    **self._bar_runtime_options(),
                 )
                 advanced = self._watermark.advance_locked(
                     session,

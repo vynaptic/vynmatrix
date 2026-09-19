@@ -63,8 +63,7 @@ testpaths = [
     "libs/python/lib_indicators/tests",
     "libs/python/lib_infrastructure/tests",
     "libs/python/lib_strategy/tests",
-    "strategies/indicator/USQualityCompounder/tests",
-    "strategies/indicator/_template/tests",
+    "strategies/indicator",
     "tools/dev_cli/tests",
 ]
 python_files = "test_*.py"

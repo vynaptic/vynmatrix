@@ -7,10 +7,13 @@ production convention shared by the live SignalWorker and the backtest harness.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Mapping
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
-from .bars import Bar
+from .bars import Bar, ohlcv_invariant_error
 from .dataset import timeframe_interval
 
 
@@ -55,6 +58,17 @@ def _source_metadata(bar: Bar) -> dict[str, object]:
         if key not in bar.metadata:
             metadata.pop(key, None)
     return metadata
+
+
+def _checkpoint_timestamp(value: Any) -> datetime:
+    if not isinstance(value, str):
+        msg = "Checkpoint timestamp must be a timezone-bearing ISO string"
+        raise TypeError(msg)
+    timestamp = datetime.fromisoformat(value)
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        msg = "Checkpoint timestamp requires an explicit timezone"
+        raise ValueError(msg)
+    return timestamp
 
 
 class BarConsolidator:
@@ -109,6 +123,132 @@ class BarConsolidator:
         previous = self._on_bar
         self._on_bar = on_bar
         return previous
+
+    def snapshot_state(self) -> dict[str, Any]:
+        """Capture the unfinished bucket without flushing or serializing callbacks."""
+        working = asdict(self._working_bar) if self._working_bar is not None else None
+        if working is not None and self._working_bar is not None:
+            working["timestamp"] = self._working_bar.timestamp.isoformat()
+        snapshot = {
+            "schema_version": 1,
+            "period_minutes": self._period_minutes,
+            "min_coverage": self._min_coverage,
+            "current_period_end": (
+                self._current_period_end.isoformat() if self._current_period_end else None
+            ),
+            "working_bar": working,
+            "bar_count": self._bar_count,
+            "source_minutes": self._source_minutes,
+        }
+        return cast(dict[str, Any], json.loads(json.dumps(snapshot, allow_nan=False)))
+
+    def restore_state(self, snapshot: Mapping[str, Any]) -> None:
+        """Validate a JSON bucket completely before replacing state; never emit."""
+        try:
+            period_end, working, count, source_minutes = self._decode_checkpoint(snapshot)
+        except (KeyError, TypeError, ValueError) as exc:
+            msg = f"Invalid consolidation checkpoint: {exc}"
+            raise ValueError(msg) from exc
+        self._current_period_end = period_end
+        self._working_bar = working
+        self._bar_count = count
+        self._source_minutes = source_minutes
+
+    def _decode_checkpoint(
+        self, snapshot: Mapping[str, Any]
+    ) -> tuple[datetime | None, Bar | None, int, int]:
+        payload = json.loads(json.dumps(dict(snapshot), allow_nan=False))
+        if set(payload) != {
+            "schema_version",
+            "period_minutes",
+            "min_coverage",
+            "current_period_end",
+            "working_bar",
+            "bar_count",
+            "source_minutes",
+        }:
+            msg = "Malformed consolidation checkpoint"
+            raise ValueError(msg)
+        if (
+            type(payload["schema_version"]) is not int
+            or payload["schema_version"] != 1
+            or type(payload["period_minutes"]) is not int
+            or payload["period_minutes"] != self._period_minutes
+            or isinstance(payload["min_coverage"], bool)
+            or payload["min_coverage"] != self._min_coverage
+        ):
+            msg = "Incompatible consolidation checkpoint configuration"
+            raise ValueError(msg)
+        count, source_minutes = payload["bar_count"], payload["source_minutes"]
+        if (
+            type(count) is not int
+            or count < 0
+            or type(source_minutes) is not int
+            or source_minutes < 1
+        ):
+            msg = "Invalid consolidation checkpoint counts"
+            raise ValueError(msg)
+        raw = payload["working_bar"]
+        working = None
+        period_end = None
+        if raw is None:
+            if payload["current_period_end"] is not None or count != 0:
+                msg = "Empty consolidation checkpoint retains a bucket"
+                raise ValueError(msg)
+        else:
+            if not isinstance(raw, dict) or set(raw) != {
+                "symbol",
+                "timestamp",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "timeframe",
+                "source",
+                "metadata",
+            }:
+                msg = "Malformed consolidation checkpoint bar"
+                raise ValueError(msg)
+            timestamp = _checkpoint_timestamp(raw["timestamp"])
+            metadata = raw["metadata"]
+            if not isinstance(metadata, dict):
+                msg = "Consolidation checkpoint metadata must be an object"
+                raise TypeError(msg)
+            source_timeframe = metadata["source_timeframe"]
+            source_timestamp = _checkpoint_timestamp(metadata["source_price_ts"])
+            if (
+                not isinstance(source_timeframe, str)
+                or _timeframe_minutes(source_timeframe) != source_minutes
+                or source_timestamp + timedelta(minutes=source_minutes) != timestamp
+            ):
+                msg = "Consolidation checkpoint duration/timestamp disagrees with provenance"
+                raise ValueError(msg)
+            period_end = _checkpoint_timestamp(payload["current_period_end"])
+            error = ohlcv_invariant_error(
+                open_price=raw["open"],
+                high=raw["high"],
+                low=raw["low"],
+                close=raw["close"],
+                volume=raw["volume"],
+            )
+            if (
+                error is not None
+                or not isinstance(raw["symbol"], str)
+                or not raw["symbol"]
+                or raw["symbol"] != raw["symbol"].strip()
+                or not isinstance(raw["metadata"], dict)
+                or (raw["source"] is not None and not isinstance(raw["source"], str))
+                or raw["timeframe"] != f"{self._period_minutes}m"
+                or count == 0
+                or period_end != _period_end(timestamp, self._period_minutes)
+            ):
+                msg = "Invalid consolidation checkpoint bucket or OHLCV"
+                raise ValueError(msg)
+            # A gap-triggering constituent can close its new bucket exactly;
+            # update() intentionally leaves that new bucket pending.
+            working = Bar(**{**raw, "timestamp": timestamp})
+        return period_end, working, count, source_minutes
 
     def update(self, bar: Bar) -> Bar | None:
         """Feed a minute bar and return a consolidated bar if the period is complete.

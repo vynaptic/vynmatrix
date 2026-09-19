@@ -34,7 +34,11 @@ class ScoreStore(ABC):
 
     @abstractmethod
     def add_signal(self, signal: SignalRecord) -> int | None:
-        """Store a signal and return its canonical database identifier, if any."""
+        """Store a signal, restoring its persisted envelope IDs on redelivery.
+
+        Return its canonical database identifier, if any. Database stores hydrate
+        the mutable record's ``run_id``/``signal_id`` from the original insertion.
+        """
         raise NotImplementedError
 
     @abstractmethod

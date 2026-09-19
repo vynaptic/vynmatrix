@@ -594,12 +594,16 @@ class ScoreEngine:
         pipeline_result = enriched.pipeline_result
         global_score: GlobalScore = pipeline_result.global_score
         meta_outputs = pipeline_result.meta_outputs
-        run_id = enriched.run_id
         meta_probability, score_local, s_raw = meta_scalars
 
         canonical_signal_id = self.store.add_signal(record)
+        # Persistence restores the original trace identity on a retry.
+        run_id = record.run_id
+        enriched_signal = replace(enriched_signal, run_id=run_id, signal_id=record.signal_id)
         self._attach_canonical_signal_id(
             canonical_signal_id,
+            origin_run_id=run_id,
+            origin_signal_id=record.signal_id,
             caller_metadata=caller_metadata,
             enriched_metadata=enriched_signal.metadata,
             persisted_metadata=metadata,
@@ -678,6 +682,8 @@ class ScoreEngine:
         self,
         canonical_signal_id: int | None,
         *,
+        origin_run_id: str | None,
+        origin_signal_id: str,
         caller_metadata: dict[str, Any],
         enriched_metadata: dict[str, Any],
         persisted_metadata: dict[str, Any],
@@ -693,6 +699,8 @@ class ScoreEngine:
         # handler dispatches its original Signal to avoid a latest-row race.
         for target in (caller_metadata, enriched_metadata, persisted_metadata):
             target["canonical_signal_id"] = canonical_signal_id
+            target["run_id"] = origin_run_id
+            target["signal_id"] = origin_signal_id
 
     def _upsert_hierarchy_scores(
         self,
@@ -719,7 +727,7 @@ class ScoreEngine:
         self,
         *,
         enriched_signal: Signal,
-        run_id: str,
+        run_id: str | None,
         action: str,
         global_score: GlobalScore,
         score_record: ScoreRecord,

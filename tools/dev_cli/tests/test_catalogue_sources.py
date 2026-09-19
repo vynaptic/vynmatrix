@@ -214,8 +214,18 @@ def test_loads_all_shipped_releases_including_disabled_sources() -> None:
 
     releases = load_strategy_releases(ROOT)
     assert {release.strategy_name for release in releases} == {
+        "ATRBreakout",
+        "AdaptiveVWAPMeanReversion",
+        "BBSqueezeBreakout",
+        "EngulfingPattern",
+        "HurstRegime",
         "SwingHighLowPMO",
+        "TimeDecayAdaptiveEMA",
         "USQualityCompounder",
+        "VolatilityClusteringReversion",
+        "VortexTrendCapture",
+        "WilliamsPullback",
+        "ZScoreMeanReversion",
     }
     assert all(release.semver and release.param_schema for release in releases)
     assert all("strategy_version" in release.default_params for release in releases)
