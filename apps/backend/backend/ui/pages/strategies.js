@@ -6,14 +6,24 @@ export function load(api) {
   return api.get("strategies");
 }
 
-function statusChip(status) {
-  if (!status) return h("span", { class: "chip chip-off", text: "No version" });
-  return h("span", { class: status === "active" ? "chip chip-on" : "chip", text: titleCase(status) });
+// A strategy trades only once maintenance releases it; until then the catalogue
+// row is fail-closed and the admin tools refuse to bind it.
+function statusChip(row) {
+  if (!row.version) return h("span", { class: "chip chip-off", text: "No version" });
+  if (row.released) {
+    return h("span", { class: "chip chip-on", text: titleCase(row.status || "released") });
+  }
+  return h("span", { class: "chip chip-off", text: "Not released" });
 }
 
 function bindingCell(row) {
   if (!(row.bindings || []).length) {
-    return h("span", { class: "muted", text: "Not bound to an account" });
+    return h("span", {
+      class: "muted",
+      text: row.released
+        ? "Not bound to an account"
+        : "Cannot be bound until it is released for trading",
+    });
   }
   return row.bindings.map((binding) =>
     h(
@@ -51,14 +61,16 @@ function pnlCell(row) {
 
 export function view(data) {
   const rows = data.strategies || [];
-  const trading = rows.filter((row) => row.bindings.some((binding) => binding.active)).length;
-  const bound = rows.filter((row) => row.bindings.length).length;
+  const trading = rows.filter((row) => (row.bindings || []).some((b) => b.active)).length;
+  const bound = rows.filter((row) => (row.bindings || []).length).length;
+  const released = rows.filter((row) => row.released).length;
 
   const summary = h(
     "div",
     { class: "panel strip" },
     ...[
-      ["In the catalogue", rows.length, "Strategies shipped with this installation."],
+      ["In the catalogue", rows.length, "Registered in this installation's database."],
+      ["Released for trading", released, "Approved by maintenance; the rest are read-only."],
       ["Bound to an account", bound, "Allowed to trade a specific account."],
       ["Trading now", trading, "Bound and switched on."],
     ].map(([label, value, note]) =>
@@ -86,7 +98,7 @@ export function view(data) {
           { label: "Market", cell: (row) => titleCase(row.asset_class) },
           {
             label: "Version",
-            cell: (row) => [row.version ? `${row.version} ` : null, statusChip(row.status)],
+            cell: (row) => [row.version ? `${row.version} ` : null, statusChip(row)],
           },
           { label: "Account binding", wrap: true, cell: bindingCell },
           { label: "Last signal", cell: signalCell },
@@ -94,13 +106,16 @@ export function view(data) {
         ],
         rows,
       )
-    : empty("The catalogue is empty.", "Strategies are registered during first-run setup.");
+    : empty(
+        "No strategy is registered yet.",
+        "Strategies ship with the installation but are listed here only after they are registered in the database.",
+      );
 
   return [
     section("At a glance", null, summary),
     section(
       "All strategies",
-      "A strategy trades only while it is bound to an account and switched on. Bindings are changed with the admin tools, never from this page.",
+      "A strategy trades only once it is released for trading, bound to an account and switched on. Releasing and binding are done with the admin tools, never from this page.",
       h("div", { class: "panel" }, list),
     ),
   ];

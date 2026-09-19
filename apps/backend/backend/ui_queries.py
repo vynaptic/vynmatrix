@@ -397,8 +397,12 @@ def _strategy_counts(session: Session, owner_id: str) -> dict[str, int]:
         .group_by(UserStrategyBinding.is_active)
     ).all()
     by_state = {bool(active): int(count) for active, count in bindings}
+    released = session.execute(
+        select(func.count(Strategy.strategy_id)).where(Strategy.is_active.is_(True))
+    ).scalar_one()
     return {
         "catalogue": int(catalogue),
+        "released": int(released),
         "bound": sum(by_state.values()),
         "active": by_state.get(True, 0),
     }
@@ -549,6 +553,7 @@ def strategies(session: Session, owner_id: str) -> dict[str, Any]:
             Strategy.strategy_name,
             Strategy.asset_class,
             Strategy.description,
+            Strategy.is_active,
         ).order_by(Strategy.strategy_name)
     ).all()
     versions = _section(session, "versions", lambda: _latest_versions(session)) or {}
@@ -600,6 +605,9 @@ def strategies(session: Session, owner_id: str) -> dict[str, Any]:
                 "name": row.strategy_name,
                 "asset_class": row.asset_class,
                 "description": row.description,
+                # Registered strategies stay fail-closed until maintenance
+                # releases them; a binding is refused while this is false.
+                "released": bool(row.is_active),
                 "version": version.semver if version else None,
                 "status": version.status if version else None,
                 "bindings": bindings_by_strategy.get(row.strategy_id, []),
