@@ -253,3 +253,38 @@ def test_doctor_reports_each_way_a_deployment_can_disagree_with_itself(
 
     assert checks.worst(collected) == checks.WARN
     assert expected in {check.name for check in collected if check.status == checks.WARN}
+
+
+# ------------------------------------------------------------- rollback target
+
+
+class _Plan:
+    """The two fields the rollback target is chosen from."""
+
+    def __init__(self, deployed: dict[str, Any] | None, image_tag: str) -> None:
+        self.deployed = deployed
+        self.image_tag = image_tag
+
+
+def _target(deployed: dict[str, Any] | None, image_tag: str, previous: str) -> str:
+    deployer = pipeline.Deployer.__new__(pipeline.Deployer)
+    deployer.previous_tag = previous
+    return pipeline.Deployer._previous_tag(deployer, _Plan(deployed, image_tag))
+
+
+def test_the_rollback_target_is_the_last_recorded_success() -> None:
+    assert _target({"image_tag": "sha-old"}, "sha-new", "ignored") == "sha-old"
+
+
+def test_without_a_record_the_tag_env_had_is_the_rollback_target() -> None:
+    assert _target(None, "sha-new", "sha-before") == "sha-before"
+
+
+def test_redeploying_one_commit_still_has_a_target_to_start() -> None:
+    """The image did not change, only the database did; restarting it is right."""
+    assert _target({"image_tag": "sha-same"}, "sha-same", "") == "sha-same"
+
+
+def test_a_first_deployment_with_nothing_recorded_refuses_to_guess() -> None:
+    with pytest.raises(pipeline.DeploymentError, match="No previous image generation"):
+        _target(None, "sha-new", "")
