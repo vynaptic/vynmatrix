@@ -60,7 +60,14 @@ and gateway fields.
 
 ## Backup and controlled maintenance
 
-Use the explicit database operations:
+An ordinary upgrade is `vmdev deploy`: it snapshots the database before
+anything changes and restores that snapshot, returns to the previous image
+generation and records `rolled_back` when a stage after the runtime stops
+fails. [DEPLOYMENT.md](DEPLOYMENT.md) owns that contract, and `vmdev doctor`
+reports what a partial run left behind.
+
+Use the explicit database operations when recovering by hand, or when `deploy`
+stopped because it had no verified snapshot to restore:
 
 ~~~text
 vmdev db backup backups/pre-upgrade.dump
@@ -70,7 +77,9 @@ vmdev db restore backups/pre-upgrade.dump
 
 Validate a backup before migration, retain the prior image and encryption-key
 ring, and leave runtime stopped after restore until the target, roles, and
-schema state are checked. Never remove volumes to clear an error.
+schema state are checked. `deploy` retains the previous two image generations
+and the last five snapshots under `.artifacts/deployments/`. Never remove
+volumes to clear an error.
 
 ## Administrative recovery surfaces
 
