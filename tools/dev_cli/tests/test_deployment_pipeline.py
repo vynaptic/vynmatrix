@@ -205,3 +205,51 @@ def test_a_missing_image_is_reported_as_absent_not_as_an_error() -> None:
 def test_the_real_runner_is_the_default() -> None:
     assert artefact.inspect_image.__defaults__ is None
     assert artefact.source_state.__kwdefaults__ == {"run": subprocess.run}
+
+
+# ---------------------------------------------------------------------- doctor
+
+
+def _state(**overrides: Any) -> list[Any]:
+    from dev_cli.core.deployment import checks
+
+    fields = {
+        "database_present": True,
+        "installed_revision": "0108_deployment_record",
+        "target_head": "0108_deployment_record",
+        "deployed": {"image_tag": "sha-a", "alembic_head": "0108_deployment_record"},
+        "running": {"application": "vynmatrix/platform:sha-a"},
+        "image_tag": "sha-a",
+    }
+    fields.update(overrides)
+    return checks.check_state(**fields)  # type: ignore[arg-type]
+
+
+def test_doctor_is_quiet_when_the_record_the_schema_and_the_runtime_agree() -> None:
+    from dev_cli.core.deployment import checks
+
+    assert checks.worst(_state()) == checks.OK
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"installed_revision": "0107_backend_ui_read"}, "deployment:schema"),
+        ({"deployed": None}, "deployment:record"),
+        (
+            {"deployed": {"image_tag": "sha-b", "alembic_head": "0108_deployment_record"}},
+            "deployment:record",
+        ),
+        ({"running": {"application": "vynmatrix/platform:sha-b"}}, "runtime:image"),
+        ({"database_present": False}, "database:present"),
+    ],
+)
+def test_doctor_reports_each_way_a_deployment_can_disagree_with_itself(
+    overrides: dict[str, Any], expected: str
+) -> None:
+    from dev_cli.core.deployment import checks
+
+    collected = _state(**overrides)
+
+    assert checks.worst(collected) == checks.WARN
+    assert expected in {check.name for check in collected if check.status == checks.WARN}

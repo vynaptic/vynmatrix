@@ -19,7 +19,10 @@ The lifecycle keeps distinct authority at each stage:
 | Static reference registration | Verified maintenance/schema authority | One catalogue transaction |
 | Routine owner, account, and catalogue changes | BACKEND_DATABASE_URL as vm_backend_login | One validated request or batch |
 
-Create an untracked owner.local.yaml with actual values:
+`vmdev init` writes the untracked `owner.local.yaml` these stages read, and
+`vmdev deploy` runs them in order; [SETUP.md](../SETUP.md) owns that sequence
+and [DEPLOYMENT.md](DEPLOYMENT.md) owns the snapshot, record and rollback around
+it. The document is a profile and nothing else:
 
 ~~~yaml
 profile:
@@ -28,7 +31,7 @@ profile:
   tz: "<your IANA timezone>"
 ~~~
 
-Then run:
+The explicit single-stage form remains supported for a controlled repeat:
 
 ~~~text
 vmdev db bootstrap --owner-config owner.local.yaml

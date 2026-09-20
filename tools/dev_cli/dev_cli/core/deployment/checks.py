@@ -287,6 +287,20 @@ def check_state(
                 ),
             )
         )
+        expected_head = str(deployed.get("alembic_head") or "")
+        matched = expected_head == installed_revision
+        checks.append(
+            Check(
+                name="deployment:schema",
+                status=OK if matched else WARN,
+                detail=(
+                    f"the deployed build expects the installed schema {expected_head}"
+                    if matched
+                    else f"the deployed build expects {expected_head} but the database is at "
+                    f"{installed_revision or 'no revision'}"
+                ),
+            )
+        )
     expected = f"{artefact.PLATFORM_REPOSITORY}:{image_tag}"
     drifted = sorted(
         service for service, image in running.items() if service != "postgres" and image != expected
