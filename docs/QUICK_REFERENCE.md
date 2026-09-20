@@ -3,6 +3,20 @@
 Run these from the repository root with the prepared tooling environment active.
 The command contracts and safety limits are owned by the linked documents.
 
+## Install and deploy
+
+~~~text
+vmdev init                   # generate the private .env and owner profile
+vmdev init --update          # add .env keys that appeared upstream
+vmdev doctor                 # validate configuration and state, change nothing
+vmdev deploy --plan          # print what an install or upgrade would do
+vmdev deploy                 # install or upgrade; snapshots and rolls back
+vmdev deploy --start-only    # bring a stopped stack back up, unchanged
+~~~
+
+[SETUP.md](../SETUP.md) owns the install sequence;
+[DEPLOYMENT.md](DEPLOYMENT.md) owns the upgrade and rollback contract.
+
 ## Build and validate
 
 Complete [SETUP.md](../SETUP.md) first. Then run the checks or builds that
@@ -11,8 +25,8 @@ match the work:
 ~~~text
 vmdev build libs
 vmdev build strategies
-vmdev build venvs
 vmdev build docker --from-config --tag latest
+vmdev build venvs            # contributor-only; needs the TA-Lib C library
 
 vmdev test lib --name=lib_common
 vmdev test team --team=<team>
@@ -43,9 +57,12 @@ vmdev db start
 vmdev db stop
 ~~~
 
-Use explicit private environment variables for all database work; never put
-credentials in a command line. Bootstrap, catalogue behavior, backup/restore,
-and existing-database rules are defined in [DATABASE.md](DATABASE.md).
+These are the explicit single-stage commands; `vmdev deploy` orchestrates them
+together with the build, snapshot, record and verification stages. They read
+their connection strings from `.env` and resolve the container hostname to the
+published loopback listener themselves. Never put credentials in a command line.
+Bootstrap, catalogue behavior, backup/restore, and existing-database rules are
+defined in [DATABASE.md](DATABASE.md).
 
 ## Runtime inspection
 

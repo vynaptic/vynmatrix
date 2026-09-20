@@ -198,6 +198,15 @@ jobs:
         run: >-
           pytest -v -m integration
           tests/test_single_owner_bootstrap_postgres_integration.py
+      # Also owns its explicitly named database, which it creates and drops.
+      - name: Verify the deployment record and its snapshot recovery
+        env:
+          DEPLOYMENT_LIFECYCLE_TEST_ALLOW_CREATE: '1'
+          DEPLOYMENT_LIFECYCLE_TEST_ADMIN_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/postgres
+          DEPLOYMENT_LIFECYCLE_TEST_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/deployment_lifecycle_test_ci
+        run: >-
+          pytest -v -m integration
+          tests/test_deployment_lifecycle_postgres_integration.py
       - name: Build schema from Alembic head
         run: alembic -c scripts/db/alembic.ini upgrade head
       - name: Provision least-privilege runtime logins

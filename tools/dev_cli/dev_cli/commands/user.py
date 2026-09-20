@@ -19,6 +19,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from dev_cli.core.deployment import environment
 from dev_cli.utils.helpers import enable_repository_libraries, get_project_root
 
 _MAX_CONFIG_BYTES = 131072
@@ -37,7 +38,14 @@ def _database_session(stage: str) -> Iterator[Session]:
     )
 
     variable = "MIGRATION_DATABASE_URL" if stage == "maintenance" else "BACKEND_DATABASE_URL"
-    url = os.environ.get(variable)
+    # ``.env`` addresses the containers; a host-side command reaches the same
+    # server on its published listener. Resolving that here is what removes the
+    # hand-exported, rewritten connection string the setup guide used to require.
+    configured = {
+        **environment.load_env_file(get_project_root() / ".env"),
+        **os.environ,
+    }
+    url = environment.resolve_host_env(configured).get(variable)
     if not url:
         msg = f"{variable} is required; generic DATABASE_URL is not accepted"
         raise click.ClickException(msg)

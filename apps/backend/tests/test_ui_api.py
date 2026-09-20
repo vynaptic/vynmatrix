@@ -7,7 +7,7 @@ service-role integration suite covers the grants and policies.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -41,7 +41,13 @@ from lib_application.db.models import (
 
 ADMIN_KEY = "test-admin-key"
 AUTH = {"X-Admin-Key": ADMIN_KEY}
-ROUTES = ("/api/ui/overview", "/api/ui/strategies", "/api/ui/pnl", "/api/ui/fills")
+ROUTES = (
+    "/api/ui/overview",
+    "/api/ui/strategies",
+    "/api/ui/pnl",
+    "/api/ui/fills",
+    "/api/ui/version",
+)
 NOW = datetime.now(tz=UTC).replace(microsecond=0)
 _SVG_NAMESPACE = "http://www.w3.org/2000/svg"
 
@@ -312,7 +318,10 @@ def factory() -> Any:
             minutes_ago=1,
         )
 
-        today = date.today()
+        # Anchor to NOW's UTC date, not the host's local one: the equity source
+        # compares a nav date against a metric's UTC date, and for the hours
+        # where the two calendars disagree the expected source flips.
+        today = NOW.date()
         s.add_all(
             [
                 DailyNav(
@@ -470,7 +479,7 @@ def test_equity_prefers_a_daily_snapshot_that_is_newer_than_the_last_execution(
             DailyNav(
                 user_id="owner",
                 account_id=3,
-                date=date.today() - timedelta(days=1),
+                date=NOW.date() - timedelta(days=1),
                 nav_ccy="EUR",
                 nav_value=Decimal("1010.00"),
             )
@@ -742,14 +751,22 @@ def test_every_column_the_read_models_touch_is_granted_by_migration_0107(
 
     from sqlalchemy import event
 
-    path = (
-        Path(__file__).resolve().parents[3] / "scripts/db/alembic/versions/0107_backend_ui_read.py"
-    )
-    spec = importlib.util.spec_from_file_location("backend_ui_read", path)
-    assert spec is not None
-    assert spec.loader is not None
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
+    versions = Path(__file__).resolve().parents[3] / "scripts/db/alembic/versions"
+
+    def _load(name: str) -> Any:
+        spec = importlib.util.spec_from_file_location(name, versions / f"{name}.py")
+        assert spec is not None
+        assert spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    migration = _load("0107_backend_ui_read")
+    # ``0108`` grants the version endpoint's columns and belongs to the same guard.
+    granted_columns = {
+        **migration.READ_COLUMNS,
+        _load("0108_deployment_record").TABLE: _load("0108_deployment_record").READ_COLUMNS,
+    }
 
     statements: list[str] = []
     engine = factory.kw["bind"]
@@ -768,7 +785,7 @@ def test_every_column_the_read_models_touch_is_granted_by_migration_0107(
     # Exactly the granted columns, no more and no less: an ungranted column is
     # refused by PostgreSQL, and an unused grant is excess privilege.
     mismatches = {}
-    for table, granted in migration.READ_COLUMNS.items():
+    for table, granted in granted_columns.items():
         used = set(re.findall(rf"\b{table}\.(\w+)\b", sql))
         # A row policy filters on its key column even where no query names it.
         used |= (

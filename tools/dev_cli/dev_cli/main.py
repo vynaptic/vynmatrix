@@ -9,6 +9,7 @@ from dev_cli.commands.audit import audit
 from dev_cli.commands.build import build
 from dev_cli.commands.clean import clean
 from dev_cli.commands.db import db
+from dev_cli.commands.deployment import deploy, doctor, init
 from dev_cli.commands.format import format
 from dev_cli.commands.git import git
 from dev_cli.commands.lint import lint
@@ -50,6 +51,9 @@ cli.add_command(build)
 cli.add_command(test)
 cli.add_command(clean)
 cli.add_command(db)
+cli.add_command(deploy)
+cli.add_command(doctor)
+cli.add_command(init)
 cli.add_command(format)
 cli.add_command(lint)
 cli.add_command(git)

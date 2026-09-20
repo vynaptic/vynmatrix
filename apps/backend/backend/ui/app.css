@@ -361,6 +361,20 @@ h1 {
   font-size: 0.8rem;
 }
 
+.footnote p {
+  margin: 0 0 0.35rem;
+}
+
+/* Which build is running. It is deliberately quiet until something disagrees. */
+.version {
+  font-variant-numeric: tabular-nums;
+}
+
+.version[data-drift="true"] {
+  color: var(--warning);
+  font-weight: 600;
+}
+
 /* ------------------------------------------------------------- sections */
 
 .section {

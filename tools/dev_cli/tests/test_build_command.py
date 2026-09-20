@@ -197,11 +197,12 @@ def test_config_image_inventory_builds_base_then_each_service_once(
     builder = DockerBuilder({}, tmp_path)
     calls: list[object] = []
     monkeypatch.setattr(builder, "validate_wheelhouse", lambda: calls.append("validate"))
-    monkeypatch.setattr(
-        builder,
-        "build_svc_base",
-        lambda *, cache_backend=None: calls.append(("base", cache_backend)),
-    )
+
+    def _base(*, cache_backend: object = None, tag: str = "latest") -> str:
+        calls.append(("base", cache_backend, tag))
+        return f"vynmatrix/svc-base:{tag}"
+
+    monkeypatch.setattr(builder, "build_svc_base", _base)
     monkeypatch.setattr(
         builder,
         "build_app",
@@ -213,45 +214,36 @@ def test_config_image_inventory_builds_base_then_each_service_once(
         lambda **kwargs: calls.append(("cleanup", kwargs)),
     )
 
+    stamp = {"VM_SOURCE_COMMIT": "abc", "VM_SOURCE_DIRTY": "false", "VM_BUILD_TIME": "now"}
     builder.build_from_containers_config(
         tag="candidate",
         config_path=config_path,
         cache_backend="gha",
+        stamp=stamp,
     )
+
+    # The base is built under the same immutable tag and passed to every
+    # service, so a platform image cannot resolve a base that moved.
+    def _app(name: str) -> tuple[object, ...]:
+        return (
+            "app",
+            name,
+            "candidate",
+            {
+                "image_repository": f"vynmatrix/{name.replace('_', '-')}",
+                "cache_backend": "gha",
+                "validate_wheelhouse": False,
+                "base_reference": "vynmatrix/svc-base:candidate",
+                "stamp": stamp,
+            },
+        )
 
     assert calls == [
         "validate",
-        ("base", "gha"),
-        (
-            "app",
-            "scoring_engine",
-            "candidate",
-            {
-                "image_repository": "vynmatrix/scoring-engine",
-                "cache_backend": "gha",
-                "validate_wheelhouse": False,
-            },
-        ),
-        (
-            "app",
-            "execution_engine",
-            "candidate",
-            {
-                "image_repository": "vynmatrix/execution-engine",
-                "cache_backend": "gha",
-                "validate_wheelhouse": False,
-            },
-        ),
-        (
-            "app",
-            "indicator_runner",
-            "candidate",
-            {
-                "image_repository": "vynmatrix/indicator-runner",
-                "cache_backend": "gha",
-                "validate_wheelhouse": False,
-            },
-        ),
+        ("base", "gha", "candidate"),
+        _app("scoring_engine"),
+        _app("execution_engine"),
+        _app("indicator_runner"),
         (
             "cleanup",
             {
@@ -264,6 +256,7 @@ def test_config_image_inventory_builds_base_then_each_service_once(
                     }
                 ),
                 "current_refs": {
+                    "vynmatrix/svc-base:candidate": "vynmatrix/svc-base",
                     "vynmatrix/svc-base:latest": "vynmatrix/svc-base",
                     "vynmatrix/scoring-engine:candidate": ("vynmatrix/scoring-engine"),
                     "vynmatrix/execution-engine:candidate": ("vynmatrix/execution-engine"),

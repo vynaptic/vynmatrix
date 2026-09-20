@@ -58,6 +58,13 @@ from .control_plane import (
 )
 
 # ---------------------------------------------------------------------------
+# Section N (deployment record) — which build this installation is running
+# ---------------------------------------------------------------------------
+from .deployments import (
+    Deployment,
+)
+
+# ---------------------------------------------------------------------------
 # Section K (dispatch) — Scoring → Execution Dispatch & Outbox (extracted to .dispatch)
 # ---------------------------------------------------------------------------
 from .dispatch import (
@@ -292,6 +299,7 @@ __all__ = [
     "StrategyParameterFeedback",
     # Section M — provenance
     "DecisionContext",
+    "Deployment",
     # Section N — market_reference
     "CorporateAction",
     "EarningsEvent",
