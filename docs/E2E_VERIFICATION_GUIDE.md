@@ -60,31 +60,35 @@ symbol; partial boundaries, gaps, future rows, or relabelled provider data do
 not count. The FX worker records observations but does not prove a required
 account conversion or a USD/USDC parity assumption.
 
-Before connecting, build and validate the declared checkout:
+Before connecting, validate the declared checkout:
 
 ~~~text
-vmdev build libs
-vmdev build strategies
-vmdev build venvs
-vmdev build docker --from-config --tag latest
 vmdev audit --strict
 vmdev test all
+vmdev doctor
 docker compose --env-file .env -f docker/docker-compose.stack.yml config --quiet
 ~~~
 
-## 2. Bootstrap the owner and activate the narrow canary
+## 2. Install the isolated stack and activate the narrow canary
 
-Create the private owner document described in
-[DATABASE.md](DATABASE.md#installation-and-privilege-stages), then bootstrap:
+Install on the isolated environment with the supported path, which
+[SETUP.md](../SETUP.md) owns:
 
 ~~~text
-vmdev db bootstrap --owner-config owner.local.yaml
+vmdev deploy --plan
+vmdev deploy
 vmdev db status
 ~~~
 
-Record the checked-out source revision and the migrated Alembic version. The
-lifecycle must have completed migration, roles, inactive catalogue registration,
-and owner initialization without creating a broker account, binding, or
+The evidence needs the exact source revision and Alembic version that ran. Both
+are recorded by the deployment itself: read the row through
+`GET /api/ui/version` or the `deployments` table, and record the image tag
+alongside them. A `-dirty` tag means the evidence was produced from an
+uncommitted tree and is not promotion evidence.
+
+The lifecycle must have completed migration, roles, inactive catalogue
+registration, and owner initialization. A fresh install also creates the local
+paper account with its starting equity; it creates no binding, credential or
 execution selector.
 
 The owner, local-paper account, exact strategy version, canonical instruments,

@@ -145,16 +145,27 @@ Use repository tooling rather than installing packages or invoking build steps d
 # First create and activate the tooling venv from the OS setup guide.
 make setup
 pre-commit install-hooks
+vmdev init                     # generate the private .env and owner profile
+vmdev init --update            # add .env keys that appeared upstream
+vmdev doctor                   # validate configuration and state; changes nothing
+vmdev deploy --plan            # print what an install or upgrade would do
+vmdev deploy                   # install or upgrade; snapshots and rolls back
 vmdev build libs
 vmdev build strategies
-vmdev build venvs
 vmdev build docker --from-config --tag latest
+vmdev build venvs              # contributor-only; needs the TA-Lib C library
 vmdev test lib --name=<library>
 vmdev test team --team=<team>
 vmdev test all
 vmdev format
 vmdev audit --strict
 ```
+
+`vmdev deploy` is the supported install and upgrade path: it stamps the image
+with its source commit, tags it `sha-<commit12>`, snapshots the database before
+an upgrade, records the run in `deployments`, and rolls back to the previous
+generation when a stage after the runtime stops fails. Never point Compose at a
+moving tag.
 
 `vmdev git install` configures repository-local aliases and `.githooks` for both
 the pre-commit quality wrapper and pre-push guard. `pre-commit install-hooks`
@@ -230,9 +241,11 @@ index of every repository document is [README.md § Documentation](README.md#doc
   pipeline, user bindings, and the feedback loop
 - `docs/DATABASE.md` — schema and migration guidance
 - `docs/CONFIGURATION.md` — runtime configuration precedence and fail-closed requirements
-- `docs/DEPLOYMENT.md` — release/deployment boundary and promotion gates
+- `docs/DEPLOYMENT.md` — stamped artefacts, the upgrade/rollback contract, and
+  the release/deployment boundary
 - `docs/BROKER_CREDENTIALS.md` — account and credential boundaries
 - `docs/REVIEWER_CHECKLIST.md` — review and audit criteria
 - `docs/E2E_VERIFICATION_GUIDE.md` — release/promotion proof only
-- `SETUP.md` — shared local tooling, configuration, and bootstrap workflow
+- `SETUP.md` — the single owner of the install sequence: tooling, `vmdev init`,
+  `vmdev deploy`
 - `SETUP_MAC_LINUX.md` / `SETUP_WINDOWS.md` — platform prerequisites and shell-specific setup

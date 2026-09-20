@@ -3,6 +3,7 @@
 import json
 import re
 import subprocess
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -18,7 +19,23 @@ _SOURCE_REPOSITORY_LABEL = "com.vynmatrix.source-repository"
 _SOURCE_REPOSITORY_VALUE = "vynmatrix"
 _IMAGE_REPOSITORY_LABEL = "com.vynmatrix.image-repository"
 _SVC_BASE_REPOSITORY = "vynmatrix/svc-base"
+_BASE_IMAGE_LABEL = "com.vynmatrix.base-image"
+_STAMP_LABELS = {
+    "VM_SOURCE_COMMIT": "com.vynmatrix.source-commit",
+    "VM_SOURCE_DIRTY": "com.vynmatrix.source-dirty",
+    "VM_BUILD_TIME": "com.vynmatrix.build-time",
+}
 _FULL_IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
+def _stamp_labels(base_reference: str, stamp: Mapping[str, str] | None) -> dict[str, str]:
+    """Publish the build arguments as labels so an image can be identified later."""
+    values = {_BASE_IMAGE_LABEL: base_reference}
+    for argument, label in _STAMP_LABELS.items():
+        supplied = (stamp or {}).get(argument)
+        if supplied:
+            values[label] = supplied
+    return values
 
 
 class DockerBuilder:
@@ -37,6 +54,9 @@ class DockerBuilder:
         cache_backend: CacheBackend | None,
         cache_scope: str,
         build_contexts: dict[str, str] | None = None,
+        build_args: Mapping[str, str] | None = None,
+        labels: Mapping[str, str] | None = None,
+        extra_tags: Sequence[str] = (),
     ) -> list[str]:
         repository = self._repository_from_ref(image_name)
         label_args = [
@@ -46,6 +66,21 @@ class DockerBuilder:
             f"{_SOURCE_REPOSITORY_LABEL}={_SOURCE_REPOSITORY_VALUE}",
             "--label",
             f"{_IMAGE_REPOSITORY_LABEL}={repository}",
+            *(
+                argument
+                for name, value in sorted((labels or {}).items())
+                for argument in ("--label", f"{name}={value}")
+            ),
+        ]
+        # The commit cannot be read inside the build: ``.dockerignore`` excludes
+        # ``.git``. It arrives as a build argument and is stamped from there.
+        argument_args = [
+            argument
+            for name, value in sorted((build_args or {}).items())
+            for argument in ("--build-arg", f"{name}={value}")
+        ]
+        tag_args = [
+            argument for reference in (image_name, *extra_tags) for argument in ("-t", reference)
         ]
         context_args = [
             argument
@@ -57,11 +92,11 @@ class DockerBuilder:
                 "docker",
                 "build",
                 *label_args,
+                *argument_args,
                 *context_args,
                 "-f",
                 str(dockerfile),
-                "-t",
-                image_name,
+                *tag_args,
                 ".",
             ]
         if cache_backend != "gha":
@@ -77,11 +112,11 @@ class DockerBuilder:
             "--cache-to",
             f"type=gha,mode=max,scope={cache_scope}",
             *label_args,
+            *argument_args,
             *context_args,
             "-f",
             str(dockerfile),
-            "-t",
-            image_name,
+            *tag_args,
             ".",
         ]
 
@@ -403,13 +438,22 @@ class DockerBuilder:
 
         self._wheelhouse_validated = True
 
-    def build_svc_base(self, *, cache_backend: CacheBackend | None = None) -> None:
-        """Build ``vynmatrix/svc-base:latest`` before all service images."""
+    def build_svc_base(
+        self, *, cache_backend: CacheBackend | None = None, tag: str = "latest"
+    ) -> str:
+        """Build the shared base image and return the reference services must use.
+
+        The base is built under the same immutable tag as the services on top of
+        it, so a platform image never resolves a base that moved underneath it.
+        ``latest`` stays as a local convenience alias and is not what the
+        Dockerfile resolves.
+        """
         dockerfile = self.root_dir / "docker" / "svc-base.Dockerfile"
         if not dockerfile.is_file():
             msg = f"svc-base Dockerfile not found: {dockerfile}"
             raise FileNotFoundError(msg)
-        image_name = "vynmatrix/svc-base:latest"
+        image_name = f"{_SVC_BASE_REPOSITORY}:{tag}"
+        aliases = () if tag == "latest" else (f"{_SVC_BASE_REPOSITORY}:latest",)
         console.print(f"[cyan]Building shared service base image: {image_name}[/cyan]")
         try:
             subprocess.run(
@@ -418,6 +462,7 @@ class DockerBuilder:
                     image_name=image_name,
                     cache_backend=cache_backend,
                     cache_scope="vynmatrix-svc-base",
+                    extra_tags=aliases,
                 ),
                 cwd=self.root_dir,
                 check=True,
@@ -426,6 +471,7 @@ class DockerBuilder:
         except subprocess.CalledProcessError:
             console.print(f"[red]✗ Failed to build {image_name}[/red]")
             raise
+        return image_name
 
     def _configured_dockerfile(self, service: dict[str, Any], *, index: int) -> Path | None:
         """Validate an explicit composed-image Dockerfile before contacting Docker."""
@@ -455,6 +501,7 @@ class DockerBuilder:
         config_path: Path | None = None,
         *,
         cache_backend: CacheBackend | None = None,
+        stamp: Mapping[str, str] | None = None,
     ) -> None:
         """Build service images defined in config/containers.yaml."""
         if config_path:
@@ -520,7 +567,7 @@ class DockerBuilder:
 
         console.print("\n[bold cyan]Building Pipeline Service Images:[/bold cyan]")
         self.validate_wheelhouse()
-        self.build_svc_base(cache_backend=cache_backend)
+        base_reference = self.build_svc_base(cache_backend=cache_backend, tag=tag)
         for app_name, image_repository, dockerfile in image_inventory:
             self.build_app(
                 app_name,
@@ -528,9 +575,12 @@ class DockerBuilder:
                 image_repository=image_repository,
                 cache_backend=cache_backend,
                 validate_wheelhouse=False,
+                base_reference=base_reference,
+                stamp=stamp,
                 **({"dockerfile": dockerfile} if dockerfile is not None else {}),
             )
         current_refs = {
+            base_reference: _SVC_BASE_REPOSITORY,
             f"{_SVC_BASE_REPOSITORY}:latest": _SVC_BASE_REPOSITORY,
             **{
                 f"{image_repository}:{tag}": image_repository
@@ -551,6 +601,8 @@ class DockerBuilder:
         cache_backend: CacheBackend | None = None,
         validate_wheelhouse: bool = True,
         dockerfile: Path | None = None,
+        base_reference: str = f"{_SVC_BASE_REPOSITORY}:latest",
+        stamp: Mapping[str, str] | None = None,
     ) -> None:
         """Build Docker image for application."""
         if validate_wheelhouse:
@@ -576,9 +628,9 @@ class DockerBuilder:
                     # the Docker daemon's local image store implicitly. Passing
                     # the just-built base as a named image context avoids a
                     # registry pull during pull-request builds.
-                    build_contexts={
-                        "vynmatrix/svc-base:latest": ("docker-image://vynmatrix/svc-base:latest")
-                    },
+                    build_contexts={base_reference: f"docker-image://{base_reference}"},
+                    build_args={"VM_SVC_BASE_REF": base_reference, **(stamp or {})},
+                    labels=_stamp_labels(base_reference, stamp),
                 ),
                 cwd=self.root_dir,
                 check=True,

@@ -52,11 +52,40 @@ def test_owner_init_show_and_no_commercial_user_selection(session):
 
 
 def test_no_generic_database_url_fallback(monkeypatch):
+    # The checkout's own .env is an input to these commands now, so an isolated
+    # test supplies an empty one rather than the developer's real installation.
+    monkeypatch.setattr(user_module.environment, "load_env_file", lambda _path: {})
     monkeypatch.delenv("MIGRATION_DATABASE_URL", raising=False)
     monkeypatch.setenv("DATABASE_URL", "sqlite://")
     result = CliRunner().invoke(user_module.user, ["init"])
     assert result.exit_code != 0
     assert "MIGRATION_DATABASE_URL" in result.output
+
+
+def test_a_container_addressed_env_url_is_resolved_to_the_published_listener(monkeypatch):
+    """No operator exports a rewritten URL: the command does the rewrite."""
+    monkeypatch.delenv("BACKEND_DATABASE_URL", raising=False)
+    monkeypatch.setattr(
+        user_module.environment,
+        "load_env_file",
+        lambda _path: {
+            "DB_PORT": "55432",
+            "BACKEND_DATABASE_URL": "postgresql://vm_backend_login:secret@postgres:5432/vm_trading",
+        },
+    )
+    seen: list[str] = []
+
+    def _record(**kwargs):
+        seen.append(kwargs["db_url"])
+        msg = "no connection is attempted in this test"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("lib_application.db.session.create_engine_for_env", _record)
+
+    result = CliRunner().invoke(user_module.user, ["show"])
+
+    assert seen == ["postgresql://vm_backend_login:secret@127.0.0.1:55432/vm_trading"]
+    assert result.exit_code != 0
 
 
 def test_production_sqlite_rejected(monkeypatch):
@@ -205,7 +234,10 @@ def test_real_user_command_loads_checkout_libraries_before_database_validation(m
     import sys
     from pathlib import Path
 
-    monkeypatch.delenv("BACKEND_DATABASE_URL", raising=False)
+    # An explicitly unusable URL keeps this deterministic whether or not the
+    # checkout has a .env: the command must still reach database validation,
+    # which it can only do once the checkout's libraries are importable.
+    monkeypatch.setenv("BACKEND_DATABASE_URL", "sqlite://")
     result = subprocess.run(
         [sys.executable, "-m", "dev_cli.main", "user", "show"],
         cwd=Path(__file__).resolve().parents[3],
@@ -215,7 +247,7 @@ def test_real_user_command_loads_checkout_libraries_before_database_validation(m
         check=False,
     )
     assert result.returncode != 0
-    assert "BACKEND_DATABASE_URL is required" in result.stdout + result.stderr
+    assert "BACKEND_DATABASE_URL must use PostgreSQL" in result.stdout + result.stderr
     assert "ModuleNotFoundError" not in result.stdout + result.stderr
 
 

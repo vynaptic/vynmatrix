@@ -77,7 +77,7 @@ x-api-env: &api-env
   SCORING_PAPER_PROMOTION_MANIFEST: /app/.artifacts/paper_strategy_promotion.json
   SCORING_PERSIST_DECISION_CONTEXT: ${SCORING_PERSIST_DECISION_CONTEXT:-true}
   SCORING_SIBLING_FRESHNESS_SECONDS: ${SCORING_SIBLING_FRESHNESS_SECONDS:-3600}
-  VM_DEPLOY_IMAGE_TAG: ${VM_DEPLOY_IMAGE_TAG:-latest}
+  VM_DEPLOY_IMAGE_TAG: ${VM_DEPLOY_IMAGE_TAG:?Set by vmdev deploy; Compose never resolves a moving tag}
   BACKEND_DATABASE_URL: ${BACKEND_DATABASE_URL:-}
   SCORING_DATABASE_URL: ${SCORING_DATABASE_URL:-}
   EXECUTION_DATABASE_URL: ${EXECUTION_DATABASE_URL:-}
@@ -135,7 +135,7 @@ x-worker-env: &worker-env
   SIGNAL_CATCHUP_BATCH_SIZE: ${SIGNAL_CATCHUP_BATCH_SIZE:-5000}
   SP500_RESEARCH_OWNER_USER_ID: ${SP500_RESEARCH_OWNER_USER_ID:-}
   STRATEGY_LIST: ${STRATEGY_LIST:-}
-  VM_DEPLOY_IMAGE_TAG: ${VM_DEPLOY_IMAGE_TAG:-latest}
+  VM_DEPLOY_IMAGE_TAG: ${VM_DEPLOY_IMAGE_TAG:?Set by vmdev deploy; Compose never resolves a moving tag}
   WRONG_THRESHOLD: ${WRONG_THRESHOLD:-2}
   ZERODHA_MARKET_DATA_ACCESS_TOKEN: ${ZERODHA_MARKET_DATA_ACCESS_TOKEN:-}
   ZERODHA_MARKET_DATA_API_KEY: ${ZERODHA_MARKET_DATA_API_KEY:-}
@@ -167,7 +167,7 @@ x-bounded-logging: &bounded-logging
     max-file: ${DOCKER_LOG_MAX_FILES:-3}
 
 x-runtime: &runtime
-  image: vynmatrix/platform:${VM_DEPLOY_IMAGE_TAG:-latest}
+  image: vynmatrix/platform:${VM_DEPLOY_IMAGE_TAG:?Set by vmdev deploy; Compose never resolves a moving tag}
   init: true
   restart: unless-stopped
   stop_grace_period: 60s
@@ -233,7 +233,7 @@ services:
   # This job has no automatic runtime dependents. vmdev stops both groups first;
   # an exited bootstrap occupies no runtime slot and is removed by compose run.
   bootstrap:
-    image: vynmatrix/platform:${VM_DEPLOY_IMAGE_TAG:-latest}
+    image: vynmatrix/platform:${VM_DEPLOY_IMAGE_TAG:?Set by vmdev deploy; Compose never resolves a moving tag}
     profiles: ["maintenance"]
     init: true
     command: ["python", "-m", "dev_cli.main", "db", "bootstrap", "--inside-container"]
@@ -242,7 +242,7 @@ services:
       EXECUTION_ENGINE_ALLOW_LIVE: "false"
       ADMIN_DATABASE_URL: ${ADMIN_DATABASE_URL:-}
       MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:-}
-      VM_DEPLOY_IMAGE_TAG: ${VM_DEPLOY_IMAGE_TAG:-latest}
+      VM_DEPLOY_IMAGE_TAG: ${VM_DEPLOY_IMAGE_TAG:?Set by vmdev deploy; Compose never resolves a moving tag}
       VM_BACKEND_DB_PASSWORD: ${VM_BACKEND_DB_PASSWORD:-}
       VM_SCORING_DB_PASSWORD: ${VM_SCORING_DB_PASSWORD:-}
       VM_EXECUTION_DB_PASSWORD: ${VM_EXECUTION_DB_PASSWORD:-}

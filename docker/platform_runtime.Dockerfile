@@ -1,7 +1,12 @@
 # syntax=docker/dockerfile:1.7
 # One release artifact for the application/workers/all process groups and bootstrap.
 
-FROM vynmatrix/svc-base:latest AS wheel-builder
+# The base is resolved through an argument so a build pins the exact generation
+# it was given. ``vmdev deploy`` passes the commit-stamped tag it just built;
+# the default keeps a bare ``docker build`` working.
+ARG VM_SVC_BASE_REF=vynmatrix/svc-base:latest
+
+FROM ${VM_SVC_BASE_REF} AS wheel-builder
 
 ENV PYTHONPATH=/opt/service/lib/python3.11/site-packages:/opt/runtime/lib/python3.11/site-packages:/opt/strategies/indicator
 
@@ -33,7 +38,7 @@ RUN /opt/service/bin/python -m pip install --no-compile --no-deps /tmp/wheels/*.
         -type f \( -name 'test_*.py' -o -name '*_test.py' \) -delete \
     && /opt/service/bin/python -m pip uninstall --yes pip setuptools
 
-FROM vynmatrix/svc-base:latest AS runtime
+FROM ${VM_SVC_BASE_REF} AS runtime
 
 ENV PATH=/opt/service/bin:/opt/runtime/bin:$PATH \
     PYTHONPATH=/opt/service/lib/python3.11/site-packages:/opt/runtime/lib/python3.11/site-packages:/app:/app/tools/dev_cli:/app/apps/backend:/app/apps/scoring_engine:/app/apps/execution_engine:/app/apps/feedback_loop_engine:/app/apps/indicator_runner:/app/apps/market_data_ingestor:/app/strategies/indicator
@@ -64,6 +69,19 @@ COPY --chown=vmuser:vmuser \
     /app/scripts/
 
 RUN install -d -o vmuser -g vmuser /tmp/vynmatrix-prometheus /tmp/vynmatrix-jobs
+
+# ``.dockerignore`` excludes ``.git``, so the source identity arrives as build
+# arguments. It is stamped as both labels (read by the host) and a file (read by
+# the running backend), which is what makes deployment drift detectable.
+ARG VM_SVC_BASE_REF
+ARG VM_SOURCE_COMMIT=unknown
+ARG VM_SOURCE_DIRTY=unknown
+ARG VM_BUILD_TIME=unknown
+RUN printf \
+      '{"source_commit":"%s","source_dirty":"%s","build_time":"%s","base_image":"%s"}\n' \
+      "${VM_SOURCE_COMMIT}" "${VM_SOURCE_DIRTY}" "${VM_BUILD_TIME}" "${VM_SVC_BASE_REF}" \
+      > /app/BUILD_INFO.json \
+    && chown vmuser:vmuser /app/BUILD_INFO.json
 
 USER vmuser
 

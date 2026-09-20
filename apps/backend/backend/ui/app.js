@@ -4,7 +4,7 @@
 
 import * as api from "./api.js";
 import { hideTip } from "./charts.js";
-import { fmtClock, h, svg } from "./format.js";
+import { fmtClock, fmtDateTime, h, svg } from "./format.js";
 
 const PAGES = [
   {
@@ -36,7 +36,7 @@ const THEME_KEY = "vynmatrix.theme";
 const el = (id) => document.getElementById(id);
 // `generation` names the newest request. A response from an older one (the user
 // navigated, pressed Lock, or a newer refresh started) is discarded, never drawn.
-const state = { page: PAGES[0], generation: 0 };
+const state = { page: PAGES[0], generation: 0, versionShown: false };
 
 function currentPage() {
   const id = window.location.hash.replace(/^#\/?/, "").split("?")[0];
@@ -81,7 +81,9 @@ function showSafety(safety) {
 // The unlock prompt is modal: what is behind it is emptied, inert and unread.
 function showLogin(message) {
   state.generation += 1;
+  state.versionShown = false;
   hideTip();
+  el("version").hidden = true;
   el("main").replaceChildren();
   el("main").classList.remove("is-loading");
   el("shell").inert = true;
@@ -128,6 +130,10 @@ async function render({ quiet = false } = {}) {
     el("updated").textContent = `Updated ${fmtClock(new Date())}`;
     el("lock").hidden = !api.hasKey();
     if (hideLogin()) main.focus();
+    if (!state.versionShown) {
+      state.versionShown = true;
+      showVersion();
+    }
     showBanner(null);
   } catch (error) {
     if (generation !== state.generation) return;
@@ -152,6 +158,37 @@ function route() {
   el("page-kicker").textContent = state.page.kicker;
   markNav();
   render();
+}
+
+// Which build is running. Read once per unlock: it only changes on a deploy.
+async function showVersion() {
+  const node = el("version");
+  let data;
+  try {
+    data = await api.get("version");
+  } catch {
+    node.hidden = true;
+    return;
+  }
+  const parts = [];
+  const image = data.image;
+  const deployment = data.deployment;
+  if (image && image.source_commit) {
+    parts.push(`Build ${image.source_commit.slice(0, 12)}${image.source_dirty ? " (uncommitted changes)" : ""}`);
+  }
+  if (deployment) {
+    parts.push(`schema ${deployment.alembic_head}`);
+    parts.push(`installed ${fmtDateTime(deployment.started_at)}`);
+    if (deployment.outcome !== "succeeded") parts.push(`last deployment ${deployment.outcome.replace("_", " ")}`);
+  } else {
+    parts.push("no deployment recorded");
+  }
+  if (data.drift === true) {
+    parts.push("the running image is not the one that was deployed");
+  }
+  node.dataset.drift = String(data.drift === true);
+  node.textContent = parts.join(" · ");
+  node.hidden = parts.length === 0;
 }
 
 async function primeSafety() {

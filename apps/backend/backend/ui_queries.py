@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from lib_application.db.models import (
     CanonicalSignal,
     DailyNav,
+    Deployment,
     Execution,
     ExecutionMetric,
     Instrument,
@@ -761,6 +762,58 @@ def pnl(session: Session, owner_id: str, *, days: int) -> dict[str, Any]:
             }
         )
     return {"as_of": iso_utc(now), "days": days, "accounts": payload}
+
+
+def version(session: Session, *, image: dict[str, Any] | None) -> dict[str, Any]:
+    """What is installed, and what the running container says it is.
+
+    The record is written by ``vmdev deploy`` under migration authority; the
+    image facts are stamped into the container at build time. Reporting both
+    is what makes a deployment performed by other means visible instead of
+    silently trusted.
+    """
+    deployment = _section(session, "version", partial(_latest_deployment, session))
+    drift = None
+    if deployment is not None and image is not None and image.get("source_commit"):
+        drift = deployment["source_commit"] != image["source_commit"]
+    return {
+        "as_of": iso_utc(datetime.now(tz=UTC)),
+        "deployment": deployment,
+        "image": image,
+        "drift": drift,
+    }
+
+
+def _latest_deployment(session: Session) -> dict[str, Any] | None:
+    """The newest recorded deployment, successful or not."""
+    row = session.execute(
+        select(
+            Deployment.deployment_id,
+            Deployment.mode,
+            Deployment.image_tag,
+            Deployment.source_commit,
+            Deployment.source_dirty,
+            Deployment.alembic_head,
+            Deployment.started_at,
+            Deployment.finished_at,
+            Deployment.outcome,
+        )
+        .order_by(Deployment.deployment_id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    return {
+        "deployment_id": int(row.deployment_id),
+        "mode": row.mode,
+        "image_tag": row.image_tag,
+        "source_commit": row.source_commit,
+        "source_dirty": bool(row.source_dirty),
+        "alembic_head": row.alembic_head,
+        "started_at": iso_utc(row.started_at),
+        "finished_at": iso_utc(row.finished_at),
+        "outcome": row.outcome,
+    }
 
 
 def fills(

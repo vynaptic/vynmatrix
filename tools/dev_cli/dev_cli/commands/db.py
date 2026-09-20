@@ -33,7 +33,15 @@ def _load_project_env() -> dict[str, str]:
 
 
 def _compose_env() -> dict[str, str]:
+    """Container addressing: what Compose and anything running inside it reads."""
     return {**_load_project_env(), **os.environ}
+
+
+def _host_env() -> dict[str, str]:
+    """Host addressing: the same configuration, reachable from this machine."""
+    from dev_cli.core.deployment import environment  # noqa: PLC0415
+
+    return environment.resolve_host_env(_compose_env())
 
 
 def _lifecycle() -> PlatformLifecycle:
@@ -243,7 +251,7 @@ def roles(rotate: bool) -> None:
 
     from dev_cli.core.runtime_roles import PASSWORD_ENV, provision_runtime_roles  # noqa: PLC0415
 
-    env = _compose_env()
+    env = _host_env()
     try:
         target = make_url(env.get("MIGRATION_DATABASE_URL", ""))
         admin = make_url(env.get("ADMIN_DATABASE_URL", "")).set(database=target.database)

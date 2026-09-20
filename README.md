@@ -29,8 +29,16 @@ a registered database row never authorizes an order.
 Complete the platform-specific prerequisites in
 [SETUP_MAC_LINUX.md](SETUP_MAC_LINUX.md) or
 [SETUP_WINDOWS.md](SETUP_WINDOWS.md), then continue with [SETUP.md](SETUP.md).
-The supported local topology and the single-owner bootstrap contract are
-documented in
+From a clone, installing is two commands:
+
+```text
+vmdev init
+vmdev deploy
+```
+
+The same `vmdev deploy` upgrades an existing installation and preserves its
+history. The supported local topology, the upgrade and rollback contract, and
+the single-owner bootstrap rules are documented in
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and
 [docs/DATABASE.md](docs/DATABASE.md).
 
@@ -40,14 +48,14 @@ This is the canonical documentation index.
 
 | Need | Canonical document |
 | --- | --- |
-| Shared local setup | [SETUP.md](SETUP.md) |
+| Installing and upgrading this deployment | [SETUP.md](SETUP.md) |
 | macOS/Linux or Windows prerequisites | [SETUP_MAC_LINUX.md](SETUP_MAC_LINUX.md) / [SETUP_WINDOWS.md](SETUP_WINDOWS.md) |
 | Contribution terms, branches, checks, and commits | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Commands and file locations | [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) |
 | Runtime architecture and source navigation | [docs/USER_MANUAL.md](docs/USER_MANUAL.md) |
 | Environment precedence and fail-closed settings | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
 | PostgreSQL bootstrap, migration, schema, and backup | [docs/DATABASE.md](docs/DATABASE.md) |
-| Compose topology and release boundary | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| Compose topology, upgrade and rollback | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 | Account and credential onboarding | [docs/BROKER_CREDENTIALS.md](docs/BROKER_CREDENTIALS.md) |
 | Paper-pipeline evidence procedure | [docs/E2E_VERIFICATION_GUIDE.md](docs/E2E_VERIFICATION_GUIDE.md) |
 | Runtime incidents and recovery | [docs/RUNBOOK.md](docs/RUNBOOK.md) |
@@ -55,6 +63,7 @@ This is the canonical documentation index.
 | Single-owner design decision | [docs/SINGLE_OWNER.md](docs/SINGLE_OWNER.md) |
 | Event-driven delivery and bounded pools design | [docs/superpowers/specs/2026-09-05-event-driven-delivery-bounded-pools-design.md](docs/superpowers/specs/2026-09-05-event-driven-delivery-bounded-pools-design.md) |
 | Owner UI design | [docs/superpowers/specs/2026-09-19-owner-ui-design.md](docs/superpowers/specs/2026-09-19-owner-ui-design.md) |
+| Deployment lifecycle design | [docs/superpowers/specs/2026-09-20-deployment-lifecycle-design.md](docs/superpowers/specs/2026-09-20-deployment-lifecycle-design.md) |
 | Deferred capacity work | [docs/SCALING.md](docs/SCALING.md) |
 | Pull-request review | [docs/REVIEWER_CHECKLIST.md](docs/REVIEWER_CHECKLIST.md) |
 | Script catalogue | [scripts/README.md](scripts/README.md) |

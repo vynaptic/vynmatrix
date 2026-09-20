@@ -9,6 +9,7 @@ writes. Adding a page means one route here, one read model in
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -27,6 +28,8 @@ from lib_common.env_utils import parse_bool_env
 from . import ui_queries
 
 UI_DIRECTORY = Path(__file__).resolve().parent / "ui"
+#: Written into the image at build time from the commit the build was given.
+BUILD_INFO_PATH = Path(os.getenv("VM_BUILD_INFO_PATH") or "/app/BUILD_INFO.json")
 
 # Same-origin only, no inline script or style: the shell ships no third-party
 # code and must stay usable offline on the loopback address.
@@ -59,6 +62,26 @@ def _safety_snapshot() -> dict[str, Any]:
     }
 
 
+def _build_info() -> dict[str, Any] | None:
+    """What this container was built from, read once at composition time.
+
+    A development checkout run outside the image has no such file; the version
+    endpoint then reports the record alone and says the image is unknown.
+    """
+    try:
+        decoded = json.loads(BUILD_INFO_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    return {
+        "source_commit": str(decoded.get("source_commit") or ""),
+        "source_dirty": str(decoded.get("source_dirty") or "") == "true",
+        "build_time": str(decoded.get("build_time") or ""),
+        "base_image": str(decoded.get("base_image") or ""),
+    }
+
+
 def register_ui(
     app: FastAPI,
     *,
@@ -67,6 +90,7 @@ def register_ui(
 ) -> None:
     """Mount the owner UI and its read API on the config API application."""
     safety = _safety_snapshot()
+    image = _build_info()
 
     @contextmanager
     def _owner_session() -> Iterator[tuple[Any, str]]:
@@ -79,6 +103,11 @@ def register_ui(
     def overview() -> dict[str, Any]:
         with _owner_session() as (session, owner_id):
             return ui_queries.overview(session, owner_id, safety=safety)
+
+    @router.get("/version")
+    def version() -> dict[str, Any]:
+        with session_factory() as session:
+            return ui_queries.version(session, image=image)
 
     @router.get("/strategies")
     def strategies() -> dict[str, Any]:
@@ -111,4 +140,4 @@ def register_ui(
     app.mount("/ui", _UiFiles(directory=UI_DIRECTORY, html=True), name="owner-ui")
 
 
-__all__ = ["CONTENT_SECURITY_POLICY", "UI_DIRECTORY", "register_ui"]
+__all__ = ["BUILD_INFO_PATH", "CONTENT_SECURITY_POLICY", "UI_DIRECTORY", "register_ui"]

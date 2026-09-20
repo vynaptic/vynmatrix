@@ -92,7 +92,11 @@ and the narrow Swing development-canary restriction are in
 
 ## Reproducible strategy validation environment
 
-Build the declared validation environment before a recorded-data campaign:
+Build the declared validation environment before a recorded-data campaign. It
+installs TA-Lib 0.6.8, whose Python package needs the TA-Lib C library present
+first (`brew install ta-lib`, or the distribution's `ta-lib` development
+package). This is a contributor step; installing and upgrading the platform does
+not use it.
 
 ~~~text
 vmdev build venvs

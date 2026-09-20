@@ -134,11 +134,13 @@ data or volumes to obtain a clean startup.
 
 The .env URLs use postgres:5432 inside Compose. Bootstrap, backup, restore, and
 connect run through declared container slots and retain that hostname. Host-side
-roles, migrate, canary, catalogue, and vmdev user operations instead need a
-private per-operation scoped URL using the loopback listener
-(127.0.0.1:${DB_PORT}). Preserve the same target database and intended role;
-never copy the container hostname into a host command or expose PostgreSQL
-publicly.
+roles, migrate, canary, catalogue, deploy, and vmdev user operations reach the
+same server on the published loopback listener (127.0.0.1:${DB_PORT}), and the
+CLI performs that rewrite itself: a container hostname in .env is resolved per
+command, so no operator exports a rewritten connection string. An exported
+database URL still overrides .env for every command, which is why vmdev doctor
+reports one. Preserve the same target database and intended role, and never
+expose PostgreSQL publicly.
 
 ## Schema overview
 

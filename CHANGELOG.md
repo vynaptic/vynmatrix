@@ -9,6 +9,25 @@ Git history.
 
 ### Added
 
+- `vmdev init`, `vmdev doctor` and `vmdev deploy`: one idempotent command
+  installs or upgrades this deployment, and one generates the private `.env`
+  and owner profile with all fifteen secrets distinct. `vmdev init --update`
+  adds configuration keys that appeared upstream without touching an existing
+  value; `vmdev deploy --plan` prints the image, migrations, configuration keys
+  and snapshot a run would use; `--start-only` brings a stopped stack back up.
+- Stamped images and a deployment record. The platform image carries the git
+  commit it was built from as labels and `/app/BUILD_INFO.json`, is tagged
+  `sha-<commit12>` (`-dirty` for an uncommitted tree), and resolves its base
+  through `VM_SVC_BASE_REF` instead of a moving `latest`. Migration `0108`
+  adds the `deployments` table, which records what was installed and how the
+  run ended, with column-level `SELECT` for the backend role. `GET
+  /api/ui/version` returns it and the owner UI footer shows the running build.
+- An upgrade takes a verified `pg_dump` snapshot before it changes anything and
+  restores it, re-points Compose at the previous generation and records
+  `rolled_back` when a stage after the runtime stops fails. It refuses to
+  restore automatically without a verified snapshot. See
+  [DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
 - Ten disabled native signal strategies selected from the Backtrader catalogue;
   selection, deviations and validation evidence are tracked in
   [strategy readiness](docs/STRATEGY_READINESS.md#backtrader-migration).
@@ -23,6 +42,11 @@ Git history.
 
 ### Fixed
 
+- Host-side `vmdev db migrate`, `vmdev db roles`, `vmdev db catalogue` and
+  `vmdev user` resolve the container database hostname to the published loopback
+  listener themselves. They no longer require a hand-exported, rewritten
+  `MIGRATION_DATABASE_URL`, which the setup guide previously asked for and which
+  made the documented incremental upgrade path fail.
 - Historical scoring observes candle closes only after their interval completes;
   signal redelivery preserves the canonical origin used by durable execution commands.
 - Native bar strategies preserve their configured evaluation horizon through scoring
@@ -55,6 +79,15 @@ Git history.
 
 ### Changed
 
+- Compose refuses to resolve a moving image tag: `VM_DEPLOY_IMAGE_TAG` has no
+  `latest` default and must name the immutable tag `vmdev deploy` writes.
+- `.env.example` is a template rather than a file to edit by hand, and gains
+  `VM_PAPER_ACCOUNT_INITIAL_EQUITY`. A fresh install creates the local paper
+  account with that starting equity through the onboarding service.
+- [SETUP.md](SETUP.md) is the single owner of the installation sequence, and
+  [DEPLOYMENT.md](docs/DEPLOYMENT.md) owns the upgrade and rollback contract.
+  `vmdev build venvs` is documented as a contributor step with its TA-Lib
+  prerequisite and is no longer part of installing or upgrading.
 - Strategy signal delivery runs on a dedicated loop outside the bar-processing
   lock, woken by each committed transition, and the scoring outbox relay wakes on
   the existing `outbox_events` notification (`SCORING_OUTBOX_NOTIFY_ENABLED`).
