@@ -64,8 +64,10 @@ Runtime groups must not receive generic DATABASE_URL, DB_USER, DB_PASSWORD,
 ADMIN_DATABASE_URL, MIGRATION_DATABASE_URL, or PostgreSQL administrator
 credentials. Maintenance URLs are for the explicit database lifecycle only.
 Container maintenance utilities use postgres:5432; host-side maintenance and
-control-plane commands need a host-reachable scoped URL. The role, bootstrap,
-and backup details are in [DATABASE.md](DATABASE.md).
+control-plane commands reach the same server on the published loopback listener
+and perform that rewrite themselves, so `.env` carries one spelling. An exported
+database URL still overrides `.env`, which `vmdev doctor` reports. The role,
+bootstrap, and backup details are in [DATABASE.md](DATABASE.md).
 
 Use distinct backend, scoring, execution, feedback, and market-data API keys.
 Backend uses its own admin boundary; scoring and execution distinguish service
