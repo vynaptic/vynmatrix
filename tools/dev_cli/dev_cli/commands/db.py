@@ -319,11 +319,26 @@ def stop() -> None:
 
 @db.command()
 def status() -> None:
-    """Show declared service state without exposing environment values."""
+    """Show declared service state and the latest deployment, exposing no values."""
+    from sqlalchemy.exc import SQLAlchemyError  # noqa: PLC0415
+
+    from dev_cli.core.deployment import artefact, record  # noqa: PLC0415
+
     try:
-        click.echo(_lifecycle().command("ps", "--format", "json"))
+        services = artefact.compose_services(_lifecycle().command("ps", "--format", "json"))
     except (ValueError, RuntimeError) as exc:
         raise click.ClickException(str(exc)) from exc
+    deployment: Any = None
+    try:
+        url = _host_env().get("MIGRATION_DATABASE_URL", "")
+        with record.maintenance_session(url) as session:
+            if record.table_exists(session):
+                deployment = record.latest(session)
+    except (SQLAlchemyError, ValueError, RuntimeError):
+        # A stopped or unmigrated database is a state, not a failure: the
+        # service listing above is still the answer to "what is running?".
+        deployment = None
+    _output({"services": services, "deployment": deployment})
 
 
 @db.command()
