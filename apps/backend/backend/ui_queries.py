@@ -25,6 +25,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from lib_application.db.models import (
+    ApiAuditLog,
+    Broker,
+    BrokerCredential,
     CanonicalSignal,
     DailyNav,
     Deployment,
@@ -41,12 +44,18 @@ from lib_application.db.models import (
     User,
     UserStrategyBinding,
 )
+from lib_application.services.binding_control import (
+    MODES,
+    NUMERIC_FIELDS,
+    mode_of,
+)
 from lib_common.logging import get_logger
 
 logger = get_logger(__name__)
 
 _BLOCKED_MODE = "blocked"
 _ACTIVITY_LIMIT = 10
+ACTIVITY_LIMIT = 20
 _TRADE_POINT_LIMIT = 500
 _TREND_POINTS = 30
 _TREND_DAYS = 90
@@ -558,10 +567,12 @@ def strategies(session: Session, owner_id: str) -> dict[str, Any]:
         ).order_by(Strategy.strategy_name)
     ).all()
     versions = _section(session, "versions", lambda: _latest_versions(session)) or {}
+    released_ids = _released_strategy_ids(session)
     last_signals = _section(session, "signals", lambda: _last_signals(session))
     metric_rows = _section(session, "realized", lambda: _latest_metric_rows(session, owner_id))
     bindings = session.execute(
         select(
+            UserStrategyBinding.binding_id,
             UserStrategyBinding.strategy_id,
             UserStrategyBinding.broker_account_id,
             UserStrategyBinding.is_active,
@@ -580,8 +591,10 @@ def strategies(session: Session, owner_id: str) -> dict[str, Any]:
         account = accounts.get(int(binding.broker_account_id))
         bindings_by_strategy[str(binding.strategy_id)].append(
             {
+                "binding_id": int(binding.binding_id),
                 "account_id": int(binding.broker_account_id),
                 "account_name": account.display_name if account else None,
+                "mode": mode_of(binding),
                 "active": bool(binding.is_active),
                 "autopilot": bool(binding.autopilot),
                 "entries_enabled": bool(binding.entries_enabled),
@@ -607,8 +620,10 @@ def strategies(session: Session, owner_id: str) -> dict[str, Any]:
                 "asset_class": row.asset_class,
                 "description": row.description,
                 # Registered strategies stay fail-closed until maintenance
-                # releases them; a binding is refused while this is false.
-                "released": bool(row.is_active),
+                # releases them. This is the same condition the binding gate
+                # applies, so the page never offers a control the API refuses:
+                # is_active is TRUE *and* some version is active.
+                "released": row.strategy_id in released_ids,
                 "version": version.semver if version else None,
                 "status": version.status if version else None,
                 "bindings": bindings_by_strategy.get(row.strategy_id, []),
@@ -633,6 +648,195 @@ def strategies(session: Session, owner_id: str) -> dict[str, Any]:
             }
         )
     return {"as_of": iso_utc(datetime.now(tz=UTC)), "strategies": items}
+
+
+def _released_strategy_ids(session: Session) -> set[str]:
+    """Strategies the binding gate would accept: released, with an active version.
+
+    This is deliberately the same condition as
+    ``binding_control.require_release``, so the UI never renders a control the
+    API would refuse. ``Strategy.is_active`` is nullable, and ``is True``
+    distinguishes "not released" from "never decided" the way the gate does.
+    """
+    rows = session.execute(
+        select(Strategy.strategy_id)
+        .join(StrategyVersion, StrategyVersion.strategy_id == Strategy.strategy_id)
+        .where(Strategy.is_active.is_(True), StrategyVersion.status == "active")
+    ).all()
+    return {str(row.strategy_id) for row in rows}
+
+
+def _credential_status(session: Session, account_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Whether each account has a usable credential -- never any key material."""
+    if not account_ids:
+        return {}
+    rows = session.execute(
+        select(
+            BrokerCredential.account_id,
+            BrokerCredential.status,
+            BrokerCredential.expires_at,
+        ).where(BrokerCredential.account_id.in_(account_ids))
+    ).all()
+    status: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        account_id = int(row.account_id)
+        if row.status == "active" or account_id not in status:
+            status[account_id] = {
+                "present": True,
+                "status": row.status,
+                "expires_at": iso_utc(row.expires_at),
+            }
+    return status
+
+
+def _control_accounts(session: Session, owner_id: str) -> list[dict[str, Any]]:
+    """Accounts with the identifiers an edit form must echo back in ``expected``."""
+    rows = session.execute(
+        select(
+            LinkedBrokerAccount.account_id,
+            LinkedBrokerAccount.config_key,
+            LinkedBrokerAccount.display_name,
+            LinkedBrokerAccount.environment,
+            LinkedBrokerAccount.base_ccy,
+            LinkedBrokerAccount.status,
+            LinkedBrokerAccount.external_ref,
+            LinkedBrokerAccount.paper_initial_equity,
+            LinkedBrokerAccount.paper_initial_cash,
+            Broker.code.label("broker_code"),
+            Broker.name.label("broker_name"),
+        )
+        .join(Broker, Broker.broker_id == LinkedBrokerAccount.broker_id)
+        .where(LinkedBrokerAccount.user_id == owner_id)
+        .order_by(LinkedBrokerAccount.account_id)
+    ).all()
+    credentials = _credential_status(session, [int(row.account_id) for row in rows])
+    return [
+        {
+            "account_id": int(row.account_id),
+            "config_key": row.config_key,
+            "display_name": row.display_name,
+            "broker_code": row.broker_code,
+            "broker_name": row.broker_name,
+            "environment": row.environment,
+            "base_ccy": row.base_ccy,
+            "status": row.status,
+            "external_ref": row.external_ref,
+            "paper_initial_equity": money(row.paper_initial_equity),
+            "paper_initial_cash": money(row.paper_initial_cash),
+            "credential": credentials.get(
+                int(row.account_id), {"present": False, "status": None, "expires_at": None}
+            ),
+        }
+        for row in rows
+    ]
+
+
+def _control_bindings(session: Session, owner_id: str) -> list[dict[str, Any]]:
+    """Every binding the owner holds, with the parameters the editor may change."""
+    rows = session.execute(
+        select(
+            UserStrategyBinding.binding_id,
+            UserStrategyBinding.strategy_id,
+            UserStrategyBinding.broker_account_id,
+            UserStrategyBinding.is_active,
+            UserStrategyBinding.autopilot,
+            UserStrategyBinding.entries_enabled,
+            UserStrategyBinding.exits_enabled,
+            UserStrategyBinding.asset_score_threshold,
+            UserStrategyBinding.max_position_pct,
+            UserStrategyBinding.max_total_exposure_pct,
+            UserStrategyBinding.max_daily_loss_pct,
+            UserStrategyBinding.max_open_positions,
+            UserStrategyBinding.instruments_allowed,
+            UserStrategyBinding.asset_classes_allowed,
+        )
+        .where(UserStrategyBinding.user_id == owner_id)
+        .order_by(UserStrategyBinding.binding_id)
+    ).all()
+    return [
+        {
+            "binding_id": int(row.binding_id),
+            "strategy_id": row.strategy_id,
+            "account_id": int(row.broker_account_id),
+            "mode": mode_of(row),
+            "asset_score_threshold": money(row.asset_score_threshold),
+            "max_position_pct": money(row.max_position_pct),
+            "max_total_exposure_pct": money(row.max_total_exposure_pct),
+            "max_daily_loss_pct": money(row.max_daily_loss_pct),
+            "max_open_positions": int(row.max_open_positions),
+            # Read-only here: the scope is managed through the catalogue tools.
+            "instruments_allowed": list(row.instruments_allowed or []) or None,
+            "asset_classes_allowed": list(row.asset_classes_allowed or []),
+        }
+        for row in rows
+    ]
+
+
+def _recent_activity(session: Session, owner_id: str, *, limit: int = ACTIVITY_LIMIT) -> list[Any]:
+    """The owner's own control-plane audit rows, newest first, metadata only."""
+    rows = session.execute(
+        select(
+            ApiAuditLog.audit_id,
+            ApiAuditLog.action,
+            ApiAuditLog.status,
+            ApiAuditLog.req,
+            ApiAuditLog.created_at,
+        )
+        .where(ApiAuditLog.user_id == owner_id)
+        .order_by(ApiAuditLog.audit_id.desc())
+        .limit(limit)
+    ).all()
+    return [
+        {
+            "at": iso_utc(row.created_at),
+            "action": row.action,
+            "status": row.status,
+            "fields": list((row.req or {}).get("fields") or [])
+            if isinstance(row.req, dict)
+            else [],
+        }
+        for row in rows
+    ]
+
+
+def control(session: Session, owner_id: str) -> dict[str, Any]:
+    """Everything the writable surfaces need, in one round trip.
+
+    This widens the read surface deliberately: ``config_key`` and
+    ``external_ref`` were not returned by the read-only pages, but both PATCH
+    routes require the caller to echo the current value in ``expected``, and an
+    owner cannot confirm what they cannot see. Neither is a secret. Credential
+    material remains unreadable -- only presence, status and expiry are shown.
+    """
+    from lib_application.services.owner_onboarding import get_owner_profile  # noqa: PLC0415
+
+    released_ids = _released_strategy_ids(session)
+    catalogue = session.execute(
+        select(Strategy.strategy_id, Strategy.strategy_name, Strategy.asset_class).order_by(
+            Strategy.strategy_name
+        )
+    ).all()
+    return {
+        "as_of": iso_utc(datetime.now(tz=UTC)),
+        "owner": _section(session, "owner", partial(get_owner_profile, session)),
+        "accounts": _section(session, "accounts", partial(_control_accounts, session, owner_id)),
+        "bindings": _section(session, "bindings", partial(_control_bindings, session, owner_id)),
+        "strategies": [
+            {
+                "strategy_id": row.strategy_id,
+                "name": row.strategy_name,
+                "asset_class": row.asset_class,
+                "released": row.strategy_id in released_ids,
+            }
+            for row in catalogue
+        ],
+        "activity": _section(session, "activity", partial(_recent_activity, session, owner_id)),
+        "modes": sorted(MODES),
+        "limits": {
+            field: {"min": str(low), "max": str(high), "exclusive_min": exclusive}
+            for field, (low, high, exclusive) in NUMERIC_FIELDS.items()
+        },
+    }
 
 
 def _equity_daily(session: Session, owner_id: str, account: Any, since: date) -> list[Any]:

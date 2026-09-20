@@ -1,10 +1,18 @@
-"""Owner UI: static shell at ``/ui`` and its read-only JSON API at ``/api/ui``.
+"""Owner UI: static shell at ``/ui`` and its JSON API at ``/api/ui``.
 
 The shell is public because a browser navigation cannot carry the admin header;
 it holds no data. Every JSON route sits behind the same admin dependency as the
-rest of the config API, resolves the deployment owner on the server, and never
-writes. Adding a page means one route here, one read model in
-``ui_queries`` and one module under ``ui/pages``.
+rest of the config API and resolves the deployment owner on the server; no route
+accepts a caller-supplied user.
+
+Most routes read. Three write, and they are the whole writable surface: the
+owner may bind a released strategy to one of their own accounts and choose how
+it trades. Nothing here places an order, holds a secret, or releases a strategy.
+Every write names the field it changes, proves it saw the current value, and
+leaves an audit row -- including when it is refused.
+
+Adding a page means one route here, one read model in ``ui_queries`` and one
+module under ``ui/pages``.
 """
 
 from __future__ import annotations
@@ -18,12 +26,18 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
+from lib_application.services import binding_control
 from lib_application.services.account_onboarding import owner_scope
+from lib_application.services.binding_control import BindingControlError
+from lib_application.services.control_audit import ERROR, append_audit
 from lib_common.env_utils import parse_bool_env
+from lib_common.logging import get_logger
 
 from . import ui_queries
 
@@ -39,6 +53,25 @@ CONTENT_SECURITY_POLICY = (
 )
 
 SessionFactory = Callable[[], Any]
+
+logger = get_logger(__name__)
+
+
+class BindIn(BaseModel):
+    """Bind a strategy to an account. Everything else keeps its schema default."""
+
+    model_config = ConfigDict(extra="forbid")
+    strategy_id: str = Field(min_length=1, max_length=50)
+    broker_account_id: int = Field(gt=0)
+    mode: str
+
+
+class BindingPatchIn(BaseModel):
+    """A partial change, fenced by the value the owner believed each field held."""
+
+    model_config = ConfigDict(extra="forbid")
+    expected: dict[str, Any]
+    changes: dict[str, Any]
 
 
 class _UiFiles(StaticFiles):
@@ -97,6 +130,26 @@ def register_ui(
         with session_factory() as session, owner_scope(session) as owner_id:
             yield session, owner_id
 
+    def _audit_refusal(action: str, payload: dict[str, Any], detail: str) -> None:
+        """Record a refused write, which the rolled-back transaction cannot carry.
+
+        Best effort by construction: a deployment whose audit write also fails
+        must still return the original refusal to the owner, not a second error.
+        """
+        try:
+            with session_factory() as session, owner_scope(session) as owner_id:
+                append_audit(
+                    session,
+                    user_id=owner_id,
+                    action=action,
+                    request_payload=payload,
+                    response_payload={"detail": detail},
+                    status=ERROR,
+                )
+                session.commit()
+        except (SQLAlchemyError, ValueError, RuntimeError):
+            logger.warning("Owner UI refusal was not audited", action=action, exc_info=True)
+
     router = APIRouter(prefix="/api/ui", dependencies=[Depends(require_admin)], tags=["owner-ui"])
 
     @router.get("/overview")
@@ -108,6 +161,51 @@ def register_ui(
     def version() -> dict[str, Any]:
         with session_factory() as session:
             return ui_queries.version(session, image=image)
+
+    @router.get("/control")
+    def control() -> dict[str, Any]:
+        with _owner_session() as (session, owner_id):
+            return ui_queries.control(session, owner_id)
+
+    @router.post("/bindings")
+    def bind(payload: BindIn) -> dict[str, Any]:
+        """Bind a released strategy to one of the owner's connected accounts."""
+        request = {"fields": ["mode"], "mode": payload.mode, "strategy_id": payload.strategy_id}
+        try:
+            with _owner_session() as (session, owner_id):
+                row = binding_control.create_binding(
+                    session,
+                    owner_id=owner_id,
+                    strategy_id=payload.strategy_id,
+                    broker_account_id=payload.broker_account_id,
+                    mode=payload.mode,
+                )
+                result = {"binding_id": int(row.binding_id), "mode": binding_control.mode_of(row)}
+                session.commit()
+                return result
+        except BindingControlError as exc:
+            _audit_refusal("binding.create", request, exc.detail)
+            raise
+
+    @router.post("/bindings/{binding_id}")
+    def change_binding(binding_id: int, payload: BindingPatchIn) -> dict[str, Any]:
+        """Change only the supplied fields, and only if they still hold their expected value."""
+        request = {"fields": sorted(payload.changes), "binding_id": binding_id}
+        try:
+            with _owner_session() as (session, owner_id):
+                row = binding_control.patch_binding(
+                    session,
+                    owner_id=owner_id,
+                    binding_id=binding_id,
+                    expected=payload.expected,
+                    changes=payload.changes,
+                )
+                result = {"binding_id": int(row.binding_id), "mode": binding_control.mode_of(row)}
+                session.commit()
+                return result
+        except BindingControlError as exc:
+            _audit_refusal("binding.patch", request, exc.detail)
+            raise
 
     @router.get("/strategies")
     def strategies() -> dict[str, Any]:

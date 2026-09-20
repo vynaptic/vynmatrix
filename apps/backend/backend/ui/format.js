@@ -206,3 +206,80 @@ export function table(columns, rows) {
     h("table", {}, h("thead", {}, head), h("tbody", {}, body)),
   );
 }
+
+// ---------------------------------------------------------------- controls
+// h() sets attributes, which cannot express live control state: an input's
+// value, a select's selection and a checkbox's checked flag are properties, and
+// writing the attribute does not move them once the node exists. These helpers
+// set properties, so a re-render shows what the control actually holds.
+
+export function control(tag, attrs = {}, props = {}, ...children) {
+  const node = h(tag, attrs, ...children);
+  for (const [name, value] of Object.entries(props)) node[name] = value;
+  return node;
+}
+
+// A labelled control. The label is a real <label for>, so clicking it focuses
+// the control and a screen reader announces the two together.
+export function field(id, label, node, hint) {
+  return h(
+    "div",
+    { class: "field" },
+    h("label", { for: id, text: label }),
+    node,
+    hint ? h("p", { class: "field-hint", text: hint }) : null,
+  );
+}
+
+export function choice(id, options, value, onChange) {
+  const select = control(
+    "select",
+    { id, name: id, onchange: (event) => onChange(event.target.value) },
+    {},
+    ...options.map((option) =>
+      control("option", { value: option.value }, { selected: option.value === value }, option.label),
+    ),
+  );
+  // Selection is a property: set it after the options exist so a value that is
+  // not among them leaves the control blank rather than silently picking one.
+  select.value = value;
+  return select;
+}
+
+export function numberField(id, value, { min, max, step = "0.0001", onInput } = {}) {
+  return control(
+    "input",
+    {
+      id,
+      name: id,
+      type: "number",
+      inputmode: "decimal",
+      min,
+      max,
+      step,
+      oninput: onInput ? (event) => onInput(event.target.value) : null,
+    },
+    { value: value === null || value === undefined ? "" : String(value) },
+  );
+}
+
+export function textField(id, value, { onInput, maxlength, type = "text" } = {}) {
+  return control(
+    "input",
+    {
+      id,
+      name: id,
+      type,
+      maxlength,
+      spellcheck: "false",
+      oninput: onInput ? (event) => onInput(event.target.value) : null,
+    },
+    { value: value === null || value === undefined ? "" : String(value) },
+  );
+}
+
+// An error that belongs to one control, not to the page-wide banner which the
+// next successful render clears.
+export function fieldError(message) {
+  return h("p", { class: "field-error", role: "alert", text: message || "" });
+}

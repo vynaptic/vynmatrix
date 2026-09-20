@@ -181,12 +181,21 @@ def env() -> dict[str, Any]:
                 strategy_id="swing_high_low_pmo_v1",
                 strategy_name="Swing High Low PMO",
                 asset_class="crypto",
+                is_active=True,
             )
         )
         s.add(
             Strategy(
                 strategy_id="test_strategy_alpha_v1",
                 strategy_name="EMA Cross Scalper",
+                asset_class="crypto",
+                is_active=True,
+            )
+        )
+        s.add(
+            Strategy(
+                strategy_id="unreleased_v1",
+                strategy_name="Never Released",
                 asset_class="crypto",
             )
         )
@@ -198,15 +207,33 @@ def env() -> dict[str, Any]:
                 is_active=True,
             )
         )
-        s.add(
-            StrategyVersion(
-                strat_ver_id=100,
-                strategy_id="us_quality_compounder_v1",
-                semver="1.2.0",
-                param_schema={},
-                default_params={},
-                status="active",
-            )
+        s.add_all(
+            [
+                StrategyVersion(
+                    strat_ver_id=100,
+                    strategy_id="us_quality_compounder_v1",
+                    semver="1.2.0",
+                    param_schema={},
+                    default_params={},
+                    status="active",
+                ),
+                StrategyVersion(
+                    strat_ver_id=101,
+                    strategy_id="swing_high_low_pmo_v1",
+                    semver="1.1.0",
+                    param_schema={},
+                    default_params={},
+                    status="active",
+                ),
+                StrategyVersion(
+                    strat_ver_id=102,
+                    strategy_id="test_strategy_alpha_v1",
+                    semver="1.0.0",
+                    param_schema={},
+                    default_params={},
+                    status="active",
+                ),
+            ]
         )
         s.commit()
     secrets = _FakeSecrets()
@@ -589,7 +616,7 @@ def test_strategy_config_rejects_unreviewed_parameters_and_inactive_catalogue(
         session.commit()
     inactive = client.put(path, json={"is_active": True}, headers=AUTH)
     assert inactive.status_code == 409
-    assert inactive.json()["detail"] == "strategy is not active"
+    assert inactive.json()["detail"] == "strategy is not released for trading"
 
 
 def test_drawdown_mandate_upsert_is_append_only_tenant_owned_and_audited(
@@ -675,6 +702,40 @@ def test_strategy_policy_and_drawdown_mandate_routes_require_admin_auth(
         ).status_code
         == 401
     )
+
+
+def test_binding_activation_requires_a_released_strategy(env: dict[str, Any]) -> None:
+    """Setting a strategy up is allowed; switching it on needs maintenance to release it."""
+    client = env["client"]
+    base = {
+        "strategy_id": "unreleased_v1",
+        "broker_account_id": 1,
+        "asset_classes_allowed": ["crypto"],
+        "execution_modes_allowed": ["spot"],
+    }
+
+    # An inactive binding may be prepared before the release exists.
+    prepared = client.post("/bindings", json={**base, "is_active": False}, headers=AUTH)
+    assert prepared.status_code == 200, prepared.text
+    assert prepared.json()["is_active"] is False
+
+    armed = client.post(
+        "/bindings",
+        json={**base, "is_active": True, "autopilot": True, "entries_enabled": True},
+        headers=AUTH,
+    )
+    assert armed.status_code == 409
+    assert armed.json()["detail"] == "strategy is not released for trading"
+
+    # A released strategy with no active version is refused for the other reason.
+    with env["factory"]() as session:
+        strategy = session.get(Strategy, "unreleased_v1")
+        assert strategy is not None
+        strategy.is_active = True
+        session.commit()
+    no_version = client.post("/bindings", json={**base, "is_active": True}, headers=AUTH)
+    assert no_version.status_code == 409
+    assert no_version.json()["detail"] == "strategy has no active release"
 
 
 def test_binding_rejects_overlapping_active_strategy_scope(env: dict[str, Any]) -> None:

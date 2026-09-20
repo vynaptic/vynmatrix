@@ -21,7 +21,7 @@
           <span class="brand-name">vynmatrix</span>
         </a>
         <nav id="nav" class="nav" aria-label="Pages"></nav>
-        <p class="rail-note">Read-only view of your own deployment. Nothing here can place or change an order.</p>
+        <p class="rail-note">A view of your own deployment. Nothing here can place or change an order.</p>
       </aside>
 
       <div class="stage">
@@ -71,6 +71,19 @@
           when you close the tab or press Lock.
         </p>
       </form>
+    </div>
+
+    <div id="confirm" class="overlay" hidden>
+      <div class="login-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <h2 id="confirm-title"></h2>
+        <p id="confirm-detail"></p>
+        <p id="confirm-consequence" class="confirm-consequence"></p>
+        <p id="confirm-error" class="login-error" role="alert" hidden></p>
+        <div class="confirm-actions">
+          <button id="confirm-cancel" class="tool" type="button">Cancel</button>
+          <button id="confirm-ok" class="primary" type="button">Confirm</button>
+        </div>
+      </div>
     </div>
 
     <div id="tooltip" class="tooltip" role="presentation" hidden></div>
