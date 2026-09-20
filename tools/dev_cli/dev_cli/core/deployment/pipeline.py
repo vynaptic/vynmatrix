@@ -186,9 +186,18 @@ class Deployer:
         revisions = [item.revision for item in scripts.iterate_revisions("head", current or "base")]
         return list(reversed(revisions))
 
+    def start_database(self) -> None:
+        """Bring up only PostgreSQL, which every branch needs before it can decide."""
+        self.lifecycle.command("up", "-d", "--wait", "postgres")
+
     def database_present(self) -> bool:
-        """Whether the explicit target database exists on the configured server."""
+        """Whether the explicit target database exists on the configured server.
+
+        An unreachable server is not an absent database: mistaking one for the
+        other would turn an upgrade into a fresh install.
+        """
         from sqlalchemy import text  # noqa: PLC0415
+        from sqlalchemy.exc import SQLAlchemyError  # noqa: PLC0415
 
         from lib_application.db.session import (  # noqa: PLC0415
             create_engine_for_env,
@@ -207,6 +216,13 @@ class Deployer:
                         {"name": str(settings.migration.database)},
                     )
                 )
+        except SQLAlchemyError as exc:
+            msg = (
+                f"PostgreSQL is not answering on {settings.admin.host}:"
+                f"{settings.admin.port or 5432}. Start it with `vmdev db start`, or run "
+                "`vmdev deploy` without --plan, which starts it first."
+            )
+            raise DeploymentError(msg) from exc
         finally:
             dispose_engine(engine)
 
@@ -302,7 +318,7 @@ class Deployer:
 
     def start_only(self) -> None:
         """Bring a stopped stack back up on the image it already recorded."""
-        self.lifecycle.command("up", "-d", "--wait", "postgres")
+        self.start_database()
         self.lifecycle.start_runtime()
         self._verify_health()
 
@@ -317,7 +333,7 @@ class Deployer:
             if plan.rebuild:
                 self._build(plan)
             stage = "snapshot"
-            self.lifecycle.command("up", "-d", "--wait", "postgres")
+            self.start_database()
             if plan.snapshot_reason is None:
                 snapshot = self._snapshot()
             stage = "record"
@@ -583,10 +599,14 @@ class Deployer:
             self._close(plan, snapshot, deployment_id, record.FAILED, failure_stage=stage)
 
     def _previous_tag(self, plan: DeploymentPlan) -> str:
-        """The generation to return to: the last recorded success, else what ``.env`` had."""
+        """The generation to return to: the last recorded success, else what ``.env`` had.
+
+        A re-run of the same commit names the same tag, which is still the right
+        target: the image did not change, only the database did.
+        """
         deployed = plan.deployed or {}
         candidate = str(deployed.get("image_tag") or "") or self.previous_tag
-        if not candidate or candidate == plan.image_tag:
+        if not candidate:
             msg = "No previous image generation is recorded to roll back to"
             raise DeploymentError(msg)
         return candidate

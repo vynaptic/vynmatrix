@@ -254,6 +254,10 @@ def deploy(
             deployer.start_only()
             click.echo("The stack is running on the image it already recorded.")
             return
+        if not plan_only:
+            # Every branch reads the database to decide what it is doing, so the
+            # one declared service it needs comes up before anything is decided.
+            deployer.start_database()
         plan = deployer.plan(skip_snapshot=skip_snapshot)
         if plan_only:
             _print_plan(plan, as_json=as_json)
