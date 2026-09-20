@@ -13,10 +13,10 @@ BACKEND_ALLOW_ANON is false. It returns no plaintext credentials.
 
 ## Owner UI
 
-The same process serves a read-only owner UI at http://127.0.0.1:8081/ (it
-redirects to /ui/): a Dashboard, a Strategies page and a Profit and loss page.
-No new container, port, environment variable or dependency is involved, and the
-UI cannot place, change or arm anything.
+The same process serves an owner UI at http://127.0.0.1:8081/ (it redirects to
+/ui/): a Dashboard, a Strategies page, a Profit and loss page and a Settings
+page. No new container, port, environment variable or dependency is involved.
+The UI cannot place an order, hold a secret, or release a strategy.
 
 - **Shell.** Plain HTML, CSS and ES modules in `backend/ui/`, with no build step
   and no third-party code. It is public because a browser navigation cannot send
@@ -26,6 +26,20 @@ UI cannot place, change or arm anything.
   other route and resolves the owner on the server. The page asks once for the
   key, keeps it in the tab's sessionStorage, sends it only as that header and
   forgets it on Lock, on tab close or on any 401.
+- **Control.** Three routes write. `POST /api/ui/bindings` binds a released
+  strategy to one of the owner's connected accounts; `POST /api/ui/bindings/{id}`
+  changes one that exists. Both take a mode -- `off`, `close_only` or `trading` --
+  which is the subset of the four authority flags that satisfies every CHECK on
+  the table, so the control cannot build a row the database rejects. A change is
+  a partial patch fenced by `{expected, changes}`, confirmed in the browser
+  before it is sent, and audited in the same transaction. Refusals are audited
+  too, in a transaction of their own, because the rolled-back change carries
+  nothing. Profile and account edits reuse `PATCH /owner` and
+  `PATCH /broker-accounts/{id}` unchanged.
+- **What the UI still cannot do.** Release, activate, deprecate or pull a
+  strategy version; delete anything (the backend role holds `DELETE` on no
+  table, so switching a binding off is the honest control); accept key material
+  in any field; or change an account's broker, environment or `config_key`.
 - **Data.** `ui_queries.py` selects explicit columns only, because migration
   `0107_backend_ui_read` grants the backend role column-level SELECT on exactly
   those columns with owner-scoped row policies. A test fails if a query reads an
@@ -52,7 +66,8 @@ workflow.
 | Drawdown policy | GET, PUT /risk-mandates/drawdown |
 | Market-calendar coverage | PUT /market-calendars/{code} |
 | Owner UI shell (public, static) | GET /; GET /ui/* |
-| Owner UI read API | GET /api/ui/overview; /api/ui/strategies; /api/ui/pnl?days=; /api/ui/fills?limit=&before= |
+| Owner UI read API | GET /api/ui/overview; /api/ui/strategies; /api/ui/pnl?days=; /api/ui/fills?limit=&before=; /api/ui/version; /api/ui/control |
+| Owner UI control | POST /api/ui/bindings; POST /api/ui/bindings/{binding_id} |
 
 Accounts require stable config_key, canonical uppercase base currency, and exact
 broker/environment identity. Profile/account updates use expected and changes

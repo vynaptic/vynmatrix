@@ -80,9 +80,14 @@ checkout, and a running image that is not the one that was deployed.
 
 Open <http://127.0.0.1:8081/> in a browser on the same computer. The page asks
 once for the admin key: paste the value of `BACKEND_ADMIN_API_KEY` from your
-`.env`. The view is read-only — it shows your paper account, the strategies and
-their bindings, and profit and loss — and the address is reachable from this
-computer only. The footer names the build that is running.
+`.env`. It shows your paper account, the strategies and their bindings, and
+profit and loss; the address is reachable from this computer only, and the
+footer names the build that is running.
+
+From the Strategies page you can switch a released strategy on for one of your
+accounts — **Off**, **Close only** or **Trading** — and Settings holds your
+profile and your broker accounts. Releasing a strategy stays a maintenance
+action, and no field in the browser ever accepts a broker key.
 
 ## 5. Keep it up to date
 

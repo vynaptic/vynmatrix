@@ -22,16 +22,13 @@ from pydantic import (
 from sqlalchemy import text
 
 from lib_application.db.models import (
-    ApiAuditLog,
-    Broker,
-    Instrument,
     LinkedBrokerAccount,
     RiskMandate,
     Strategy,
-    StrategyVersion,
     UserStrategyBinding,
     UserStrategyConfig,
 )
+from lib_application.services import binding_control
 from lib_application.services.account_onboarding import (
     AccountOnboardingError,
     BrokerAccountIn,
@@ -45,11 +42,9 @@ from lib_application.services.account_onboarding import (
     patch_account,
     rotate_credentials,
 )
+from lib_application.services.binding_control import BindingControlError
+from lib_application.services.control_audit import append_audit
 from lib_application.services.deployment_owner import DeploymentOwnerError
-from lib_application.services.instrument_resolution import (
-    InstrumentResolutionError,
-    resolve_instrument,
-)
 from lib_application.services.market_calendars import (
     MarketSessionWindow,
     replace_market_calendar,
@@ -425,15 +420,12 @@ def _append_control_audit(
 ) -> None:
     """Append an immutable tenant-owned audit row in the mutation transaction."""
 
-    session.add(
-        ApiAuditLog(
-            user_id=user_id,
-            account_id=None,
-            action=action,
-            req=request_payload,
-            resp=response_payload,
-            status="ok",
-        )
+    append_audit(
+        session,
+        user_id=user_id,
+        action=action,
+        request_payload=request_payload,
+        response_payload=response_payload,
     )
 
 
@@ -443,97 +435,16 @@ def _require_strategy_release(
     strategy_id: str,
     active_required: bool,
 ) -> None:
-    strategy = session.get(Strategy, strategy_id)
-    if strategy is None:
+    """One release rule, shared with the binding surface.
+
+    ``active_required=False`` asks only whether the strategy exists, which is
+    what a configuration write needs; the release itself is owned by
+    ``binding_control.require_release``.
+    """
+    if session.get(Strategy, strategy_id) is None:
         raise HTTPException(status_code=404, detail="strategy not found")
-    if not active_required:
-        return
-    if strategy.is_active is not True:
-        raise HTTPException(status_code=409, detail="strategy is not active")
-    active_version = (
-        session.query(StrategyVersion.strat_ver_id)
-        .filter(
-            StrategyVersion.strategy_id == strategy_id,
-            StrategyVersion.status == "active",
-        )
-        .first()
-    )
-    if active_version is None:
-        raise HTTPException(status_code=409, detail="strategy has no active release")
-
-
-def _canonical_binding_instruments(
-    session: Any,
-    values: list[str] | None,
-) -> list[str] | None:
-    """Resolve an executable binding scope to canonical catalogue symbols."""
-    if values is None:
-        return None
-    canonical: list[str] = []
-    for value in values:
-        token = str(value).strip()
-        try:
-            if token.isascii() and token.isdigit() and not token.startswith("0"):
-                instrument = session.get(Instrument, int(token))
-            else:
-                instrument = resolve_instrument(session, token)
-        except InstrumentResolutionError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        if instrument is None:
-            raise HTTPException(
-                status_code=422,
-                detail=f"unknown instrument {token!r}; provision it in the catalogue first",
-            )
-        symbol = str(instrument.canonical)
-        if symbol not in canonical:
-            canonical.append(symbol)
-    return canonical
-
-
-def _binding_scopes_overlap(
-    session: Any,
-    left: list[Any] | None,
-    right: list[Any] | None,
-) -> bool:
-    """Return whether two binding scopes can authorize the same instrument."""
-    if not left or not right:
-        return True
-    left_scope = set(_canonical_binding_instruments(session, [str(item) for item in left]) or [])
-    right_scope = set(_canonical_binding_instruments(session, [str(item) for item in right]) or [])
-    return bool(left_scope & right_scope)
-
-
-def _reject_conflicting_active_binding(
-    session: Any,
-    *,
-    payload: BindingIn,
-    canonical_instruments: list[str] | None,
-    existing_binding_id: int | None,
-) -> None:
-    """Enforce one active strategy per account/instrument before authority changes."""
-    if not payload.is_active:
-        return
-    query = session.query(UserStrategyBinding).filter(
-        UserStrategyBinding.broker_account_id == payload.broker_account_id,
-        UserStrategyBinding.is_active.is_(True),
-    )
-    if existing_binding_id is not None:
-        query = query.filter(UserStrategyBinding.binding_id != existing_binding_id)
-    for candidate in query.all():
-        if candidate.strategy_id == payload.strategy_id:
-            continue
-        if _binding_scopes_overlap(
-            session,
-            list(candidate.instruments_allowed or []) or None,
-            canonical_instruments,
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "another active strategy already owns an overlapping instrument "
-                    f"scope on broker_account_id={payload.broker_account_id}"
-                ),
-            )
+    if active_required:
+        binding_control.require_release(session, strategy_id)
 
 
 def _resolve_admin_auth(
@@ -681,10 +592,12 @@ def create_app(  # noqa: PLR0915
     )
     app.router.dependencies.append(Depends(_reject_owner_query))
 
+    @app.exception_handler(BindingControlError)
     @app.exception_handler(OwnerOnboardingError)
     @app.exception_handler(AccountOnboardingError)
     async def account_error(
-        _request: Request, exc: AccountOnboardingError | OwnerOnboardingError
+        _request: Request,
+        exc: AccountOnboardingError | OwnerOnboardingError | BindingControlError,
     ) -> JSONResponse:
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
@@ -713,35 +626,16 @@ def create_app(  # noqa: PLR0915
             # competing bindings. Under PostgreSQL READ COMMITTED this separate
             # row-locking statement ensures the subsequent conflict query sees
             # any binding committed by a writer that held the lock first.
-            account = (
-                s.query(LinkedBrokerAccount)
-                .filter(
-                    LinkedBrokerAccount.account_id == payload.broker_account_id,
-                    LinkedBrokerAccount.user_id == user_id,
-                    LinkedBrokerAccount.status == "connected",
-                )
-                .with_for_update()
-                .one_or_none()
+            account = binding_control.lock_account(
+                s, owner_id=user_id, account_id=payload.broker_account_id
             )
-            if account is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="broker_account_id is not a connected account owned by this user",
-                )
-            account_broker = s.get(Broker, account.broker_id)
-            if account_broker is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="broker_account_id references an unknown broker",
-                )
-            allowed_brokers = {
-                str(code).strip().lower() for code in payload.allowed_brokers or [] if code
-            }
-            if allowed_brokers and str(account_broker.code).lower() not in allowed_brokers:
-                raise HTTPException(
-                    status_code=400,
-                    detail="broker_account_id is outside allowed_brokers",
-                )
+            binding_control.require_broker_allowed(
+                s, account=account, allowed_brokers=payload.allowed_brokers
+            )
+            # Authority needs a release. An inactive binding may be set up
+            # before the strategy is released; it simply cannot trade.
+            if payload.is_active:
+                binding_control.require_release(s, payload.strategy_id)
             row = (
                 s.query(UserStrategyBinding)
                 .filter(
@@ -752,15 +646,14 @@ def create_app(  # noqa: PLR0915
                 .one_or_none()
             )
             fields = payload.model_dump()
-            canonical_instruments = _canonical_binding_instruments(
+            canonical = binding_control.canonical_instruments(s, payload.instruments_allowed)
+            fields["instruments_allowed"] = canonical
+            binding_control.reject_conflicting_active(
                 s,
-                payload.instruments_allowed,
-            )
-            fields["instruments_allowed"] = canonical_instruments
-            _reject_conflicting_active_binding(
-                s,
-                payload=payload,
-                canonical_instruments=canonical_instruments,
+                broker_account_id=payload.broker_account_id,
+                strategy_id=payload.strategy_id,
+                is_active=payload.is_active,
+                instruments=canonical,
                 existing_binding_id=int(row.binding_id) if row is not None else None,
             )
             if row is None:
@@ -784,34 +677,9 @@ def create_app(  # noqa: PLR0915
     @app.delete("/bindings/{binding_id}", dependencies=[Depends(_require_admin)])
     def deactivate_binding(binding_id: int) -> dict[str, Any]:
         with _owner_session(session_factory) as (s, user_id):
-            row = (
-                s.query(UserStrategyBinding)
-                .filter(
-                    UserStrategyBinding.binding_id == binding_id,
-                    UserStrategyBinding.user_id == user_id,
-                )
-                .one_or_none()
-            )
-            if row is None:
-                raise HTTPException(status_code=404, detail="binding not found")
-            row.is_active = False
-            row.autopilot = False
-            row.entries_enabled = False
-            row.exits_enabled = False
-            _append_control_audit(
-                s,
-                user_id=user_id,
-                action="binding.deactivate",
-                request_payload={"binding_id": binding_id},
-                response_payload={"is_active": False},
-            )
+            result = binding_control.deactivate_binding(s, owner_id=user_id, binding_id=binding_id)
             s.commit()
-            return {
-                "binding_id": binding_id,
-                "is_active": False,
-                "entries_enabled": False,
-                "exits_enabled": False,
-            }
+            return result
 
     @app.get(
         "/strategy-configs",

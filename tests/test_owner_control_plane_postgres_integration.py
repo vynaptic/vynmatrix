@@ -394,3 +394,165 @@ def test_migration_downgrade_and_reupgrade_preserve_account_values(
         )
         is True
     )
+
+
+# ---------------------------------------------------- binding control (0052 grants)
+
+
+_MODE_ROWS = {
+    "off": (False, False, False, False),
+    "close_only": (True, False, True, False),
+    "trading": (True, True, True, True),
+}
+#: Combinations a four-switch UI could produce and PostgreSQL refuses. The named
+#: modes exist so none of these is reachable from the owner surface.
+_ILLEGAL_ROWS = {
+    "entries_without_autopilot": (True, True, True, False),
+    "authority_while_inactive": (False, False, True, False),
+    "entries_only_without_autopilot": (True, True, False, False),
+}
+
+
+def _insert_binding(
+    connection: sa.Connection, account_id: int, flags: tuple[bool, bool, bool, bool]
+) -> None:
+    active, entries, exits, autopilot = flags
+    connection.execute(
+        sa.text(
+            "INSERT INTO public.user_strategy_bindings "
+            "(user_id, strategy_id, broker_account_id, is_active, entries_enabled, "
+            " exits_enabled, autopilot, execution_modes_allowed, asset_classes_allowed) "
+            "VALUES (:user_id, :strategy_id, :account_id, :active, :entries, :exits, "
+            " :autopilot, :modes, :classes)"
+        ),
+        {
+            "user_id": _OWNER,
+            "strategy_id": "owner-control-test",
+            "account_id": account_id,
+            "active": active,
+            "entries": entries,
+            "exits": exits,
+            "autopilot": autopilot,
+            "modes": '["spot"]',
+            "classes": '["crypto"]',
+        },
+    )
+
+
+@pytest.mark.parametrize("mode", sorted(_MODE_ROWS))
+def test_every_offered_mode_is_accepted_by_postgresql(
+    database: tuple[sa.Connection, int, int], mode: str
+) -> None:
+    """The modes are the legal subset, proved against the real constraints."""
+    connection, owned_id, _ = database
+    _as_backend(connection)
+
+    with connection.begin_nested() as savepoint:
+        _insert_binding(connection, owned_id, _MODE_ROWS[mode])
+        savepoint.rollback()
+
+
+@pytest.mark.parametrize("combination", sorted(_ILLEGAL_ROWS))
+def test_the_combinations_the_modes_exclude_are_refused_by_postgresql(
+    database: tuple[sa.Connection, int, int], combination: str
+) -> None:
+    """Proves the modes are a safety property, not a presentation choice."""
+    connection, owned_id, _ = database
+    _as_backend(connection)
+
+    with pytest.raises(sa.exc.DBAPIError) as error, connection.begin_nested():
+        _insert_binding(connection, owned_id, _ILLEGAL_ROWS[combination])
+    assert (
+        getattr(error.value.orig, "sqlstate", None) or getattr(error.value.orig, "pgcode", None)
+    ) == "23514"
+
+
+def test_backend_may_write_a_binding_and_its_audit_row_together(
+    database: tuple[sa.Connection, int, int],
+) -> None:
+    """The grant claim the design rests on: no migration was needed for this."""
+    connection, owned_id, _ = database
+    _as_backend(connection)
+
+    with connection.begin_nested() as savepoint:
+        _insert_binding(connection, owned_id, _MODE_ROWS["close_only"])
+        connection.execute(
+            sa.text(
+                "INSERT INTO public.api_audit_logs (user_id, account_id, action, req, status) "
+                "VALUES (:user_id, :account_id, 'binding.patch', :req, 'ok')"
+            ),
+            {"user_id": _OWNER, "account_id": owned_id, "req": '{"fields": ["mode"]}'},
+        )
+        assert (
+            connection.scalar(
+                sa.text(
+                    "SELECT count(*) FROM public.api_audit_logs "
+                    "WHERE action = 'binding.patch' AND status = 'ok'"
+                )
+            )
+            == 1
+        )
+        savepoint.rollback()
+
+    # Rolled back together: an audit row never survives a change that did not.
+    assert (
+        connection.scalar(
+            sa.text("SELECT count(*) FROM public.api_audit_logs WHERE action = 'binding.patch'")
+        )
+        == 0
+    )
+
+
+def test_backend_may_record_a_refusal(database: tuple[sa.Connection, int, int]) -> None:
+    """A refused write rolls its change back, so its audit row is written alone."""
+    connection, owned_id, _ = database
+    _as_backend(connection)
+
+    with connection.begin_nested() as savepoint:
+        connection.execute(
+            sa.text(
+                "INSERT INTO public.api_audit_logs (user_id, account_id, action, req, status) "
+                "VALUES (:user_id, :account_id, 'binding.patch', :req, 'error')"
+            ),
+            {"user_id": _OWNER, "account_id": owned_id, "req": '{"fields": ["mode"]}'},
+        )
+        assert (
+            connection.scalar(
+                sa.text("SELECT count(*) FROM public.api_audit_logs WHERE status = 'error'")
+            )
+            == 1
+        )
+        savepoint.rollback()
+
+
+def test_backend_cannot_write_a_binding_for_another_owner(
+    database: tuple[sa.Connection, int, int],
+) -> None:
+    """RLS, not application code, is what stops a binding on someone else's account."""
+    connection, _, peer_id = database
+    _as_backend(connection)
+
+    _denied(
+        connection,
+        "INSERT INTO public.user_strategy_bindings "
+        "(user_id, strategy_id, broker_account_id, execution_modes_allowed, asset_classes_allowed) "
+        "VALUES (:peer, 'owner-control-test', :account_id, :modes, :classes)",
+        peer=_PEER,
+        account_id=peer_id,
+        modes='["spot"]',
+        classes='["crypto"]',
+    )
+
+
+def test_backend_still_cannot_delete_a_binding(
+    database: tuple[sa.Connection, int, int],
+) -> None:
+    """Why the control is Off rather than Remove: the role holds DELETE on nothing."""
+    connection, owned_id, _ = database
+    _as_backend(connection)
+
+    _denied(
+        connection,
+        "DELETE FROM public.user_strategy_bindings WHERE broker_account_id = :account_id",
+        account_id=owned_id,
+    )

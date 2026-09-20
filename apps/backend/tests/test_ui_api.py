@@ -522,10 +522,14 @@ def test_strategies_lists_the_catalogue_with_binding_signal_and_recorded_pnl(
     # The deprecated 1.0.0 row was released later in this fixture; the active version wins.
     assert (swing["version"], swing["status"]) == ("1.1.0", "active")
     assert swing["released"] is True
+    # binding_id addresses the row for a change; mode names the legal flag
+    # combination the control offers instead of four independent switches.
     assert swing["bindings"] == [
         {
+            "binding_id": 1,
             "account_id": 1,
             "account_name": "Paper EUR",
+            "mode": "trading",
             "active": True,
             "autopilot": True,
             "entries_enabled": True,
@@ -799,3 +803,292 @@ def test_every_column_the_read_models_touch_is_granted_by_migration_0107(
                 "unused": sorted(set(granted) - used),
             }
     assert mismatches == {}
+
+
+# --------------------------------------------------------- owner control
+
+
+CONTROL = "/api/ui/control"
+
+
+def test_control_requires_the_admin_key(client: TestClient) -> None:
+    assert client.get(CONTROL).status_code == 401
+    assert client.get(CONTROL, headers={"X-Admin-Key": "wrong"}).status_code == 401
+    assert client.get(CONTROL, headers=AUTH).status_code == 200
+
+
+def test_control_returns_the_identifiers_an_edit_must_echo_but_never_a_secret(
+    client: TestClient,
+) -> None:
+    """A deliberate widening: PATCH requires `expected`, so the owner must see it.
+
+    ``config_key`` and ``external_ref`` are identifiers the owner chose, not key
+    material, and they are returned on this route only.
+    """
+    body = client.get(CONTROL, headers=AUTH)
+    payload = body.json()
+    account = payload["accounts"][0]
+
+    assert account["config_key"] == "canary-never-returned"
+    assert account["external_ref"] == "vault://never-returned"
+    # Credential material is still unreachable: presence and status only.
+    assert set(account["credential"]) == {"present", "status", "expires_at"}
+    for forbidden in ("secret_ref", "api_key", "api_secret", "passphrase", "access_token"):
+        assert forbidden not in body.text
+    # And the read-only pages keep their narrower surface.
+    for route in ROUTES:
+        assert "never-returned" not in client.get(route, headers=AUTH).text
+
+
+def test_control_shows_only_the_deployment_owner(client: TestClient) -> None:
+    payload = client.get(CONTROL, headers=AUTH).json()
+
+    assert payload["owner"]["user_id"] == "owner"
+    assert [account["account_id"] for account in payload["accounts"]] == [1]
+    assert "Peer account" not in client.get(CONTROL, headers=AUTH).text
+    assert all(binding["binding_id"] for binding in payload["bindings"])
+
+
+def test_released_means_what_the_bind_gate_means(client: TestClient, factory: Any) -> None:
+    """is_active alone is not a release; the gate also needs an active version."""
+    payload = client.get(CONTROL, headers=AUTH).json()
+    released = {row["strategy_id"]: row["released"] for row in payload["strategies"]}
+
+    assert released["swing_v1"] is True
+    assert released["ported_v1"] is False  # registered version, never activated
+    assert released["quiet_v1"] is False  # no version at all
+
+    with factory() as session:
+        strategy = session.get(Strategy, "ported_v1")
+        strategy.is_active = True
+        session.commit()
+    after = client.get(CONTROL, headers=AUTH).json()
+    still = {row["strategy_id"]: row["released"] for row in after["strategies"]}
+    # is_active is now true, but no version is active, so the gate still refuses.
+    assert still["ported_v1"] is False
+
+
+def test_binding_mode_change_is_fenced_and_audited(client: TestClient, factory: Any) -> None:
+    binding_id = client.get(CONTROL, headers=AUTH).json()["bindings"][0]["binding_id"]
+
+    stale = client.post(
+        f"/api/ui/bindings/{binding_id}",
+        json={"expected": {"mode": "off"}, "changes": {"mode": "close_only"}},
+        headers=AUTH,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"] == "stale expected value for mode"
+
+    applied = client.post(
+        f"/api/ui/bindings/{binding_id}",
+        json={"expected": {"mode": "trading"}, "changes": {"mode": "close_only"}},
+        headers=AUTH,
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["mode"] == "close_only"
+
+    with factory() as session:
+        row = session.get(UserStrategyBinding, binding_id)
+        # The whole flag combination moved together, never one switch at a time.
+        assert (row.is_active, row.entries_enabled, row.exits_enabled, row.autopilot) == (
+            True,
+            False,
+            True,
+            False,
+        )
+    activity = client.get(CONTROL, headers=AUTH).json()["activity"]
+    assert activity[0]["action"] == "binding.patch"
+    assert activity[0]["status"] == "ok"
+    assert activity[0]["fields"] == ["mode"]
+
+
+def test_a_refused_change_is_audited_too(client: TestClient) -> None:
+    """A rolled-back transaction carries no audit row, so refusals write their own."""
+    binding_id = client.get(CONTROL, headers=AUTH).json()["bindings"][0]["binding_id"]
+
+    refused = client.post(
+        f"/api/ui/bindings/{binding_id}",
+        json={"expected": {"mode": "off"}, "changes": {"mode": "close_only"}},
+        headers=AUTH,
+    )
+    assert refused.status_code == 409
+
+    activity = client.get(CONTROL, headers=AUTH).json()["activity"]
+    assert activity[0]["action"] == "binding.patch"
+    assert activity[0]["status"] == "error"
+
+
+def test_a_change_already_applied_is_accepted_rather_than_fought_over(
+    client: TestClient,
+) -> None:
+    """Two tabs, same intent: the second must not fail on a value it already holds.
+
+    This is the account contract's idempotence tolerance -- the expected value
+    may be stale as long as the row already holds what the caller is asking for.
+    """
+    binding_id = client.get(CONTROL, headers=AUTH).json()["bindings"][0]["binding_id"]
+
+    repeat = client.post(
+        f"/api/ui/bindings/{binding_id}",
+        json={"expected": {"mode": "off"}, "changes": {"mode": "trading"}},
+        headers=AUTH,
+    )
+
+    assert repeat.status_code == 200
+    assert repeat.json()["mode"] == "trading"
+
+
+def test_a_patch_may_only_name_the_fields_the_control_offers(client: TestClient) -> None:
+    binding_id = client.get(CONTROL, headers=AUTH).json()["bindings"][0]["binding_id"]
+
+    for expected, changes in (
+        ({"is_active": True}, {"is_active": False}),
+        ({"strategy_id": "swing_v1"}, {"strategy_id": "ported_v1"}),
+        ({"instruments_allowed": None}, {"instruments_allowed": ["BTCUSDC"]}),
+    ):
+        refused = client.post(
+            f"/api/ui/bindings/{binding_id}",
+            json={"expected": expected, "changes": changes},
+            headers=AUTH,
+        )
+        assert refused.status_code == 422, (changes, refused.text)
+        assert "unsupported fields" in refused.json()["detail"]
+
+    mismatched = client.post(
+        f"/api/ui/bindings/{binding_id}",
+        json={"expected": {}, "changes": {"mode": "off"}},
+        headers=AUTH,
+    )
+    assert mismatched.status_code == 422
+    assert "expected current value" in mismatched.json()["detail"]
+
+
+def test_binding_a_strategy_requires_a_release_before_it_can_trade(
+    client: TestClient,
+) -> None:
+    armed = client.post(
+        "/api/ui/bindings",
+        json={"strategy_id": "ported_v1", "broker_account_id": 1, "mode": "trading"},
+        headers=AUTH,
+    )
+    assert armed.status_code == 409
+    assert armed.json()["detail"] == "strategy is not released for trading"
+
+    # Preparing it while it waits for a release is allowed: it cannot trade.
+    prepared = client.post(
+        "/api/ui/bindings",
+        json={"strategy_id": "ported_v1", "broker_account_id": 1, "mode": "off"},
+        headers=AUTH,
+    )
+    assert prepared.status_code == 200, prepared.text
+    assert prepared.json()["mode"] == "off"
+
+
+def test_binding_rejects_an_account_that_is_not_the_owners(client: TestClient) -> None:
+    refused = client.post(
+        "/api/ui/bindings",
+        json={"strategy_id": "ported_v1", "broker_account_id": 2, "mode": "off"},
+        headers=AUTH,
+    )
+
+    assert refused.status_code == 400
+    assert "connected account owned by this user" in refused.json()["detail"]
+
+
+def test_binding_twice_points_at_the_existing_row_instead_of_duplicating(
+    client: TestClient,
+) -> None:
+    again = client.post(
+        "/api/ui/bindings",
+        json={"strategy_id": "swing_v1", "broker_account_id": 1, "mode": "off"},
+        headers=AUTH,
+    )
+
+    assert again.status_code == 409
+    assert "already bound" in again.json()["detail"]
+
+
+def test_every_column_a_write_touches_is_granted_for_update(
+    client: TestClient, factory: Any
+) -> None:
+    """SQLite cannot refuse a column, PostgreSQL will -- keep writes inside the grants.
+
+    The read guard above covers ``SELECT``. This is its write half: it captures
+    the ``UPDATE`` statements the control surface emits and checks each one
+    against the column-level grant ``0102`` actually made.
+    """
+    import importlib.util
+    import re
+    from pathlib import Path
+
+    from sqlalchemy import event
+
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "scripts/db/alembic/versions/0102_owner_control_plane.py"
+    )
+    spec = importlib.util.spec_from_file_location("owner_control_plane", path)
+    assert spec is not None
+    assert spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    granted = {
+        "users": {name.strip() for name in migration._PROFILE_COLUMNS.split(",")},
+        "linked_broker_accounts": {name.strip() for name in migration._ACCOUNT_COLUMNS.split(",")},
+    }
+
+    statements: list[str] = []
+    engine = factory.kw["bind"]
+
+    def _capture(_conn: Any, _cursor: Any, statement: str, *_rest: Any) -> None:
+        statements.append(statement)
+
+    binding_id = client.get(CONTROL, headers=AUTH).json()["bindings"][0]["binding_id"]
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        assert (
+            client.post(
+                f"/api/ui/bindings/{binding_id}",
+                json={"expected": {"mode": "trading"}, "changes": {"mode": "off"}},
+                headers=AUTH,
+            ).status_code
+            == 200
+        )
+        assert (
+            client.patch(
+                "/owner",
+                json={"expected": {"full_name": "Demo Owner"}, "changes": {"full_name": "Owner"}},
+                headers=AUTH,
+            ).status_code
+            == 200
+        )
+        assert (
+            client.patch(
+                "/broker-accounts/1",
+                json={"expected": {"display_name": "Paper EUR"}, "changes": {"display_name": "P"}},
+                headers=AUTH,
+            ).status_code
+            == 200
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+
+    ungranted: dict[str, set[str]] = {}
+    for statement in statements:
+        match = re.match(r"UPDATE (\w+) SET (.+?) WHERE ", statement, re.DOTALL)
+        if match is None or match.group(1) not in granted:
+            continue
+        table = match.group(1)
+        touched = set(re.findall(r"(\w+)\s*=\s*\?", match.group(2)))
+        excess = touched - granted[table]
+        if excess:
+            ungranted.setdefault(table, set()).update(excess)
+
+    assert ungranted == {}, ungranted
+    # And the guard has teeth: these writes really did emit an UPDATE per table.
+    updated = {
+        match.group(1)
+        for match in (re.match(r"UPDATE (\w+) ", s) for s in statements)
+        if match is not None
+    }
+    assert {"users", "linked_broker_accounts", "user_strategy_bindings"} <= updated

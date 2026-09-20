@@ -903,7 +903,8 @@ details.as-table summary {
 
 /* ---------------------------------------------------------------- login */
 
-.login {
+.login,
+.overlay {
   position: fixed;
   inset: 0;
   z-index: 50;
@@ -1014,5 +1015,140 @@ details.as-table summary {
 
   .feed-kind {
     grid-column: 1 / -1;
+  }
+}
+
+/* ------------------------------------------------------------- controls */
+/* The read-only pages needed no form vocabulary. These rules are the whole
+   control surface: one field wrapper, the three input types the editors use,
+   and the confirmation overlay's actions. No inline style anywhere: the CSP
+   forbids it. */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.9rem;
+}
+
+.field label {
+  color: var(--ink-2);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.field input,
+.field select {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.field input:focus-visible,
+.field select:focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: 2px;
+}
+
+.field input[readonly],
+.field input:disabled,
+.field select:disabled {
+  color: var(--ink-3);
+  background: var(--plane);
+  cursor: not-allowed;
+}
+
+.field-hint {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 0.76rem;
+}
+
+.field-error {
+  margin: 0;
+  color: var(--warning);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.field-error:empty {
+  display: none;
+}
+
+.editor {
+  padding: 0.9rem 0 0.2rem;
+  border-top: 1px solid var(--rule);
+}
+
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: flex-end;
+  margin-top: 0.4rem;
+}
+
+.confirm-consequence {
+  padding: 0.6rem 0.7rem;
+  border-left: 3px solid var(--warning);
+  border-radius: 4px;
+  background: var(--plane);
+  color: var(--ink);
+  font-size: 0.85rem;
+}
+
+.confirm-consequence:empty {
+  display: none;
+}
+
+/* A definition list of facts that are shown but not edited here. */
+.facts {
+  display: grid;
+  grid-template-columns: minmax(7rem, auto) 1fr;
+  gap: 0.35rem 1rem;
+  margin: 0 0 1rem;
+  font-size: 0.85rem;
+}
+
+.facts dt {
+  color: var(--ink-3);
+}
+
+.facts dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+/* One editable field beside its Save button. */
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-start;
+  margin-bottom: 0.5rem;
+}
+
+.field-row .field {
+  flex: 1 1 16rem;
+  margin-bottom: 0;
+}
+
+.field-row .editor-actions {
+  padding-top: 1.45rem;
+}
+
+@media (max-width: 640px) {
+  .field-row .editor-actions {
+    padding-top: 0;
   }
 }

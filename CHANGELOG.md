@@ -9,6 +9,18 @@ Git history.
 
 ### Added
 
+- The owner UI can switch a strategy on. A released strategy binds to one of the
+  owner's connected accounts in one of three modes — **Off**, **Close only** or
+  **Trading** — which are the combinations of the four authority flags that
+  satisfy every CHECK on `user_strategy_bindings`, so the control cannot build a
+  row the database rejects. Changes are partial, fenced by `{expected, changes}`,
+  confirmed before they are sent, and audited; refusals are audited too. No
+  migration was needed: the backend role already held the grants.
+- A Settings page for the owner profile and the non-secret configuration of each
+  broker account, with the recent change log. Credentials are never entered in
+  the browser; the account card shows only whether one exists, its status and its
+  expiry. `GET /api/ui/control` serves it and returns `config_key` and
+  `external_ref`, which both PATCH routes require the caller to echo back.
 - `vmdev init`, `vmdev doctor` and `vmdev deploy`: one idempotent command
   installs or upgrades this deployment, and one generates the private `.env`
   and owner profile with all fifteen secrets distinct. `vmdev init --update`
@@ -42,6 +54,15 @@ Git history.
 
 ### Fixed
 
+- Binding a strategy for trading now requires the release the UI always claimed
+  it required. `POST /bindings` never checked it: `_require_strategy_release`
+  was reachable only from `PUT /strategy-configs`, so an unreleased strategy
+  could be bound and switched on. It was inert — the scoring engine refuses to
+  persist its signals — but it looked armed and said nothing. Four pieces of UI
+  copy that described the missing gate are corrected with it.
+- The Strategies page reported a strategy as released when `strategies.is_active`
+  was true even if no version was active, which is weaker than the gate. It now
+  reports exactly what the gate accepts.
 - Host-side `vmdev db migrate`, `vmdev db roles`, `vmdev db catalogue` and
   `vmdev user` resolve the container database hostname to the published loopback
   listener themselves. They no longer require a hand-exported, rewritten
@@ -79,6 +100,12 @@ Git history.
 
 ### Changed
 
+- Binding authority rules moved from the `POST /bindings` route body into
+  `lib_application.services.binding_control`, so the HTTP surface and the owner
+  UI share one implementation of the account lock, the broker check, the
+  instrument canonicalization, the overlap rule and the release gate. The
+  refusal message for an unreleased strategy is now "strategy is not released
+  for trading" on both surfaces.
 - Compose refuses to resolve a moving image tag: `VM_DEPLOY_IMAGE_TAG` has no
   `latest` default and must name the immutable tag `vmdev deploy` writes.
 - `.env.example` is a template rather than a file to edit by hand, and gains

@@ -28,6 +28,13 @@ const PAGES = [
     icon: "M4 20V4M4 20h16M8 16v-4M12 16V8M16 16v-6",
     module: "./pages/pnl.js",
   },
+  {
+    id: "settings",
+    title: "Settings",
+    kicker: "Owner and accounts",
+    icon: "M12 15a3 3 0 100-6 3 3 0 000 6zM4 12h2m12 0h2M12 4v2m0 12v2",
+    module: "./pages/settings.js",
+  },
 ];
 
 const REFRESH_MS = 30000;
@@ -36,7 +43,24 @@ const THEME_KEY = "vynmatrix.theme";
 const el = (id) => document.getElementById(id);
 // `generation` names the newest request. A response from an older one (the user
 // navigated, pressed Lock, or a newer refresh started) is discarded, never drawn.
-const state = { page: PAGES[0], generation: 0, versionShown: false };
+// `editing` is the shell's only dirty-state concept. While an editor or a
+// confirmation is open the timed refresh does not run at all -- focus is not a
+// good enough proxy, because a confirmation takes focus out of the form.
+const state = {
+  page: PAGES[0],
+  generation: 0,
+  versionShown: false,
+  editing: 0,
+  resume: null,
+};
+
+export function beginEditing() {
+  state.editing += 1;
+}
+
+export function endEditing() {
+  state.editing = Math.max(0, state.editing - 1);
+}
 
 function currentPage() {
   const id = window.location.hash.replace(/^#\/?/, "").split("?")[0];
@@ -78,6 +102,74 @@ function showSafety(safety) {
   badge.hidden = false;
 }
 
+// Every state-changing action passes through here. It states the current value,
+// the new value and the consequence in the owner's language, and nothing is
+// committed by a control toggling under the pointer.
+//
+// `run` is the whole action, captured before any network call, so a 401 mid-way
+// loses nothing: the prompt reopens with the same action once the key is back.
+export function confirmAction({ title, detail, consequence, confirmLabel, run }) {
+  const overlay = el("confirm");
+  const error = el("confirm-error");
+  const ok = el("confirm-ok");
+  const cancel = el("confirm-cancel");
+  const opener = document.activeElement;
+  beginEditing();
+
+  return new Promise((resolve) => {
+    let settled = false;
+
+    function close(result) {
+      if (settled) return;
+      settled = true;
+      overlay.hidden = true;
+      el("shell").inert = false;
+      endEditing();
+      ok.replaceWith(ok.cloneNode(true));
+      cancel.replaceWith(cancel.cloneNode(true));
+      document.removeEventListener("keydown", onKey);
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+      resolve(result);
+    }
+
+    function onKey(event) {
+      if (event.key === "Escape") close(false);
+    }
+
+    el("confirm-title").textContent = title;
+    el("confirm-detail").textContent = detail || "";
+    el("confirm-consequence").textContent = consequence || "";
+    error.textContent = "";
+    error.hidden = true;
+    el("confirm-ok").textContent = confirmLabel || "Confirm";
+    el("shell").inert = true;
+    overlay.hidden = false;
+
+    el("confirm-cancel").addEventListener("click", () => close(false));
+    el("confirm-ok").addEventListener("click", async () => {
+      const button = el("confirm-ok");
+      button.disabled = true;
+      try {
+        await run();
+        close(true);
+      } catch (failure) {
+        button.disabled = false;
+        if (failure instanceof api.ApiError && failure.status === 401) {
+          // Hold the action so the owner does not retype anything, then unlock.
+          state.resume = { title, detail, consequence, confirmLabel, run };
+          close(false);
+          showLogin(failure.message);
+          return;
+        }
+        error.textContent = explainWrite(failure);
+        error.hidden = false;
+      }
+    });
+    document.addEventListener("keydown", onKey);
+    el("confirm-ok").focus();
+  });
+}
+
 // The unlock prompt is modal: what is behind it is emptied, inert and unread.
 function showLogin(message) {
   state.generation += 1;
@@ -111,6 +203,21 @@ function explain(error) {
   return `Could not refresh (${error.message}). Showing what was loaded last.`;
 }
 
+// A write's failure belongs beside the control that caused it, in the owner's
+// words. The server returns {"detail": str} only for its own error types, so a
+// missing detail must still produce a sentence.
+export function explainWrite(error) {
+  if (!(error instanceof api.ApiError)) return "Something went wrong while saving.";
+  if (error.status === 0) return error.message;
+  if (error.status === 409) {
+    return error.message || "Someone changed this while you were editing. Reload and try again.";
+  }
+  if (error.status === 422) return error.message || "That value was not accepted.";
+  if (error.status === 404) return error.message || "That is no longer there. Reload the page.";
+  if (error.status === 503) return "No deployment owner is set up yet.";
+  return error.message || `The change was refused (${error.status}).`;
+}
+
 // quiet: a timed refresh. It neither dims the page nor replays the entry animation.
 async function render({ quiet = false } = {}) {
   state.generation += 1;
@@ -133,6 +240,13 @@ async function render({ quiet = false } = {}) {
     if (!state.versionShown) {
       state.versionShown = true;
       showVersion();
+    }
+    if (state.resume) {
+      const pending = state.resume;
+      state.resume = null;
+      confirmAction(pending).then((done) => {
+        if (done) render();
+      });
     }
     showBanner(null);
   } catch (error) {
@@ -251,7 +365,11 @@ function boot() {
   });
   window.addEventListener("hashchange", route);
   window.setInterval(() => {
-    const idle = document.visibilityState === "visible" && el("login").hidden && !readerIsBusy();
+    const idle =
+      document.visibilityState === "visible" &&
+      el("login").hidden &&
+      state.editing === 0 &&
+      !readerIsBusy();
     if (idle) render({ quiet: true });
   }, REFRESH_MS);
   route();

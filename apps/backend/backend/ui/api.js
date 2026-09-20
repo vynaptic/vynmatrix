@@ -1,5 +1,7 @@
-// Read-only client for /api/ui. The admin key lives in sessionStorage for this
-// tab only, travels solely in the X-Admin-Key header, and is dropped on any 401.
+// Client for /api/ui and the owner control routes. The admin key lives in
+// sessionStorage for this tab only, travels solely in the X-Admin-Key header,
+// and is dropped on any 401. Writes are fetch-based because the page's CSP sets
+// form-action 'none' -- a native form submission cannot leave this document.
 
 const STORAGE_KEY = "vynmatrix.adminKey";
 
@@ -48,13 +50,35 @@ export async function get(path, params = {}) {
   for (const [name, value] of Object.entries(params)) {
     if (value !== null && value !== undefined) url.searchParams.set(name, String(value));
   }
-  const headers = { Accept: "application/json" };
+  return request(url, { method: "GET" });
+}
+
+// A state-changing call. `path` is absolute so the two routes that already own
+// the owner profile and broker accounts (/owner, /broker-accounts/:id) can be
+// reused rather than mirrored under /api/ui.
+export async function send(method, path, body) {
+  const url = new URL(path, window.location.origin);
+  return request(url, {
+    method,
+    body: JSON.stringify(body),
+    extraHeaders: { "Content-Type": "application/json" },
+  });
+}
+
+async function request(url, { method, body, extraHeaders = {} }) {
+  const headers = { Accept: "application/json", ...extraHeaders };
   const key = read() || volatileKey;
   if (key) headers["X-Admin-Key"] = key;
 
   let response;
   try {
-    response = await fetch(url, { headers, cache: "no-store", credentials: "omit" });
+    response = await fetch(url, {
+      method,
+      headers,
+      body,
+      cache: "no-store",
+      credentials: "omit",
+    });
   } catch {
     throw new ApiError(0, "The platform is not answering. Check that it is running.");
   }
@@ -62,15 +86,15 @@ export async function get(path, params = {}) {
     clearKey();
     throw new ApiError(401, "That admin key was not accepted.");
   }
-  let body = null;
+  let payload = null;
   try {
-    body = await response.json();
+    payload = await response.json();
   } catch {
-    body = null;
+    payload = null;
   }
   if (!response.ok) {
-    const detail = body && typeof body.detail === "string" ? body.detail : null;
+    const detail = payload && typeof payload.detail === "string" ? payload.detail : null;
     throw new ApiError(response.status, detail);
   }
-  return body;
+  return payload;
 }
