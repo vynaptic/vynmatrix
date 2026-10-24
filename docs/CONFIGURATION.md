@@ -76,6 +76,10 @@ SECRETS_BACKEND=db, BACKEND_ALLOW_ANON=false, EXECUTION_MODE=paper, RUN_MODE=pap
 and EXECUTION_ENGINE_ALLOW_LIVE=false are fixed launch inputs. No global broker
 trading key or caller-selected owner is accepted as execution authority.
 
+TYPESAFE_API_KEY is a secret used only by the market-data ingestor's adverse-news
+classification job. It is never logged and has no default; the job refuses to run
+without it.
+
 ## Snapshots, parsing, and readiness
 
 Long-lived processes validate configuration once at composition time and retain
