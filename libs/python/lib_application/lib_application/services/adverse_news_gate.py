@@ -19,8 +19,8 @@ Rules (design spec sections 5.2, 7 and 8):
 * Admissibility: each selected classification passes the validator at ``T``,
   the pinned model was released on or before ``T``, and it was classified no
   later than ``T + deadline``.
-* Completeness: every article a covering record returned is skipped, has a
-  selected classification, or is provably outside the cutoff or window.
+* Completeness: every article a covering record returned is skipped or has a
+  selected, validated classification under the policy versions.
 
 A validation failure blocks only that instrument, with ``news_evidence_invalid``.
 """
@@ -37,6 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from lib_application.db.models import EquityObservation, EquityObservationValue
+from lib_application.services.adverse_news_observations import NEWS_COVERAGE_FACTOR_VERSION
 from lib_application.services.equity_lineage import EquityObservationAuthorityError
 from lib_application.services.equity_optional_factor_sources import (
     OptionalFactorEvidenceValidationError,
@@ -63,7 +64,6 @@ from lib_strategy.equity_optional_factors import (
 
 logger = get_logger(__name__)
 
-NEWS_COVERAGE_FACTOR_VERSION: Final = "news-coverage-v1"
 _NEWS_EVENT_KIND: Final = ADVERSE_NEWS_GATE_CONTRACT.observation_kind.value
 _NEWS_COVERAGE_KIND: Final = NEWS_COVERAGE_GATE_CONTRACT.observation_kind.value
 _OBSERVED: Final = "observed"
@@ -230,14 +230,7 @@ def resolve_quality_compounder_adverse_news_gate(
             policy=policy,
             provider_authority_policy=provider_authority_policy,
         )
-        _check_completeness(
-            session,
-            ledger=ledger,
-            coverage=coverage,
-            selected_articles=selected,
-            cutoff=cutoff,
-            policy=policy,
-        )
+        _check_completeness(ledger=ledger, coverage=coverage, selected_articles=selected)
         results[instrument_id] = ledger.result()
         logger.info(
             "adverse_news_gate.resolved",
@@ -445,62 +438,24 @@ def _admitted_verdict(
 
 
 def _check_completeness(
-    session: Session,
     *,
     ledger: _InstrumentLedger,
     coverage: Sequence[_Coverage],
     selected_articles: frozenset[str],
-    cutoff: datetime,
-    policy: AdverseNewsGatePolicy,
 ) -> None:
-    """Require a selected classification for every counted, unskipped article."""
-    window_start = cutoff - timedelta(days=policy.lookback_days)
+    """Require a skip or a selected classification for every returned article.
+
+    Coverage counts only articles available by ``T`` (spec section 7), so the
+    provider adapter must not list later ones. Nothing excuses a listed article:
+    another version, a later correction, or a column outside the window all
+    leave it missing, which fails the instrument closed.
+    """
     for record in coverage:
         for article_id in sorted(record.returned - record.skipped - selected_articles):
-            if not _outside_cutoff(
-                session,
-                instrument_id=ledger.instrument_id,
-                article_id=article_id,
-                cutoff=cutoff,
-                window_start=window_start,
-            ):
-                ledger.invalidate(
-                    record.observation_id,
-                    f"coverage counts article {article_id!r} without a selected classification",
-                )
-
-
-def _outside_cutoff(
-    session: Session,
-    *,
-    instrument_id: int,
-    article_id: str,
-    cutoff: datetime,
-    window_start: datetime,
-) -> bool:
-    """Return whether stored evidence shows the article is not counted at ``T``.
-
-    The article is outside when it first became available after ``T`` or was
-    published at or before the window start. With no classification at all its
-    availability cannot be proven, so it is treated as counted (fail closed).
-    """
-    prefix = f"{article_id}{_IDENTITY_SEPARATOR}{instrument_id}{_IDENTITY_SEPARATOR}"
-    observations = session.scalars(
-        select(EquityObservation).where(
-            EquityObservation.observation_kind == _NEWS_EVENT_KIND,
-            EquityObservation.instr_id == instrument_id,
-            EquityObservation.disposition == _OBSERVED,
-            EquityObservation.source_record_identity.startswith(prefix, autoescape=True),
-        )
-    ).all()
-    return any(
-        _article_id(str(item.source_record_identity)) == article_id
-        and (
-            (item.available_at is not None and _utc(item.available_at) > cutoff)
-            or _utc(item.event_at) <= window_start
-        )
-        for item in observations
-    )
+            ledger.invalidate(
+                record.observation_id,
+                f"coverage counts article {article_id!r} without a selected classification",
+            )
 
 
 def _latest_revisions(observations: Iterable[EquityObservation]) -> tuple[EquityObservation, ...]:
@@ -581,7 +536,6 @@ def _utc(value: datetime) -> datetime:
 
 
 __all__ = [
-    "NEWS_COVERAGE_FACTOR_VERSION",
     "AdverseNewsGateError",
     "AdverseNewsGatePolicy",
     "AdverseNewsGateResult",

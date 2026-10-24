@@ -18,6 +18,7 @@ from lib_application.db.models import (
     Instrument,
 )
 from lib_application.services.adverse_news_observations import (
+    NEWS_COVERAGE_FACTOR_VERSION,
     AdverseNewsPersistenceError,
     ProviderLineage,
     TypeSafeExchange,
@@ -323,7 +324,7 @@ def test_coverage_zero_articles_is_valid() -> None:
         result = validate_optional_factor_evidence(
             session,
             contract=NEWS_COVERAGE_GATE_CONTRACT,
-            factor_version="news-coverage-v1",
+            factor_version=NEWS_COVERAGE_FACTOR_VERSION,
             observation_id=observation_id,
             cutoff=_CUTOFF + timedelta(hours=7),
             provider_authority_policy=_authority(),

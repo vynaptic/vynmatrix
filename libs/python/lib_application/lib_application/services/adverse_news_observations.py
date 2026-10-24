@@ -42,6 +42,7 @@ _MISSING_DATA_POLICY: Final = "fail-closed"
 _NEWS_EVENT_KIND: Final = "news_event"
 _NEWS_COVERAGE_KIND: Final = "news_coverage"
 _DISPOSITION: Final = "observed"
+NEWS_COVERAGE_FACTOR_VERSION: Final = "news-coverage-v1"
 # Matches the Numeric(38, 18) column so stored, hashed and replayed values agree.
 _DECIMAL_QUANTUM: Final = Decimal(1).scaleb(-18)
 
@@ -325,6 +326,7 @@ def persist_news_coverage(
 
 
 __all__ = [
+    "NEWS_COVERAGE_FACTOR_VERSION",
     "AdverseNewsPersistenceError",
     "ProviderLineage",
     "TypeSafeExchange",

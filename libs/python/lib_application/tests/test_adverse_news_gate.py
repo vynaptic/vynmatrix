@@ -362,15 +362,24 @@ def test_skipped_article_is_not_missing() -> None:
     assert result.reason is None
 
 
-def test_article_available_after_cutoff_is_outside_not_missing() -> None:
+def test_article_available_after_cutoff_is_not_selected() -> None:
     with _session() as session:
         late = _classify(
             session, article_id="art-late", available_after=timedelta(days=10, hours=1)
         )
-        coverage = _coverage(session, ["art-late"])
+        coverage = _coverage(session, [])
         result = _resolve(session)[1]
     assert result == AdverseNewsGateResult(None, (coverage,), 0)
     assert late not in result.observation_ids
+
+
+def test_listed_article_available_after_cutoff_is_invalid() -> None:
+    # Coverage counts only articles available by T; listing a later one is not excused.
+    with _session() as session:
+        _classify(session, article_id="art-late", available_after=timedelta(days=10, hours=1))
+        _coverage(session, ["art-late"])
+        result = _resolve(session)[1]
+    assert result.reason is GateReason.NEWS_EVIDENCE_INVALID
 
 
 def test_other_question_set_version_is_skipped_not_invalid(
@@ -409,11 +418,23 @@ def test_reclassification_under_new_version_does_not_hide_original_on_replay(
     assert upgraded.observation_ids == tuple(sorted((newer, coverage)))
 
 
-def _correct_after_cutoff(session: Session, original_id: str) -> str:
-    """Write a provider correction (revision 2) that becomes available after the cutoff."""
+def _rewrite(
+    session: Session,
+    original_id: str,
+    *,
+    available_at: datetime,
+    overrides: dict[str, object],
+    revision: int,
+    supersedes: str | None,
+    record_identity: str | None = None,
+) -> str:
+    """Write a variant of a stored classification directly through the observation writer.
+
+    Task 5 has no correction API and its persist function only accepts the pinned
+    model, so corrections and other-model records are built here from stored rows.
+    """
     original = session.get(EquityObservation, original_id)
     assert original is not None
-    corrected_at = _CUTOFF + timedelta(days=1)
     values: list[EquityObservationValueInput] = []
     for row in session.scalars(
         sa.select(EquityObservationValue).where(
@@ -422,9 +443,9 @@ def _correct_after_cutoff(session: Session, original_id: str) -> str:
     ):
         value: object
         if row.field_name == "source_available_at":
-            value = corrected_at
-        elif row.field_name == "negative_development_probability":
-            value = Decimal("0.125")
+            value = available_at
+        elif (row.field_name, row.ordinal) in {(key, 0) for key in overrides}:
+            value = overrides[row.field_name]
         else:
             value = {
                 "decimal": row.decimal_value,
@@ -442,7 +463,7 @@ def _correct_after_cutoff(session: Session, original_id: str) -> str:
         )
     ordered = tuple(sorted(values, key=lambda item: (item.field_name, item.ordinal)))
     lineage = _lineage(ADVERSE_NEWS_GATE_CONTRACT, "article/art-1")
-    correction = persist_equity_observation(
+    written = persist_equity_observation(
         session,
         EquityObservationSubmission(
             provider=lineage.provider,
@@ -451,8 +472,8 @@ def _correct_after_cutoff(session: Session, original_id: str) -> str:
             dataset_version=lineage.dataset_version,
             tool_version=lineage.tool_version,
             source_identity=lineage.source_identity,
-            source_revision="source-content-sha256-correction",
-            retrieved_at=corrected_at,
+            source_revision=f"source-content-sha256-rewrite-{revision}",
+            retrieved_at=available_at,
             timestamp_semantics=lineage.timestamp_semantics,
             adjustment_policy="not-applicable",
             entitlement_scope=lineage.entitlement_scope,
@@ -461,35 +482,122 @@ def _correct_after_cutoff(session: Session, original_id: str) -> str:
             artifact_content_sha256="e" * 64,
             instrument_id=1,
             observation_kind="news_event",
-            source_record_identity=str(original.source_record_identity),
+            source_record_identity=record_identity or str(original.source_record_identity),
             event_at=_PUBLISHED,
-            available_at=corrected_at,
+            available_at=available_at,
             disposition="observed",
             normalized_content_sha256=canonical_json_hash([item.payload() for item in ordered]),
             values=ordered,
-            revision=2,
-            supersedes_observation_id=original_id,
+            revision=revision,
+            supersedes_observation_id=supersedes,
         ),
     )
-    return str(correction.observation_id)
+    session.commit()
+    return str(written.observation_id)
+
+
+def _correct(session: Session, original_id: str, *, available_at: datetime) -> str:
+    """Write a provider correction (revision 2) whose answers are no longer adverse."""
+    return _rewrite(
+        session,
+        original_id,
+        available_at=available_at,
+        overrides={"negative_development_probability": Decimal("0.125")},
+        revision=2,
+        supersedes=original_id,
+    )
 
 
 def test_provider_correction_after_cutoff_keeps_original() -> None:
     with _session() as session:
         original = _classify(session, answers=_ADVERSE)
         session.commit()
-        correction = _correct_after_cutoff(session, original)
+        correction = _correct(session, original, available_at=_CUTOFF + timedelta(days=1))
         coverage = _coverage(session, ["art-1"])
         result = _resolve(session)[1]
     assert correction != original
     assert result.reason is GateReason.MATERIAL_ADVERSE_NEWS
     assert result.observation_ids == tuple(sorted((original, coverage)))
+    assert correction not in result.observation_ids
+
+
+def test_provider_correction_before_cutoff_replaces_original() -> None:
+    with _session() as session:
+        original = _classify(session, answers=_ADVERSE)
+        session.commit()
+        correction = _correct(session, original, available_at=_CUTOFF - timedelta(days=1))
+        coverage = _coverage(session, ["art-1"])
+        result = _resolve(session)[1]
+    assert result.reason is None
+    assert result.observation_ids == tuple(sorted((correction, coverage)))
+    assert original not in result.observation_ids
+
+
+def test_other_model_version_is_skipped() -> None:
+    with _session() as session:
+        pinned = _classify(session, answers=_CLEAR)
+        session.commit()
+        other = _rewrite(
+            session,
+            pinned,
+            available_at=_PUBLISHED + timedelta(minutes=2),
+            overrides={
+                "model_version": "1.15.0",
+                "negative_development_probability": Decimal("0.875"),
+            },
+            revision=1,
+            supersedes=None,
+            record_identity=f"art-1|1|{_POLICY.question_set_version}|1.15.0",
+        )
+        coverage = _coverage(session, ["art-1"])
+        replayed = _resolve(session)[1]
+        upgraded = _resolve(session, policy=replace(_POLICY, model_version="1.15.0"))[1]
+    assert replayed == AdverseNewsGateResult(None, tuple(sorted((pinned, coverage))), 0)
+    assert other not in replayed.observation_ids
+    assert upgraded.reason is GateReason.MATERIAL_ADVERSE_NEWS
+    assert upgraded.observation_ids == tuple(sorted((other, coverage)))
+
+
+def test_other_version_correction_does_not_excuse_missing_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Reviewer probe: art-1 has only a v0 record and a v0 correction available after T.
+    with _session() as session:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                observations_module,
+                "ADVERSE_NEWS_QUESTION_SET_VERSION",
+                "adverse-news-questions-v0",
+            )
+            older = _classify(session, answers=_ADVERSE)
+        session.commit()
+        _correct(session, older, available_at=_CUTOFF + timedelta(days=1))
+        _coverage(session, ["art-1"])
+        result = _resolve(session)[1]
+    assert result.reason is GateReason.NEWS_EVIDENCE_INVALID
+
+
+def test_column_value_mismatch_excluded_by_prefilter_fails_closed() -> None:
+    # The writer cannot produce a column/value mismatch, so the column is updated
+    # directly: the stored source_available_at value stays before T, the column says after.
+    with _session() as session:
+        classification = _classify(session, answers=_CLEAR)
+        session.commit()
+        session.execute(
+            sa.update(EquityObservation)
+            .where(EquityObservation.observation_id == classification)
+            .values(available_at=(_CUTOFF + timedelta(days=1)).replace(tzinfo=None))
+        )
+        _coverage(session, ["art-1"])
+        result = _resolve(session)[1]
+    assert result.reason is GateReason.NEWS_EVIDENCE_INVALID
+    assert classification not in result.observation_ids
 
 
 def test_article_outside_window_is_skipped() -> None:
     with _session() as session:
         stale = _classify(session, article_id="art-old", published_at=_CUTOFF - timedelta(days=91))
-        coverage = _coverage(session, ["art-old"])
+        coverage = _coverage(session, [])
         result = _resolve(session)[1]
     assert result == AdverseNewsGateResult(None, (coverage,), 0)
     assert stale not in result.observation_ids
