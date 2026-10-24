@@ -9,6 +9,9 @@ Git history.
 
 ### Added
 
+- Adverse-news gate storage and classification for USQualityCompounder (inert;
+  migration 0111). The gate is not wired into the panel resolver and changes no
+  strategy behaviour.
 - `vmdev db release-strategy` releases one exact registered strategy version for
   paper, so a strategy other than the Swing canary can be bound and shown as
   Released. The evidence is a reviewed commit: the strategy's `config.json` must

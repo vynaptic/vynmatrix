@@ -194,7 +194,10 @@ Rules:
   Never send an empty list.
 - `article.body` is the provider's text with markup removed. If body plus state
   would exceed 24k tokens, keep the headline and the first paragraphs that fit.
-  Record `body_truncated = true`. Never cut mid-paragraph.
+  Record `body_truncated = true`. Cut at paragraph boundaries. If not even the
+  first paragraph fits, cut inside it at the last sentence end (`". "`,
+  `"? "`, `"! "`) at or before the limit, else at the last whitespace. Normalize
+  `"\r\n"` first. The body is never empty for non-empty input.
 - Leave out every other provider field: tags, other tickers, provider
   sentiment, and URLs. None of them helps a reader judge the questions.
 
@@ -352,7 +355,8 @@ Required values, canonically sorted by the contract helper:
 `negative_severity_probability` uses the existing `ordinal` column of
 `EquityObservationValue`. The question module checks it whenever it parses
 stored answers (`AdverseNewsAnswers.from_values`), so the generic validator
-stays unchanged. The check requires exactly four ordinal rows, 0–3, each in
+stays unchanged. Probabilities are stored quantized to 18 decimal places
+(`Numeric(38, 18)`). The check requires exactly four ordinal rows, 0–3, each in
 [0, 1], summing to 1 within 1e-6.
 
 The verdict is not stored. It is recomputed from the stored probabilities at
@@ -424,11 +428,19 @@ Timing:
 - **The final query runs after `T`.** A query that completes at or before `T`
   cannot see articles delivered close to `T`. So the last record covering `T`
   must complete after `T + 6 hours` and before the panel build deadline.
+- **Per-record window and timing.** Each coverage record admitted at `T` must
+  have a query window that reaches `T` and must complete in
+  `[T + 6 h, T + 72 h]`. In practice the quarter-end job re-queries the full
+  90-day window per instrument after `T`; earlier partial-window records alone
+  do not satisfy coverage.
 - **What it can count.** Only articles with provider `source_available_at <= T`
   count toward `returned_article_count`. Each one must either be classified or
   be skipped by the code filter. Skipped articles are listed in the coverage
   record's `skipped_article_identity` values, so a skip is never mistaken for a
-  missing classification.
+  missing classification. Every article listed in `returned_article_identity`
+  must be skipped or have a selected, validated classification. There is no
+  "outside the cutoff" exemption, so the provider adapter must list only
+  articles available by `T`.
 - **No lookahead.** A coverage record therefore has `source_available_at > T`
   by design. It reports facts about data available by `T`; it does not use
   later information. The gate resolver exempts coverage records from the
@@ -466,6 +478,10 @@ Each selected observation must then pass:
    2026-10-14 for `jev-1.14.0`.
 3. **Classified before the build.** `classified_at` is before the panel build
    and no later than `T + 72 hours`, the same deadline as coverage.
+
+Classifications are validated at cutoff `T`, so a provider correction
+available after `T` never displaces the original at `T`. Coverage records are
+validated at `T + 72 h`.
 
 Classifying after `T` with a model that was released before `T` adds no later
 information. The pinned model is the same artifact before and after `T`, and the
