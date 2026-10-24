@@ -350,8 +350,10 @@ Required values, canonically sorted by the contract helper:
 
 `required_digest_fields` is `_MODEL_TRANSFORM_DIGEST_FIELDS`.
 `negative_severity_probability` uses the existing `ordinal` column of
-`EquityObservationValue`. The validator gains one check for it: exactly four
-ordinal rows, 0–3, each in [0, 1], summing to 1 within 1e-6.
+`EquityObservationValue`. The question module checks it whenever it parses
+stored answers (`AdverseNewsAnswers.from_values`), so the generic validator
+stays unchanged. The check requires exactly four ordinal rows, 0–3, each in
+[0, 1], summing to 1 within 1e-6.
 
 The verdict is not stored. It is recomputed from the stored probabilities at
 every panel build, so the question module stays the one source of truth.
@@ -423,8 +425,10 @@ Timing:
   cannot see articles delivered close to `T`. So the last record covering `T`
   must complete after `T + 6 hours` and before the panel build deadline.
 - **What it can count.** Only articles with provider `source_available_at <= T`
-  count toward `returned_article_count`. Every such article must already be
-  classified.
+  count toward `returned_article_count`. Each one must either be classified or
+  be skipped by the code filter. Skipped articles are listed in the coverage
+  record's `skipped_article_identity` values, so a skip is never mistaken for a
+  missing classification.
 - **No lookahead.** A coverage record therefore has `source_available_at > T`
   by design. It reports facts about data available by `T`; it does not use
   later information. The gate resolver exempts coverage records from the
