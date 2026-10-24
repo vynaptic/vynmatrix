@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
@@ -40,10 +41,12 @@ from lib_strategy.data_authority import (
     ProviderAuthorityRule,
 )
 from lib_strategy.equity_optional_factors import (
+    ADVERSE_NEWS_GATE_CONTRACT,
     OPTIONAL_FACTOR_SLEEVES,
     OPTIONAL_FACTOR_SOURCE_CONTRACTS,
     OPTIONAL_FACTOR_TIMESTAMP_SCHEMA,
     OptionalFactorApplication,
+    OptionalFactorSourceContract,
     optional_factor_source_contract,
     optional_factor_source_registry_sha256,
 )
@@ -135,8 +138,9 @@ def _seed_optional(
     retrieval_is_availability: bool = False,
     model_input_sha256: str = "c" * 64,
     revision: int = 1,
+    contract: OptionalFactorSourceContract | None = None,
 ) -> tuple[str, int | None]:
-    contract = optional_factor_source_contract(sleeve_name)
+    contract = contract or optional_factor_source_contract(sleeve_name)
     observation_id = (
         _OBSERVATION_ID
         if sleeve_name == "news_sentiment"
@@ -254,6 +258,58 @@ def _seed_news(
         model_input_sha256=model_input_sha256,
         revision=revision,
     )
+
+
+def test_validator_requires_exactly_one_of_sleeve_or_contract() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        _seed_news(session)
+        common: dict[str, Any] = {
+            "factor_version": "news-sentiment-model-v1",
+            "observation_id": _OBSERVATION_ID,
+            "cutoff": _CUTOFF,
+            "provider_authority_policy": _authority(),
+            "expected_instrument_id": 1,
+        }
+        with pytest.raises(
+            OptionalFactorEvidenceValidationError,
+            match="exactly one of sleeve_name or contract is required",
+        ):
+            validate_optional_factor_evidence(
+                session,
+                sleeve_name="news_sentiment",
+                contract=optional_factor_source_contract("news_sentiment"),
+                **common,
+            )
+        with pytest.raises(
+            OptionalFactorEvidenceValidationError,
+            match="exactly one of sleeve_name or contract is required",
+        ):
+            validate_optional_factor_evidence(session, **common)
+
+
+def test_validator_accepts_gate_contract_for_news_event() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        _seed_optional(
+            session,
+            sleeve_name="adverse_news",
+            contract=ADVERSE_NEWS_GATE_CONTRACT,
+        )
+        observation_id = canonical_json_hash({"optional_sleeve": "adverse_news"})
+
+        result = validate_optional_factor_evidence(
+            session,
+            contract=ADVERSE_NEWS_GATE_CONTRACT,
+            factor_version="adverse-news-question-set-v1",
+            observation_id=observation_id,
+            cutoff=_CUTOFF,
+            provider_authority_policy=_authority(),
+            expected_instrument_id=1,
+        )
+
+    assert result.sleeve_name == "adverse_news"
+    assert result.source_contract_sha256 == ADVERSE_NEWS_GATE_CONTRACT.digest
 
 
 def test_optional_source_registry_is_complete_unique_and_content_addressed() -> None:

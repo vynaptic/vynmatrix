@@ -20,6 +20,7 @@ OPTIONAL_FACTOR_REGISTRY_VERSION = "sp500-optional-factor-registry-v1"
 OPTIONAL_FACTOR_SOURCE_SCHEMA = "equity-optional-factor-source-contract-v2"
 OPTIONAL_FACTOR_TIMESTAMP_SCHEMA = "equity-optional-factor-timestamp-semantics-v1"
 OPTIONAL_FACTOR_TRANSFORM_SCHEMA = "equity-optional-factor-model-transform-v1"
+OPTIONAL_GATE_REGISTRY_VERSION = "sp500-optional-gate-registry-v1"
 
 _FIELD_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _HOLDING_RANGE_LENGTH = 2
@@ -47,8 +48,14 @@ def _invalid(message: str) -> NoReturn:
 
 
 class OptionalFactorSleeve(StrEnum):
-    """Registered but disabled optional sleeves for the equity rotation model."""
+    """Registered but disabled optional sleeves for the equity rotation model.
 
+    ``ADVERSE_NEWS`` and ``ADVERSE_NEWS_COVERAGE`` are eligibility-gate sleeves
+    resolved only through the gate registry, never the factor registry.
+    """
+
+    ADVERSE_NEWS = "adverse_news"
+    ADVERSE_NEWS_COVERAGE = "adverse_news_coverage"
     ANALYST_REVISIONS = "analyst_revisions"
     CALL_SENTIMENT = "call_sentiment"
     CROWDING = "crowding"
@@ -64,6 +71,7 @@ class OptionalFactorObservationKind(StrEnum):
     CALL_TRANSCRIPT = "call_transcript"
     INSIDER_TRANSACTION = "insider_transaction"
     MACRO_RELEASE = "macro_release"
+    NEWS_COVERAGE = "news_coverage"
     NEWS_EVENT = "news_event"
     POSITIONING = "positioning"
 
@@ -106,6 +114,7 @@ class OptionalFactorApplication(StrEnum):
     """Portfolio layer where a future validated factor is allowed to operate."""
 
     CROSS_SECTIONAL_RANK = "cross_sectional_rank"
+    ELIGIBILITY_GATE = "eligibility_gate"
     MARKET_REGIME_OVERLAY = "market_regime_overlay"
 
 
@@ -113,6 +122,8 @@ class OptionalFactorAggregation(StrEnum):
     """Frozen economic transformation family required before activation."""
 
     CALL_DELTA = "call_delta"
+    CONFIRMED_MATERIAL_ADVERSE_EVENT = "confirmed_material_adverse_event"
+    COVERAGE_ATTESTATION = "coverage_attestation"
     CROWDING_RISK = "crowding_risk"
     DECAYED_ENTITY_SENTIMENT = "decayed_entity_sentiment"
     MACRO_REGIME = "macro_regime"
@@ -123,6 +134,7 @@ class OptionalFactorAggregation(StrEnum):
 class OptionalFactorNormalization(StrEnum):
     """Required comparison axis for a future factor implementation."""
 
+    ABSOLUTE_THRESHOLD = "absolute_threshold"
     MARKET_REGIME_CALIBRATION = "market_regime_calibration"
     SECTOR_INDUSTRY_ROBUST_Z = "sector_industry_robust_z"
     SECTOR_ROBUST_Z = "sector_robust_z"
@@ -545,6 +557,94 @@ def optional_factor_source_contract(
     return _invalid(f"optional factor sleeve {typed_sleeve.value!r} has no source contract")
 
 
+ADVERSE_NEWS_GATE_CONTRACT = OptionalFactorSourceContract(
+    sleeve=OptionalFactorSleeve.ADVERSE_NEWS,
+    observation_kind=OptionalFactorObservationKind.NEWS_EVENT,
+    event_at_semantic=OptionalFactorEventTimeSemantic.ORIGINAL_PUBLICATION,
+    event_value_field="original_published_at",
+    requires_instrument=True,
+    required_values=_values(
+        _value("about_company_probability", OptionalFactorValueType.DECIMAL),
+        _value("body_truncated", OptionalFactorValueType.BOOLEAN),
+        _value("classified_at", OptionalFactorValueType.TIMESTAMP),
+        _value("document_type", OptionalFactorValueType.TEXT),
+        _value("entity_relevance", OptionalFactorValueType.DECIMAL),
+        _value("language", OptionalFactorValueType.TEXT),
+        _value("negative_confirmed_probability", OptionalFactorValueType.DECIMAL),
+        _value("negative_development_probability", OptionalFactorValueType.DECIMAL),
+        _value("negative_severity_probability", OptionalFactorValueType.DECIMAL),
+        _value("new_development_probability", OptionalFactorValueType.DECIMAL),
+        _value("original_published_at", OptionalFactorValueType.TIMESTAMP),
+        _value("price_recap_probability", OptionalFactorValueType.DECIMAL),
+        _value("question_set_version", OptionalFactorValueType.TEXT),
+        _value("source_available_at", OptionalFactorValueType.TIMESTAMP),
+        *_model_transform_values(),
+    ),
+    required_digest_fields=_MODEL_TRANSFORM_DIGEST_FIELDS,
+    activation=OptionalFactorActivationSemantics(
+        application=OptionalFactorApplication.ELIGIBILITY_GATE,
+        direction=FactorDirection.LOWER_IS_BETTER,
+        aggregation=OptionalFactorAggregation.CONFIRMED_MATERIAL_ADVERSE_EVENT,
+        normalization=OptionalFactorNormalization.ABSOLUTE_THRESHOLD,
+        missing_policy=OptionalFactorMissingPolicy.INELIGIBLE,
+        maximum_source_age_days=90,
+        signal_half_life_days=90,
+        expected_holding_sessions=(40, 63),
+        minimum_evidence_count=1,
+        requires_model_transform=True,
+    ),
+)
+
+NEWS_COVERAGE_GATE_CONTRACT = OptionalFactorSourceContract(
+    sleeve=OptionalFactorSleeve.ADVERSE_NEWS_COVERAGE,
+    observation_kind=OptionalFactorObservationKind.NEWS_COVERAGE,
+    event_at_semantic=OptionalFactorEventTimeSemantic.MEASUREMENT_AS_OF,
+    event_value_field="query_window_end",
+    requires_instrument=True,
+    required_values=_values(
+        _value("provider_query_identity", OptionalFactorValueType.TEXT),
+        _value("query_window_end", OptionalFactorValueType.TIMESTAMP),
+        _value("query_window_start", OptionalFactorValueType.TIMESTAMP),
+        _value("returned_article_count", OptionalFactorValueType.INTEGER),
+        _value("source_available_at", OptionalFactorValueType.TIMESTAMP),
+    ),
+    activation=OptionalFactorActivationSemantics(
+        application=OptionalFactorApplication.ELIGIBILITY_GATE,
+        direction=FactorDirection.HIGHER_IS_BETTER,
+        aggregation=OptionalFactorAggregation.COVERAGE_ATTESTATION,
+        normalization=OptionalFactorNormalization.ABSOLUTE_THRESHOLD,
+        missing_policy=OptionalFactorMissingPolicy.INELIGIBLE,
+        maximum_source_age_days=3,
+        signal_half_life_days=3,
+        expected_holding_sessions=(40, 63),
+        requires_model_transform=False,
+    ),
+)
+
+OPTIONAL_GATE_SOURCE_CONTRACTS = tuple(
+    sorted(
+        (ADVERSE_NEWS_GATE_CONTRACT, NEWS_COVERAGE_GATE_CONTRACT),
+        key=lambda contract: contract.sleeve.value,
+    )
+)
+
+
+def optional_gate_source_contract(
+    sleeve: str | OptionalFactorSleeve,
+) -> OptionalFactorSourceContract:
+    """Resolve one registered eligibility-gate sleeve or fail closed."""
+
+    try:
+        typed_sleeve = OptionalFactorSleeve(sleeve)
+    except (TypeError, ValueError) as exc:
+        message = f"optional gate sleeve {sleeve!r} is not registered"
+        raise OptionalFactorContractError(message) from exc
+    for contract in OPTIONAL_GATE_SOURCE_CONTRACTS:
+        if contract.sleeve is typed_sleeve:
+            return contract
+    return _invalid(f"optional gate sleeve {typed_sleeve.value!r} has no source contract")
+
+
 def validate_optional_factor_timestamp_semantics(
     contract: OptionalFactorSourceContract,
     payload: object,
@@ -592,13 +692,29 @@ def optional_factor_source_registry_sha256() -> str:
     )
 
 
+def optional_gate_source_registry_sha256() -> str:
+    """Return one identity for the registered eligibility-gate source boundary."""
+
+    return canonical_json_hash(
+        {
+            "contracts": [contract.to_payload() for contract in OPTIONAL_GATE_SOURCE_CONTRACTS],
+            "registry_version": OPTIONAL_GATE_REGISTRY_VERSION,
+            "schema": OPTIONAL_FACTOR_SOURCE_SCHEMA,
+        }
+    )
+
+
 __all__ = [
+    "ADVERSE_NEWS_GATE_CONTRACT",
+    "NEWS_COVERAGE_GATE_CONTRACT",
     "OPTIONAL_FACTOR_REGISTRY_VERSION",
     "OPTIONAL_FACTOR_SLEEVES",
     "OPTIONAL_FACTOR_SOURCE_CONTRACTS",
     "OPTIONAL_FACTOR_SOURCE_SCHEMA",
     "OPTIONAL_FACTOR_TIMESTAMP_SCHEMA",
     "OPTIONAL_FACTOR_TRANSFORM_SCHEMA",
+    "OPTIONAL_GATE_REGISTRY_VERSION",
+    "OPTIONAL_GATE_SOURCE_CONTRACTS",
     "SP500_V1_DISABLED_OPTIONAL_SLEEVES",
     "OptionalFactorActivationSemantics",
     "OptionalFactorAggregation",
@@ -616,5 +732,7 @@ __all__ = [
     "OptionalFactorValueType",
     "optional_factor_source_contract",
     "optional_factor_source_registry_sha256",
+    "optional_gate_source_contract",
+    "optional_gate_source_registry_sha256",
     "validate_optional_factor_timestamp_semantics",
 ]

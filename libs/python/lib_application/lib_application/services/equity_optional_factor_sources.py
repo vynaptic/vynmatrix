@@ -20,6 +20,7 @@ from lib_application.services.equity_lineage import validate_equity_observation_
 from lib_strategy.data_authority import ProviderAuthorityPolicy
 from lib_strategy.equity_optional_factors import (
     OptionalFactorContractError,
+    OptionalFactorSourceContract,
     OptionalFactorValueType,
     optional_factor_source_contract,
     validate_optional_factor_timestamp_semantics,
@@ -53,7 +54,8 @@ class ValidatedOptionalFactorEvidence:
 def validate_optional_factor_evidence(  # noqa: PLR0912 - explicit evidence gate ledger
     session: Session,
     *,
-    sleeve_name: str,
+    sleeve_name: str | None = None,
+    contract: OptionalFactorSourceContract | None = None,
     factor_version: str | None,
     observation_id: str | None,
     cutoff: datetime,
@@ -62,7 +64,12 @@ def validate_optional_factor_evidence(  # noqa: PLR0912 - explicit evidence gate
 ) -> ValidatedOptionalFactorEvidence:
     """Admit one exact optional-factor source record through existing authority."""
 
-    contract = optional_factor_source_contract(sleeve_name)
+    if contract is None:
+        if sleeve_name is None:
+            _invalid("exactly one of sleeve_name or contract is required")
+        contract = optional_factor_source_contract(sleeve_name)
+    elif sleeve_name is not None:
+        _invalid("exactly one of sleeve_name or contract is required")
     semantic_version = _require_pinned_identity(factor_version, field_name="factor_version")
     if contract.requires_instrument and expected_instrument_id is None:
         _invalid(f"optional factor {contract.sleeve.value!r} requires an instrument identity")
