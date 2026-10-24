@@ -76,8 +76,10 @@ repos:
           - pandas>=2.0.0
           # SQLAlchemy 2.0 ships inline types; without it every Session/Result
           # value is Any and the ORM-heavy modules cannot be truly checked
-          # (this gap forced the old repositories.* mypy override).
-          - sqlalchemy>=2.0.51
+          # (this gap forced the old repositories.* mypy override). Pinned to
+          # docker/constraints.txt: a floating bound resolved SQLAlchemy 2.1,
+          # whose types the 2.0 runtime code was never checked against.
+          - sqlalchemy==2.0.51
 
   # Guardrail: disallow direct order placement in indicator strategies (signal-only architecture)
   - repo: local
