@@ -62,6 +62,13 @@ Git history.
 
 ### Fixed
 
+- The daily trade limit fails closed. When the execution log is wired but
+  today's trade count cannot be read, execution is now blocked as
+  `account_state_unavailable` instead of counting from the profile cache, whose
+  `daily_trades` defaults to zero and so disabled the limit. Paper may still
+  fall back to that cache when the broker is unreachable, but not past the count.
+- The Dashboard's "released" count now uses the bind gate's condition (an active
+  strategy row *and* an active version), matching the Strategies page.
 - `vmdev deploy` reports how many strategies are released, bound and switched on,
   read from the database after the deployment succeeds, instead of always
   printing "No strategy is released or bound" — which was false on an upgrade of

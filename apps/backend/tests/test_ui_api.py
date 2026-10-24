@@ -579,6 +579,20 @@ def test_a_newly_registered_strategy_is_listed_with_its_version_before_it_ever_t
     assert counts == {"catalogue": 3, "released": 1, "bound": 1, "active": 1}
 
 
+def test_the_dashboard_counts_released_exactly_as_the_bind_gate_does(
+    client: TestClient, factory: Any
+) -> None:
+    """is_active without an active version is not released on any page."""
+    with factory() as session:
+        session.get(Strategy, "ported_v1").is_active = True
+        session.commit()
+
+    counts = client.get("/api/ui/overview", headers=AUTH).json()["strategies"]
+    rows = client.get("/api/ui/strategies", headers=AUTH).json()["strategies"]
+    assert counts["released"] == 1
+    assert counts["released"] == sum(row["released"] for row in rows)
+
+
 # ------------------------------------------------------- readiness checklist
 
 

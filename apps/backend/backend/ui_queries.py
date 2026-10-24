@@ -409,12 +409,11 @@ def _strategy_counts(session: Session, owner_id: str) -> dict[str, int]:
         .group_by(UserStrategyBinding.is_active)
     ).all()
     by_state = {bool(active): int(count) for active, count in bindings}
-    released = session.execute(
-        select(func.count(Strategy.strategy_id)).where(Strategy.is_active.is_(True))
-    ).scalar_one()
     return {
         "catalogue": int(catalogue),
-        "released": int(released),
+        # The bind gate's condition, as on the Strategies page: is_active alone
+        # is not a release without an active version.
+        "released": len(_released_strategy_ids(session)),
         "bound": sum(by_state.values()),
         "active": by_state.get(True, 0),
     }

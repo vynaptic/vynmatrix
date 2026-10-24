@@ -30,6 +30,15 @@ logger = get_logger(__name__)
 _MAX_CURRENCY_CODE_LENGTH = 10
 
 
+class DailyTradeCountUnavailableError(RuntimeError):
+    """The execution log could not say how many trades ran today.
+
+    A ``RuntimeError``, so execution callers block the order as
+    ``account_state_unavailable``. It is never answered from the profile cache,
+    whose ``daily_trades`` is a stale counter that defaults to zero.
+    """
+
+
 class StateProvider:
     """Read-only adapter over broker + market-data lookups.
 
@@ -44,7 +53,8 @@ class StateProvider:
     Args:
         execution_log_store: Optional store exposing ``count_daily_trades``.
             When ``None`` the daily-trade counter falls back to the
-            ``profile['daily_trades']`` value.
+            ``profile['daily_trades']`` value. When wired, a failed count
+            raises :class:`DailyTradeCountUnavailableError` instead.
         market_data_provider: Optional object exposing
             ``async get_quote(symbol, *, user_id, environment)``.
     """
@@ -119,6 +129,9 @@ class StateProvider:
             )
             self._validate_account_state(state)
             return state  # noqa: TRY300 - exception boundary includes validation
+        except DailyTradeCountUnavailableError:
+            # Not a broker failure: the profile cache below would count zero trades.
+            raise
         except Exception:
             if not allow_profile_fallback:
                 msg = "Live mode blocked: broker account state unavailable"
@@ -137,17 +150,22 @@ class StateProvider:
         user_id: str,
         profile: dict[str, Any] | None = None,
     ) -> int:
-        """Return today's trade count for ``user_id`` (DB-backed when wired)."""
-        fallback = int((profile or {}).get("daily_trades", 0) or 0)
+        """Return today's trade count for ``user_id`` (DB-backed when wired).
+
+        Fails closed: when the execution log is wired but cannot be read, the
+        daily-trade limit cannot be enforced, so this raises
+        :class:`DailyTradeCountUnavailableError` rather than answering with the
+        profile's cached counter (which defaults to zero).
+        """
         if self._execution_log_store is None:
-            return fallback
+            return int((profile or {}).get("daily_trades", 0) or 0)
         try:
             return int(self._execution_log_store.count_daily_trades(user_id=user_id))
-        except Exception:
-            # Boundary catch: persistence failure must not block execution
-            # — fall back to the cached profile counter.
+        except Exception as exc:
+            # Boundary catch: any persistence failure means the count is unknown.
             logger.exception("Failed to load daily trade count", user_id=user_id)
-            return fallback
+            msg = "Execution blocked: the daily trade count is unavailable"
+            raise DailyTradeCountUnavailableError(msg) from exc
 
     @staticmethod
     def account_from_profile(

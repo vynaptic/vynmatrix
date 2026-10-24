@@ -25,6 +25,7 @@ from execution_engine.pending_orders import (
     PendingOrderRepository,
 )
 from execution_engine.risk_breach_store import RiskBreachStore
+from execution_engine.state_provider import DailyTradeCountUnavailableError
 from lib_application.db.models import (
     Base,
     Broker,
@@ -89,6 +90,25 @@ class _FakeExecutionLogStore:
     def count_daily_trades(self, *, user_id: str) -> int:
         self.calls.append(user_id)
         return self.count
+
+
+class _FailingExecutionLogStore:
+    def count_daily_trades(self, *, user_id: str) -> int:
+        msg = f"database unavailable for {user_id}"
+        raise SQLAlchemyError(msg)
+
+
+# A complete, fresh profile cache: paper execution would accept it if the
+# failed count were allowed to fall back to it.
+_CACHED_PROFILE = {
+    "broker": "paper",
+    "broker_account_id": 1,
+    "base_ccy": "EUR",
+    "equity": 10_000.0,
+    "available_cash": 9_500.0,
+    "margin_used": 0.0,
+    "daily_trades": 0,
+}
 
 
 class _RecordingExecutionLogStore:
@@ -374,6 +394,31 @@ def test_engine_links_committed_execution_log_to_decision() -> None:
 
     assert finalized is result
     assert deduplicator.calls[0]["result_id"] == "execution-log-2"
+
+
+def test_a_failed_daily_trade_count_blocks_instead_of_counting_zero() -> None:
+    """The limit is enforced from the execution log; an unreadable log is not zero trades."""
+    engine = ExecutionEngine(
+        order_builder=OrderBuilder(),
+        execution_log_store=_FailingExecutionLogStore(),
+    )
+
+    with pytest.raises(DailyTradeCountUnavailableError, match="daily trade count"):
+        engine._get_daily_trade_count(user_id="user-1", profile=_CACHED_PROFILE)
+    # Paper may fall back to a profile cache when the *broker* fails, but not past
+    # the trade count: that cache's daily_trades is exactly the stale zero.
+    with pytest.raises(DailyTradeCountUnavailableError):
+        asyncio.run(
+            engine._get_account_state(
+                "user-1", _FakeBroker(), dict(_CACHED_PROFILE), allow_profile_fallback=True
+            )
+        )
+
+
+def test_without_an_execution_log_the_profile_count_is_the_only_source() -> None:
+    engine = ExecutionEngine(order_builder=OrderBuilder())
+
+    assert engine._get_daily_trade_count(user_id="user-1", profile={"daily_trades": 4}) == 4
 
 
 def test_engine_get_account_state_uses_execution_log_count() -> None:
