@@ -208,3 +208,40 @@ def test_digests_are_stable_and_exclude_secrets() -> None:
     assert inference_configuration_sha256() == inference_configuration_sha256()
     assert model_artifact_sha256("jev-1.14.0") != model_artifact_sha256("jev-1.13.0")
     assert "Bearer" not in json.dumps(adverse_news_request_body({}))
+
+
+def test_state_truncates_oversized_first_paragraph_at_sentence() -> None:
+    body = "Alpha beta gamma. " * 10_000
+    state, truncated = build_adverse_news_state(_COMPANY, _article(body=body))
+    out = state["article"]["body"]  # type: ignore[index]
+    assert truncated is True
+    assert out
+    assert len(out) <= MAX_BODY_CHARACTERS
+    assert out.endswith("gamma.")
+
+
+def test_state_truncates_oversized_unpunctuated_paragraph_at_whitespace() -> None:
+    body = "word " * 30_000
+    state, truncated = build_adverse_news_state(_COMPANY, _article(body=body))
+    out = state["article"]["body"]  # type: ignore[index]
+    assert truncated is True
+    assert out.endswith("word")
+    assert len(out) <= MAX_BODY_CHARACTERS
+
+
+def test_state_normalizes_crlf_paragraphs() -> None:
+    para = "x" * 1000
+    body = "\r\n\r\n".join([para] * 100)
+    state, truncated = build_adverse_news_state(_COMPANY, _article(body=body))
+    out = state["article"]["body"]  # type: ignore[index]
+    assert truncated is True
+    assert "\r" not in out
+    assert out.split("\n\n")[-1] == para
+
+
+def test_request_body_mutation_does_not_change_digest() -> None:
+    before = prompt_schema_sha256()
+    body = adverse_news_request_body({})
+    body["questions"]["about_company"]["criteria"]["true"] = "changed"  # type: ignore[index]
+    body["questions"]["negative_severity"]["criteria"][0] = "changed"  # type: ignore[index]
+    assert prompt_schema_sha256() == before

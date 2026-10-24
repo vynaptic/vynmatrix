@@ -12,6 +12,7 @@ earlier observations inadmissible for the new version.
 
 from __future__ import annotations
 
+import copy
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -180,14 +181,21 @@ def article_skip_reason(article: AdverseNewsArticle) -> str | None:
 
 
 def _truncate_body(body: str) -> tuple[str, bool]:
-    """Keep whole paragraphs only, cutting at a blank-line boundary."""
-    text = body.strip()
+    """Keep whole paragraphs; if the first alone is too long, cut at a sentence end."""
+    text = body.replace("\r\n", "\n").strip()
     if len(text) <= MAX_BODY_CHARACTERS:
         return text, False
     cut = text.rfind("\n\n", 0, MAX_BODY_CHARACTERS + 2)
-    if cut <= 0:
-        return "", True
-    return text[:cut].rstrip(), True
+    if cut > 0:
+        return text[:cut].rstrip(), True
+    window = text[:MAX_BODY_CHARACTERS]
+    sentence_end = max(window.rfind(mark) for mark in (". ", "? ", "! "))
+    if sentence_end > 0:
+        return window[: sentence_end + 1], True
+    whitespace = max(window.rfind(" "), window.rfind("\n"), window.rfind("\t"))
+    if whitespace > 0:
+        return window[:whitespace].rstrip(), True
+    return window, True
 
 
 def build_adverse_news_state(
@@ -221,7 +229,7 @@ def adverse_news_request_body(state: Mapping[str, object]) -> dict[str, object]:
     return {
         "model": ADVERSE_NEWS_MODEL,
         "state": dict(state),
-        "questions": {key: dict(value) for key, value in ADVERSE_NEWS_QUESTIONS.items()},
+        "questions": copy.deepcopy(dict(ADVERSE_NEWS_QUESTIONS)),
     }
 
 
