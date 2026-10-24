@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -347,3 +347,60 @@ def test_coverage_lists_returned_and_skipped_per_ordinal() -> None:
 def test_coverage_skipped_must_be_subset_of_returned() -> None:
     with _session() as session, pytest.raises(AdverseNewsPersistenceError, match="subset"):
         _coverage(session, ["a"], ["z"])
+
+
+@pytest.mark.parametrize("probability", [0.0012345678901234567, 3.141592653589793e-05])
+def test_probabilities_are_quantized_to_column_scale(probability: float) -> None:
+    response = _response()
+    response["answers"]["price_recap"]["noul"] = probability  # type: ignore[index]
+    exchange = _exchange(response)
+    with _session() as session:
+        observation_id = _classify(session, exchange=exchange)
+        session.commit()
+        stored = _values(session, observation_id, "price_recap_probability")[0]
+        assert stored.decimal_value is not None
+        assert Decimal(str(probability)).quantize(Decimal(1).scaleb(-18)) != 0
+        value_input = Decimal(str(probability)).quantize(Decimal(1).scaleb(-18))
+        assert value_input.as_tuple().exponent >= -18  # type: ignore[operator]
+        assert abs(stored.decimal_value - value_input) < Decimal("1e-15")
+        # SQLite NUMERIC is float-backed, so only same-session replay is asserted exactly.
+        assert _classify(session, exchange=exchange) == observation_id
+
+
+def test_coverage_identity_is_utc_normalized() -> None:
+    plus_two = timezone(timedelta(hours=2))
+
+    def identity(start: datetime, end: datetime) -> str:
+        with _session() as session:
+            observation_id = persist_news_coverage(
+                session,
+                lineage=_lineage(NEWS_COVERAGE_GATE_CONTRACT, "query/aaa"),
+                instrument_id=1,
+                query_window_start=start,
+                query_window_end=end,
+                completed_at=_CUTOFF + timedelta(hours=7),
+                provider_query_identity="query-1",
+                returned_article_ids=[],
+                skipped_article_ids=[],
+            )
+            row = session.get(EquityObservation, observation_id)
+            assert row is not None
+            return str(row.source_record_identity)
+
+    start, end = _CUTOFF - timedelta(days=90), _CUTOFF
+    assert identity(start, end) == identity(start.astimezone(plus_two), end.astimezone(plus_two))
+
+
+def test_coverage_requires_aware_window() -> None:
+    with _session() as session, pytest.raises(AdverseNewsPersistenceError, match="aware"):
+        persist_news_coverage(
+            session,
+            lineage=_lineage(NEWS_COVERAGE_GATE_CONTRACT, "query/aaa"),
+            instrument_id=1,
+            query_window_start=datetime(2025, 1, 1),
+            query_window_end=_CUTOFF,
+            completed_at=_CUTOFF + timedelta(hours=7),
+            provider_query_identity="query-1",
+            returned_article_ids=[],
+            skipped_article_ids=[],
+        )

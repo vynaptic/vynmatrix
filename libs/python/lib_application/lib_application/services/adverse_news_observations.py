@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Final, NoReturn
 
@@ -42,6 +42,8 @@ _MISSING_DATA_POLICY: Final = "fail-closed"
 _NEWS_EVENT_KIND: Final = "news_event"
 _NEWS_COVERAGE_KIND: Final = "news_coverage"
 _DISPOSITION: Final = "observed"
+# Matches the Numeric(38, 18) column so stored, hashed and replayed values agree.
+_DECIMAL_QUANTUM: Final = Decimal(1).scaleb(-18)
 
 
 class AdverseNewsPersistenceError(RuntimeError):
@@ -140,11 +142,19 @@ def _text(field: str, value: str) -> EquityObservationValueInput:
 
 
 def _decimal(field: str, probability: float, ordinal: int = 0) -> EquityObservationValueInput:
-    return EquityObservationValueInput(field, "decimal", Decimal(str(probability)), ordinal)
+    return EquityObservationValueInput(
+        field, "decimal", Decimal(str(probability)).quantize(_DECIMAL_QUANTUM), ordinal
+    )
 
 
 def _timestamp(field: str, value: datetime) -> EquityObservationValueInput:
     return EquityObservationValueInput(field, "timestamp", value)
+
+
+def _aware_utc(value: datetime, field: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        _invalid(f"{field} must be timezone-aware")
+    return value.astimezone(UTC)
 
 
 def _split_model(model: object) -> tuple[str, str]:
@@ -280,6 +290,8 @@ def persist_news_coverage(
         _invalid("coverage article identities must be unique")
     if not set(skipped) <= set(returned):
         _invalid("skipped articles must be a subset of returned articles")
+    query_window_start = _aware_utc(query_window_start, "query_window_start")
+    query_window_end = _aware_utc(query_window_end, "query_window_end")
     if query_window_end <= query_window_start:
         _invalid("query window must end after it starts")
     values = [
