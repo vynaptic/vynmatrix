@@ -64,6 +64,7 @@ This is the canonical documentation index.
 | Event-driven delivery and bounded pools design | [docs/superpowers/specs/2026-09-05-event-driven-delivery-bounded-pools-design.md](docs/superpowers/specs/2026-09-05-event-driven-delivery-bounded-pools-design.md) |
 | Owner UI design | [docs/superpowers/specs/2026-09-19-owner-ui-design.md](docs/superpowers/specs/2026-09-19-owner-ui-design.md) |
 | Deployment lifecycle design | [docs/superpowers/specs/2026-09-20-deployment-lifecycle-design.md](docs/superpowers/specs/2026-09-20-deployment-lifecycle-design.md) |
+| Paper strategy release design | [docs/superpowers/specs/2026-10-24-paper-strategy-release-design.md](docs/superpowers/specs/2026-10-24-paper-strategy-release-design.md) |
 | Deferred capacity work | [docs/SCALING.md](docs/SCALING.md) |
 | Pull-request review | [docs/REVIEWER_CHECKLIST.md](docs/REVIEWER_CHECKLIST.md) |
 | Script catalogue | [scripts/README.md](scripts/README.md) |

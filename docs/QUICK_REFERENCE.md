@@ -49,6 +49,10 @@ vmdev db bootstrap --owner-config owner.local.yaml
 vmdev db status
 vmdev db catalogue --check
 vmdev db catalogue --apply
+vmdev db release-strategy --strategy-id <id> --version <semver> --check
+vmdev db release-strategy --strategy-id <id> --version <semver> --apply --reason "<why>"
+vmdev db withdraw-strategy --strategy-id <id> --version <semver> --check
+vmdev db withdraw-strategy --strategy-id <id> --version <semver> --apply --reason "<why>"
 vmdev user show
 vmdev db migrate
 vmdev db backup backups/pre-upgrade.dump
@@ -62,7 +66,8 @@ together with the build, snapshot, record and verification stages. They read
 their connection strings from `.env` and resolve the container hostname to the
 published loopback listener themselves. Never put credentials in a command line.
 Bootstrap, catalogue behavior, backup/restore, and existing-database rules are
-defined in [DATABASE.md](DATABASE.md).
+defined in [DATABASE.md](DATABASE.md). What a paper release requires is in
+[STRATEGY_READINESS.md](STRATEGY_READINESS.md#from-a-shipped-file-to-a-visible-tradable-strategy).
 
 ## Runtime inspection
 

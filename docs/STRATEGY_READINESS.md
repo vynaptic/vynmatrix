@@ -51,10 +51,10 @@ owner UI:
    "Not released", because registration is deliberately fail-closed:
    `strategies.is_active` stays false.
 3. **Released, bound and switched on.** Release is a maintenance action, not a
-   CLI or UI action; the admin API refuses to bind a strategy whose row is
-   inactive or whose release is not active (HTTP 409). Binding, account,
-   instrument route, session coverage and the execution checks above remain
-   independent of every earlier step.
+   UI action; the admin API refuses to bind a strategy whose row is inactive or
+   whose release is not active (HTTP 409). Binding, account, instrument route,
+   session coverage and the execution checks above remain independent of every
+   earlier step.
 
 Once a strategy is bound, the owner UI's Strategies page shows a readiness
 checklist for each binding: released, mode, account connected, a signal worker
@@ -65,9 +65,54 @@ nothing.
 
 The maintenance canary action applies only to the exact eligible Swing release
 with paper mode and the live gate false. It enables no account/binding and does
-not generalize to another candidate. Use
+not generalize to another candidate; every other strategy uses the release
+below. Use
 [E2E_VERIFICATION_GUIDE.md](E2E_VERIFICATION_GUIDE.md) for its evidence and
 [DATABASE.md](DATABASE.md) for registration/activation boundaries.
+
+### Releasing a strategy for paper
+
+The evidence for a paper release is a reviewed decision in source control:
+
+1. In a pull request, set the strategy's `metadata.readiness` to
+   `READY_FOR_PAPER_TRADING` and its `metadata.decision` to
+   `KEEP_HIGH_PRIORITY` or `IMPROVE_THEN_VALIDATE`, and update its row in the
+   table above. To run it, also set `enabled` and its `environments`. Merge.
+2. Deploy that commit with `vmdev deploy` from a clean checkout. A deployment
+   built with any uncommitted or untracked file is recorded as dirty, and a
+   dirty deployment cannot prove which strategy source it ships.
+3. Preview, then release, with paper mode and the live gate false:
+
+   ~~~text
+   vmdev db release-strategy --strategy-id <id> --version <semver> --check
+   vmdev db release-strategy --strategy-id <id> --version <semver> --apply --reason "<why>"
+   ~~~
+
+4. The owner UI now shows the strategy as Released. Bind it to a paper account
+   and choose a mode, then name it in `STRATEGY_LIST`.
+
+The command refuses, and writes nothing, unless every check passes: the
+committed label and decision above, a registered row identical to the packaged
+release, no other released version of the strategy, and a finished deployment
+whose commit has the same strategy directory as the checkout and whose image tag
+is the one `.env` names. It records the reason, commit, `config.json` SHA-256,
+strategy directory tree and deployment ID in `api_audit_logs`. Swing's
+`E2E_PIPELINE_CANARY_ONLY` decision is never releasable. The check holds when
+the release is made: a later deployment that changes the strategy's source does
+not revoke it, so ship changed source as a new semver.
+
+To undo a release, set each binding to **Close only**, wait until it is flat,
+set it to **Off**, then run `vmdev db withdraw-strategy` with the same
+arguments. Withdrawal is refused while a binding is switched on, while the
+strategy's own fills leave a position open, or while any of its orders
+(including resting stop-loss and take-profit orders), executions, scoring
+decisions, rebalance plans or outbox events is unfinished; dead letters are
+reported, not blocking. The version returns to registered and can be released
+again. To upgrade, withdraw the old version before releasing the new one.
+
+A release changes no live authority. It writes only the strategy's two release
+columns and an audit row, and live execution still needs
+`EXECUTION_ENGINE_ALLOW_LIVE=true`, which this migration never grants.
 
 ## Backtrader migration
 

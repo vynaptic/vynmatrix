@@ -9,6 +9,22 @@ Git history.
 
 ### Added
 
+- `vmdev db release-strategy` releases one exact registered strategy version for
+  paper, so a strategy other than the Swing canary can be bound and shown as
+  Released. The evidence is a reviewed commit: the strategy's `config.json` must
+  say `READY_FOR_PAPER_TRADING` (or `LIVE_CANDIDATE`) with a keep decision, the
+  registered row must equal the packaged release, no other version may be
+  released, and the latest successful `vmdev deploy` must come from a clean
+  checkout whose commit has the same strategy directory. `--check` previews and
+  writes nothing; `--apply --reason` writes the two release columns and one
+  `api_audit_logs` row. `vmdev db withdraw-strategy` undoes it, and is refused
+  while a binding is switched on, while the strategy's own fills leave a
+  position open, or while any of its orders, executions, scoring decisions,
+  rebalance plans or outbox events is unfinished. Both refuse unless
+  `EXECUTION_MODE=paper` and `EXECUTION_ENGINE_ALLOW_LIVE=false`, and neither
+  touches an account, binding, credential or live gate. No shipped strategy is
+  labelled paper-ready yet, so none is releasable until a reviewed change
+  relabels it.
 - More than one strategy can trade the same account from the owner UI. A new
   binding is scoped to the instruments its strategy's release declares,
   resolved through the instrument catalogue, instead of to every instrument, so

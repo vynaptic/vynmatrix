@@ -13,6 +13,7 @@ import click
 import yaml
 
 from dev_cli.commands.db_canary import activate_canary
+from dev_cli.commands.db_release import release_strategy, withdraw_strategy
 from dev_cli.core.database_lifecycle import PlatformLifecycle
 from dev_cli.utils.helpers import enable_repository_libraries
 
@@ -88,6 +89,8 @@ def db() -> None:
 
 
 db.add_command(activate_canary)
+db.add_command(release_strategy)
+db.add_command(withdraw_strategy)
 
 
 @db.command()

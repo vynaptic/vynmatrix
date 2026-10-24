@@ -5,14 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from lib_application.db.models import ApiAuditLog, Strategy, StrategyVersion
+from lib_application.db.models import ApiAuditLog
 from lib_application.db.session import tenant_scope
 from lib_application.services.catalogue import StrategyRelease, lock_catalogue
 from lib_application.services.database_authority import require_maintenance_database_role
 from lib_application.services.deployment_owner import require_deployment_owner_id
+from lib_application.services.strategy_release import lock_registered_release
 
 
 @dataclass(frozen=True)
@@ -51,32 +51,7 @@ def activate_canary(
     lock_catalogue(session)
     release = source.release
     with tenant_scope(session, user_id=owner_id):
-        strategy = session.scalar(
-            select(Strategy)
-            .where(Strategy.strategy_id == release.strategy_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-        version = session.scalar(
-            select(StrategyVersion)
-            .where(
-                StrategyVersion.strategy_id == release.strategy_id,
-                StrategyVersion.semver == release.semver,
-            )
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-        if strategy is None or version is None:
-            msg = "Canary requires an existing exact registered strategy version"
-            raise ValueError(msg)
-        if (
-            strategy.strategy_name != release.strategy_name
-            or strategy.asset_class != release.asset_class
-            or version.default_params != release.default_params
-            or version.param_schema != release.param_schema
-        ):
-            msg = "Registered canary release differs from immutable packaged source"
-            raise ValueError(msg)
+        strategy, version = lock_registered_release(session, release)
         if version.status not in {"registered", "active"}:
             msg = "A retired canary release cannot be activated"
             raise ValueError(msg)

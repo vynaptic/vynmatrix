@@ -58,6 +58,20 @@ runtime selector, or execution authority. The narrow vmdev db activate-canary
 operation is development-only, requires paper mode and the live gate false, and
 does not establish an account or binding.
 
+vmdev db release-strategy is the general maintenance release of one exact
+registered version for paper. It sets strategies.is_active and the version's
+status to active and appends one api_audit_logs row, in one transaction under
+the catalogue lock. It requires paper mode and the live gate false, a committed
+paper-ready readiness label with a keep decision, a registered row identical to
+the packaged release, no other active version of the strategy, and a clean
+finished deployment whose commit ships the same strategy directory. vmdev db
+withdraw-strategy returns the version to registered and the strategy to
+inactive; it is refused while any binding for the strategy is switched on,
+while its canonical fills net to an open position on any account and
+instrument, or while any of its orders, executions, scoring decisions,
+rebalance plans or outbox events is unfinished. Neither command writes an account, binding, credential or live
+gate. Permanent retirement to deprecated remains a migration.
+
 ## Routine configuration changes
 
 Source-controlled config/instruments.yaml, config/brokers.yaml, and each

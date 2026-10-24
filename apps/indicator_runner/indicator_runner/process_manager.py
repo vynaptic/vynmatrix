@@ -31,6 +31,7 @@ from lib_common.runner_utils import (
     iter_strategy_dirs,
     load_strategy_config,
 )
+from lib_common.strategy_readiness import LIVE_READY_STATES, PAPER_READY_STATES
 from lib_data.watermark import WatermarkError
 
 from .panel_binding import (
@@ -58,8 +59,6 @@ _STRATEGY_STOP_GRACE_SECONDS = WORKER_STOP_BUDGET_SECONDS + 3.0
 
 _MAX_VALIDATION_ERRORS_SHOWN = 5
 DEV_DISCOVERY_ENV = "INDICATOR_ALLOW_DEV_DISCOVERY"
-_PAPER_READY_STATES = frozenset({"READY_FOR_PAPER_TRADING", "LIVE_CANDIDATE"})
-_LIVE_READY_STATES = frozenset({"LIVE_CANDIDATE"})
 
 
 @dataclass
@@ -334,9 +333,9 @@ class IndicatorRunner:
 
         readiness = str((config.get("metadata") or {}).get("readiness", "")).strip().upper()
         if run_mode == "live":
-            allowed = _LIVE_READY_STATES
+            allowed = LIVE_READY_STATES
         elif run_mode == "paper":
-            allowed = _PAPER_READY_STATES
+            allowed = PAPER_READY_STATES
         else:
             logger.error(
                 "Strategy %s declares unsupported runtime mode %r",
