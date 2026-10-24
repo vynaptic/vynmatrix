@@ -6,9 +6,11 @@
 fastapi==0.140.0
 # uvicorn with only the perf extras production uses: uvloop + httptools.
 # [standard] also drags watchfiles (--reload dev mode) and websockets,
-# neither of which any production code touches.
+# neither of which any production code touches. uvloop ships no Windows wheel
+# and refuses to build there; the marker keeps the Windows tooling install
+# working and is true on every Linux image, so the image closure is unchanged.
 uvicorn==0.51.0
-uvloop==0.22.1
+uvloop==0.22.1; sys_platform != "win32"
 httptools==0.8.0
 httpx==0.28.1
 sqlalchemy==2.0.51

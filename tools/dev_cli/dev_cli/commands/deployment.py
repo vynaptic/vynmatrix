@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -18,11 +17,11 @@ from typing import Any
 
 import click
 
+from dev_cli.core import private_files
 from dev_cli.core.deployment import checks, configuration, environment
 from dev_cli.utils.helpers import enable_repository_libraries
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
-_PRIVATE_MODE = 0o600
 _STATUS_MARK = {checks.OK: "ok  ", checks.WARN: "warn", checks.FAIL: "FAIL"}
 
 
@@ -33,13 +32,6 @@ def _echo(message: str) -> None:
 def _project_env() -> dict[str, str]:
     """``.env`` with the process environment on top, as every command here reads it."""
     return {**environment.load_env_file(PROJECT_ROOT / configuration.ENV_FILE), **os.environ}
-
-
-def _write_private(path: Path, content: str) -> None:
-    """Create an owner-only file, refusing to replace one that already exists."""
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _PRIVATE_MODE)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        stream.write(content)
 
 
 def _ask(value: str | None, prompt: str, *, default: str | None = None) -> str:
@@ -76,6 +68,7 @@ def _configuration_checks(root: Path, env: dict[str, str]) -> list[checks.Check]
     if (root / configuration.ENV_FILE).is_file():
         collected.extend(checks.check_values(env))
     collected.extend(checks.check_owner(root))
+    collected.extend(checks.check_bind_sources(root))
     return collected
 
 
@@ -104,6 +97,7 @@ def init(
     template = PROJECT_ROOT / configuration.ENV_EXAMPLE
     env_path = PROJECT_ROOT / configuration.ENV_FILE
     owner_path = PROJECT_ROOT / configuration.OWNER_FILE
+    created: list[Path] = []
     try:
         if update_only:
             _update(template, env_path)
@@ -128,17 +122,29 @@ def init(
             host=environment.CONTAINER_DATABASE_HOST,
             port=environment.DEFAULT_DB_PORT,
         )
-        _write_private(
+        private_files.create(
             env_path,
             environment.render_values(template.read_text(encoding="utf-8"), values),
         )
+        created.append(env_path)
         if owner_path.is_file():
             click.echo(f"{configuration.OWNER_FILE} already exists and was left untouched.")
         else:
-            _write_private(owner_path, configuration.render_owner_file(owner))
+            private_files.create(owner_path, configuration.render_owner_file(owner))
+            created.append(owner_path)
         _validate_written(env_path, owner_path)
     except (OSError, ValueError, RuntimeError) as exc:
-        raise click.ClickException(str(exc)) from exc
+        # A half-written installation would make the next `vmdev init` refuse
+        # because .env exists, so remove only what this run created.
+        for path in created:
+            path.unlink(missing_ok=True)
+        removed = (
+            f" (removed {', '.join(path.name for path in created)}; `vmdev init` can run again)"
+            if created
+            else ""
+        )
+        msg = f"{exc}{removed}"
+        raise click.ClickException(msg) from exc
     click.echo(
         f"Wrote {configuration.ENV_FILE} and {configuration.OWNER_FILE} with generated secrets.\n"
         "Both are private, owner-only and untracked: keep them out of commits and logs.\n"
@@ -164,7 +170,7 @@ def _update(template: Path, env_path: Path) -> None:
         environment.render_values(env_path.read_text(encoding="utf-8"), values),
         encoding="utf-8",
     )
-    os.chmod(env_path, _PRIVATE_MODE)  # noqa: PTH101 - Path.chmod has the same effect.
+    private_files.restrict(env_path)
     secrets_added = sorted(set(diff["missing"]) & set(configuration.SECRET_KEYS))
     click.echo(
         f"Added {len(diff['missing'])} key(s): {', '.join(diff['missing'])}."
@@ -182,7 +188,7 @@ def _validate_written(env_path: Path, owner_path: Path) -> None:
     BootstrapSettings.parse(environment.resolve_host_env(written))
     validate_owner_input(yaml.safe_load(owner_path.read_text(encoding="utf-8")))
     for path in (env_path, owner_path):
-        if stat.S_IMODE(path.stat().st_mode) & 0o077:
+        if not private_files.is_owner_only(path):
             msg = f"{path.name} must remain owner-only"
             raise RuntimeError(msg)
 

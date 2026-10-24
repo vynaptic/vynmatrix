@@ -357,6 +357,33 @@ def test_runtime_dependency_contract_accepts_exact_nonduplicated_pins(
     assert not report.findings
 
 
+def test_runtime_dependency_contract_accepts_the_windows_host_marker(
+    fake_repo: Path,
+) -> None:
+    """uvloop has no Windows wheel; the marker is true on every Linux image."""
+    _write_runtime_dependency_contract(fake_repo)
+    base = fake_repo / audit_module.RUNTIME_REQUIREMENTS_PATHS[0]
+    base.write_text("fastapi==0.110.0 ; sys_platform != 'win32'\n", encoding="utf-8")
+    report = audit_module.AuditReport()
+
+    audit_module.check_runtime_dependency_contract(fake_repo, report)
+
+    assert not report.findings
+
+
+def test_runtime_dependency_contract_rejects_a_marker_that_could_drop_an_image_pin(
+    fake_repo: Path,
+) -> None:
+    _write_runtime_dependency_contract(fake_repo)
+    base = fake_repo / audit_module.RUNTIME_REQUIREMENTS_PATHS[0]
+    base.write_text('fastapi==0.110.0; sys_platform == "darwin"\n', encoding="utf-8")
+    report = audit_module.AuditReport()
+
+    audit_module.check_runtime_dependency_contract(fake_repo, report)
+
+    assert any("unsupported environment marker" in finding.message for finding in report.errors)
+
+
 def test_runtime_dependency_contract_rejects_service_base_duplication(
     fake_repo: Path,
 ) -> None:

@@ -10,6 +10,7 @@ import yaml
 from click.testing import CliRunner
 
 from dev_cli.commands import deployment as command_module
+from dev_cli.core import private_files
 from dev_cli.core.bootstrap import BootstrapSettings, validate_owner_input
 from dev_cli.core.deployment import configuration, environment
 
@@ -124,6 +125,68 @@ def test_init_refuses_a_starting_equity_that_is_not_capital(project: Path) -> No
 
     assert result.exit_code != 0
     assert not (project / configuration.ENV_FILE).exists()
+
+
+def test_init_succeeds_on_windows_where_every_writable_file_reports_mode_0666(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows has no group/other bits; the owner-only ACL is what init checks."""
+    owner = "S-1-5-21-1004336348-1177238915-682003330-1001"
+    restricted: set[str] = set()
+
+    def read_sddl(path: Path) -> str:
+        if path.name in restricted:
+            return f"O:{owner}D:PAI(A;;FA;;;{owner})(A;;FA;;;SY)(A;;FA;;;BA)"
+        return f"O:{owner}D:AI(A;ID;FA;;;{owner})(A;ID;0x1200a9;;;BU)"
+
+    def write_dacl(path: Path, sddl: str) -> None:
+        assert sddl == f"D:P(A;;FA;;;{owner})(A;;FA;;;SY)(A;;FA;;;BA)"
+        restricted.add(path.name)
+        path.chmod(0o666)
+
+    monkeypatch.setattr(private_files, "_WINDOWS", True)
+    monkeypatch.setattr(private_files, "_read_sddl", read_sddl)
+    monkeypatch.setattr(private_files, "_write_dacl", write_dacl)
+
+    result = CliRunner().invoke(command_module.init, _ARGS)
+
+    assert result.exit_code == 0, result.output
+    assert restricted == {configuration.ENV_FILE, configuration.OWNER_FILE}
+
+
+def test_a_failed_init_removes_what_it_wrote_so_it_can_run_again(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(private_files, "is_owner_only", lambda _path: False)
+
+    failed = CliRunner().invoke(command_module.init, _ARGS)
+
+    assert failed.exit_code != 0
+    assert "must remain owner-only" in failed.output
+    assert "can run again" in failed.output
+    assert not (project / configuration.ENV_FILE).exists()
+    assert not (project / configuration.OWNER_FILE).exists()
+
+    monkeypatch.undo()
+    monkeypatch.setattr(command_module, "PROJECT_ROOT", project)
+    retried = CliRunner().invoke(command_module.init, _ARGS)
+
+    assert retried.exit_code == 0, retried.output
+
+
+def test_a_failed_init_never_removes_an_owner_profile_it_did_not_write(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner_path = project / configuration.OWNER_FILE
+    owner_path.write_text("unknown: 1\n", encoding="utf-8")
+    owner_path.chmod(0o600)
+
+    result = CliRunner().invoke(command_module.init, _ARGS)
+
+    assert result.exit_code != 0
+    assert "removed .env;" in result.output
+    assert not (project / configuration.ENV_FILE).exists()
+    assert owner_path.read_text(encoding="utf-8") == "unknown: 1\n"
 
 
 # ------------------------------------------------------------- closing message

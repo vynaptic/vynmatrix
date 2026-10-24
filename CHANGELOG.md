@@ -71,6 +71,21 @@ Git history.
 
 ### Fixed
 
+- A fresh install works on Windows. The constrained tooling install skips
+  `uvloop`, which has no Windows build; the Linux image still installs it, and
+  `vmdev audit` accepts only that host marker on a runtime pin. `vmdev init`
+  makes `.env` and `owner.local.yaml` owner-only with an access-control list
+  for the owner, SYSTEM and Administrators, instead of checking POSIX mode bits
+  that Windows always reports as `0666`. A failed `vmdev init` now removes the
+  files it wrote, so it can run again.
+- A fresh install on Linux, including a cloud VM, no longer breaks its first
+  upgrade. Docker Engine created the bind-mounted `.artifacts` as root, and the
+  next pre-upgrade snapshot could not be written; `vmdev` now creates it as the
+  deploying user before Compose creates a container.
+- `vmdev doctor` and the `vmdev deploy` preflight check that the Docker daemon
+  answers (`docker compose version` passed with it stopped), that Buildx is
+  installed and `DOCKER_BUILDKIT` does not switch BuildKit off, and that
+  `.artifacts` is writable, naming the `chown` that repairs a root-owned copy.
 - The daily trade limit fails closed. When the execution log is wired but
   today's trade count cannot be read, execution is now blocked as
   `account_state_unavailable` instead of counting from the profile cache, whose

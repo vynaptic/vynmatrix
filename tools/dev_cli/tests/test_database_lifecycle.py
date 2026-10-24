@@ -1,5 +1,6 @@
 """Container lifecycle stays bounded and preflight is free of side effects."""
 
+import os
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -113,3 +114,33 @@ def test_bootstrap_error_exposes_only_allowlisted_stage(tmp_path):
         PlatformLifecycle(tmp_path, configured(), run=run).command("run", "--rm", "bootstrap")
     assert "credential" not in str(exc.value)
     assert "secret-output" not in str(exc.value)
+
+
+@pytest.mark.parametrize("subcommand", ["up", "run", "create"])
+def test_bind_sources_exist_as_this_user_before_compose_creates_a_container(
+    tmp_path: Path, subcommand: str
+) -> None:
+    """Docker Engine on Linux would create a missing bind source owned by root."""
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append((tmp_path / ".artifacts").is_dir())
+        return CompletedProcess(command, 0, stdout="", stderr="")
+
+    PlatformLifecycle(tmp_path, configured(), run=run).command(subcommand, "application")
+
+    assert seen == [True]
+    if hasattr(os, "getuid"):
+        assert (tmp_path / ".artifacts").stat().st_uid == os.getuid()
+
+
+@pytest.mark.parametrize("subcommand", ["ps", "stop", "exec"])
+def test_commands_that_create_no_container_create_no_directory(
+    tmp_path: Path, subcommand: str
+) -> None:
+    def run(command, **kwargs):
+        return CompletedProcess(command, 0, stdout="", stderr="")
+
+    PlatformLifecycle(tmp_path, configured(), run=run).command(subcommand)
+
+    assert not (tmp_path / ".artifacts").exists()

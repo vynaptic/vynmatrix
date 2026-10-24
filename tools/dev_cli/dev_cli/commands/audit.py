@@ -300,8 +300,14 @@ BROKER_SEED_ROW_RE = re.compile(
     r"\(\s*'(?P<code>[^']+)'\s*,\s*'[^']+'\s*,\s*'(?P<payload>\{[^']+\})'\s*\)"
 )
 REQUIREMENT_PIN_RE = re.compile(
-    r"^\s*([A-Za-z0-9_.-]+)(?:\[[A-Za-z0-9_,.-]+\])?==([^\s;#]+)\s*(?:#.*)?$"
+    r"^\s*([A-Za-z0-9_.-]+)(?:\[[A-Za-z0-9_,.-]+\])?==([^\s;#]+)\s*"
+    r"(?:;\s*([^#]*?))?\s*(?:#.*)?$"
 )
+#: Environment markers a runtime pin may carry. Each one only excludes a
+#: developer host that no image is built for (uvloop has no Windows wheel), so
+#: the Linux image closure is unchanged. Any other marker could silently drop a
+#: pin from an image, so the audit rejects it.
+HOST_ONLY_REQUIREMENT_MARKERS = frozenset({'sys_platform != "win32"'})
 REQUIREMENT_NAME_RE = re.compile(r"^\s*([A-Za-z0-9_.-]+)")
 FORBIDDEN_MANDATORY_RUNTIME_PACKAGES = frozenset(
     {
@@ -1089,6 +1095,10 @@ def _read_pinned_requirements(path: Path) -> tuple[dict[str, str], list[str]]:
         match = REQUIREMENT_PIN_RE.fullmatch(line)
         if match is None:
             invalid.append(line)
+            continue
+        marker = re.sub(r"\s+", " ", match.group(3) or "").replace("'", '"')
+        if marker and marker not in HOST_ONLY_REQUIREMENT_MARKERS:
+            invalid.append(f"unsupported environment marker: {line}")
             continue
         name = _normalized_requirement_name(match.group(1))
         if name in pins:

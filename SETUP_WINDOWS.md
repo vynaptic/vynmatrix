@@ -17,7 +17,12 @@ Confirm the tools before cloning:
 python --version
 git --version
 docker compose version
+docker buildx version
+docker version --format '{{.Server.Version}}'
 ```
+
+Docker Desktop includes Compose and Buildx. The last command prints the Docker
+Engine version only while Docker Desktop is running.
 
 ## 2. Clone the repository
 
@@ -38,3 +43,8 @@ python -m pip install --upgrade pip
 If PowerShell blocks activation, use the execution-policy method approved for
 your machine. Keep `.venv-dev` active when using `vmdev`, pre-commit, or
 focused pytest checks.
+
+The constrained install in [SETUP.md](SETUP.md) step 1 skips `uvloop`, which
+has no Windows build; the Linux platform image still includes it. Windows has no owner-only file mode, so
+`vmdev init` gives `.env` and `owner.local.yaml` an access-control list that
+admits only you, SYSTEM and Administrators, and refuses to finish if it cannot.

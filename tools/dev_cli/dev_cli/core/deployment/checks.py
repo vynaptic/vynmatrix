@@ -8,6 +8,7 @@ runtime role or prints a secret's value.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dev_cli.core.database_lifecycle import CREATED_BIND_SOURCES
 from dev_cli.core.deployment import artefact, configuration, environment
 
 OK = "ok"
@@ -23,6 +25,10 @@ WARN = "warn"
 FAIL = "fail"
 _PLACEHOLDER = "CHANGE_ME_BEFORE_USE"
 _REQUIRED_PYTHON = (3, 11)
+#: A Docker CLI probe that hangs (Docker Desktop still starting) is a failure.
+_PROBE_TIMEOUT_SECONDS = 30
+#: ``DOCKER_BUILDKIT`` values the Docker CLI reads as false (Go's ParseBool).
+_BUILDKIT_DISABLED = frozenset({"0", "f", "false"})
 
 
 @dataclass(frozen=True)
@@ -163,8 +169,106 @@ def check_owner(root: Path) -> list[Check]:
     return [Check(name="owner:profile", status=OK, detail=f"{configuration.OWNER_FILE} is valid")]
 
 
-def check_prerequisites(*, run: Callable[..., Any] = subprocess.run) -> list[Check]:
-    """Docker, Compose and the interpreter the wheels were locked for."""
+def check_bind_sources(root: Path) -> list[Check]:
+    """Directories Compose bind-mounts must stay writable by the user who deploys.
+
+    Docker Engine on Linux creates a missing bind source as root. An
+    installation that started before ``vmdev`` created ``.artifacts`` itself can
+    hold a root-owned copy, and the next pre-upgrade snapshot cannot be written.
+    """
+    checks = []
+    for relative in CREATED_BIND_SOURCES:
+        path = root / relative
+        name = f"directory:{relative}"
+        if not path.exists():
+            checks.append(
+                Check(name=name, status=OK, detail=f"{relative} will be created by `vmdev deploy`")
+            )
+            continue
+        if not path.is_dir():
+            checks.append(
+                Check(
+                    name=name, status=FAIL, detail=f"{relative} is not a directory; move it aside"
+                )
+            )
+            continue
+        blocked = (
+            [path]
+            if not _writable(path)
+            else [
+                child for child in sorted(path.iterdir()) if child.is_dir() and not _writable(child)
+            ]
+        )
+        checks.append(
+            Check(
+                name=name,
+                status=FAIL if blocked else OK,
+                detail=(
+                    f"{relative} is writable"
+                    if not blocked
+                    else ", ".join(str(item.relative_to(root)) for item in blocked)
+                    + " cannot be written by this user, so a snapshot would fail; run "
+                    f'`sudo chown -R "$(id -u):$(id -g)" {relative}` in the repository'
+                ),
+            )
+        )
+    return checks
+
+
+def _writable(directory: Path) -> bool:
+    return os.access(directory, os.R_OK | os.W_OK | os.X_OK)
+
+
+def _probe(run: Callable[..., Any], command: Sequence[str]) -> str | None:
+    """Stdout of a Docker CLI probe that succeeded, or None if it failed or hung."""
+    try:
+        result = run(
+            list(command),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return str(result.stdout).strip() if result.returncode == 0 else None
+
+
+def _check_buildkit(run: Callable[..., Any], environ: Mapping[str, str]) -> Check:
+    """The image build uses ``--build-context`` and ``RUN --mount``: BuildKit only."""
+    buildx = _probe(run, ["docker", "buildx", "version"])
+    if buildx is None:
+        return Check(
+            name="docker:buildx",
+            status=FAIL,
+            detail=(
+                "docker buildx is missing; the image build needs BuildKit. Install "
+                "docker-buildx-plugin (Linux) or Docker Desktop (macOS, Windows)"
+            ),
+        )
+    if (environ.get("DOCKER_BUILDKIT") or "").strip().lower() in _BUILDKIT_DISABLED:
+        return Check(
+            name="docker:buildx",
+            status=FAIL,
+            detail=(
+                "DOCKER_BUILDKIT disables BuildKit, and the legacy builder cannot build "
+                "the image; unset DOCKER_BUILDKIT"
+            ),
+        )
+    words = buildx.split()
+    return Check(
+        name="docker:buildx",
+        status=OK,
+        detail=f"docker buildx {words[1] if len(words) > 1 else buildx}",
+    )
+
+
+def check_prerequisites(
+    *,
+    run: Callable[..., Any] = subprocess.run,
+    environ: Mapping[str, str] = os.environ,
+) -> list[Check]:
+    """Docker Engine, Compose, BuildKit and the interpreter the wheels were locked for."""
     checks = []
     version = sys.version_info[:2]
     checks.append(
@@ -182,18 +286,32 @@ def check_prerequisites(*, run: Callable[..., Any] = subprocess.run) -> list[Che
     if shutil.which("docker") is None:
         checks.append(Check(name="docker:available", status=FAIL, detail="docker is not on PATH"))
         return checks
-    result = run(
-        ["docker", "compose", "version", "--short"], capture_output=True, text=True, check=False
-    )
-    reachable = result.returncode == 0
+    compose = _probe(run, ["docker", "compose", "version", "--short"])
     checks.append(
         Check(
-            name="docker:available",
-            status=OK if reachable else FAIL,
+            name="docker:compose",
+            status=OK if compose else FAIL,
             detail=(
-                f"docker compose {str(result.stdout).strip()}"
-                if reachable
-                else "docker is installed but not answering; start Docker Desktop or the daemon"
+                f"docker compose {compose}"
+                if compose
+                else "the Docker Compose plugin is missing; install docker-compose-plugin "
+                "(Linux) or Docker Desktop (macOS, Windows)"
+            ),
+        )
+    )
+    checks.append(_check_buildkit(run, environ))
+    # ``docker compose version`` and ``docker buildx version`` never contact the
+    # daemon; only a server field proves it is running and this user may use it.
+    server = _probe(run, ["docker", "version", "--format", "{{.Server.Version}}"])
+    checks.append(
+        Check(
+            name="docker:daemon",
+            status=OK if server else FAIL,
+            detail=(
+                f"Docker Engine {server} is answering"
+                if server
+                else "the Docker daemon is not answering; start Docker Desktop or the "
+                "docker service, and on Linux make sure your user is in the docker group"
             ),
         )
     )
@@ -325,6 +443,7 @@ __all__ = [
     "OK",
     "WARN",
     "Check",
+    "check_bind_sources",
     "check_files",
     "check_image",
     "check_keys",

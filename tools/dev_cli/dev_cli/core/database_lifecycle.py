@@ -9,6 +9,14 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+#: Host directories Compose bind-mounts that a fresh clone does not contain.
+#: Docker Engine on Linux creates a missing bind source as root, after which the
+#: deploying user cannot write its own pre-upgrade snapshots there, so each one
+#: is created as that user before any container exists.
+CREATED_BIND_SOURCES = (Path(".artifacts"),)
+#: Compose subcommands that create containers and therefore bind mounts.
+_CREATES_CONTAINERS = frozenset({"create", "run", "up"})
+
 
 class PlatformLifecycle:
     """Select only declared services; all commands run against one explicit project."""
@@ -58,6 +66,8 @@ class PlatformLifecycle:
 
     def command(self, *args: str, input_text: str | None = None) -> str:
         """Capture subprocess errors so rendered environment values cannot leak secrets."""
+        if args and args[0] in _CREATES_CONTAINERS:
+            self.prepare_bind_sources()
         result = self.run(
             [*self.prefix, *args],
             cwd=self.root,
@@ -85,6 +95,11 @@ class PlatformLifecycle:
                 )
             raise RuntimeError(msg)
         return str(result.stdout)
+
+    def prepare_bind_sources(self) -> None:
+        """Create each missing bind source as this user; Docker would create it as root."""
+        for relative in CREATED_BIND_SOURCES:
+            (self.root / relative).mkdir(exist_ok=True)
 
     def stop_runtime(self) -> None:
         self.command("stop", "--timeout", "60", "workers", "application")

@@ -31,7 +31,7 @@ vmdev init
 
 It asks for the four things a machine cannot know — your email, accounting
 currency, timezone and starting paper equity — and writes two untracked,
-owner-only files:
+owner-only files (mode `0600`; on Windows, an access-control list):
 
 | File | What it holds |
 | --- | --- |
@@ -75,8 +75,9 @@ vmdev doctor                 # validate configuration and state, change nothing
 ```
 
 Run `vmdev doctor` whenever something looks wrong. It reports missing
-configuration keys, an unreachable Docker, a schema that does not match this
-checkout, and a running image that is not the one that was deployed.
+configuration keys, a Docker daemon that is not answering, a missing Compose or
+Buildx plugin, a schema that does not match this checkout, and a running image
+that is not the one that was deployed.
 
 ## 4. Open the dashboard
 
