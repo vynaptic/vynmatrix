@@ -79,7 +79,7 @@ def _insert_observation(engine: sa.Engine, kind: str) -> None:
         )
 
 
-def _insert_inference(engine: sa.Engine) -> None:
+def _insert_inference(engine: sa.Engine, scope: str = "scope") -> None:
     with engine.begin() as connection:
         connection.execute(sa.text("PRAGMA foreign_keys = OFF"))
         connection.execute(
@@ -87,9 +87,9 @@ def _insert_inference(engine: sa.Engine) -> None:
                 "INSERT INTO equity_model_inference_records "
                 "(model_input_sha256, lineage_id, model_output_sha256, request_json, "
                 "response_json, request_bytes, response_bytes, received_at, entitlement_scope) "
-                "VALUES (:i, :l, :o, '{}', '{}', x'01', x'02', '2026-01-01', 'scope')"
+                "VALUES (:i, :l, :o, '{}', '{}', x'01', x'02', '2026-01-01', :s)"
             ),
-            {"i": "1" * 64, "l": "2" * 64, "o": "3" * 64},
+            {"i": "1" * 64, "l": "2" * 64, "o": "3" * 64, "s": scope},
         )
 
 
@@ -136,6 +136,14 @@ def test_inference_record_is_append_only() -> None:
         session.delete(record)
         with pytest.raises(ValueError, match="append-only"):
             session.flush()
+
+
+def test_blank_entitlement_scope_is_rejected() -> None:
+    engine = _engine()
+    _run(engine, "upgrade")
+
+    with pytest.raises(sa.exc.IntegrityError):
+        _insert_inference(engine, scope="   ")
 
 
 def test_downgrade_refuses_when_news_coverage_rows_exist() -> None:

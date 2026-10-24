@@ -284,7 +284,7 @@ class EquityModelInferenceRecord(Base):
     request_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     response_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    entitlement_scope: Mapped[str] = mapped_column(String(100), nullable=False)
+    entitlement_scope: Mapped[str] = mapped_column(String(200), nullable=False)
     entitlement_owner_user_id: Mapped[str | None] = mapped_column(
         String(50),
         ForeignKey("users.user_id", ondelete="RESTRICT"),
@@ -298,6 +298,10 @@ class EquityModelInferenceRecord(Base):
         CheckConstraint(
             "length(model_output_sha256) = 64",
             name="ck_equity_model_inference_output_digest",
+        ),
+        CheckConstraint(
+            "length(trim(entitlement_scope)) > 0",
+            name="ck_equity_model_inference_scope",
         ),
         Index("ix_equity_model_inference_lineage", "lineage_id"),
     )

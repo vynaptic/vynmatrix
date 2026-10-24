@@ -53,7 +53,7 @@ def upgrade() -> None:
         sa.Column("request_bytes", sa.LargeBinary(), nullable=False),
         sa.Column("response_bytes", sa.LargeBinary(), nullable=False),
         sa.Column("received_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("entitlement_scope", sa.String(length=100), nullable=False),
+        sa.Column("entitlement_scope", sa.String(length=200), nullable=False),
         sa.Column("entitlement_owner_user_id", sa.String(length=50), nullable=True),
         sa.ForeignKeyConstraint(
             ["lineage_id"],
@@ -72,6 +72,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "length(model_output_sha256) = 64",
             name="ck_equity_model_inference_output_digest",
+        ),
+        sa.CheckConstraint(
+            "length(trim(entitlement_scope)) > 0",
+            name="ck_equity_model_inference_scope",
         ),
     )
     op.create_index("ix_equity_model_inference_lineage", _TABLE, ["lineage_id"])
