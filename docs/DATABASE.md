@@ -101,7 +101,7 @@ cannot change after relevant activity. Never place a secret in a command line.
 
 ## Existing databases, migrations, and rollback
 
-The current linear Alembic head is 0107_backend_ui_read. Verify the
+The current linear Alembic head is 0109_backend_ui_readiness. Verify the
 revision from scripts/db/alembic/versions rather than copying a transient
 command result. Revisions 0099 through 0104 introduce single-owner controls,
 safe reference registration, control-plane guards, commercial-tenancy removal,
@@ -113,7 +113,14 @@ listed columns of daily_nav, execution_metrics, order_intents, orders,
 positions, executions, canonical_signals and prices (timestamp and timeframe
 only), with owner-scoped SELECT
 policies on the row-secured tables; order payloads, client and broker order
-references, signal features and metric metadata stay unreadable to it.
+references, signal features and metric metadata stay unreadable to it. 0108
+adds the deployments record with a column-level backend read grant. 0109 adds
+column-level SELECT for the owner UI's readiness checklist on
+strategy_runtime_states (strategy, bar length, last bar time),
+execution_decision_logs (binding, status, reasoning, time) and risk_breaches
+(account, rule, severity, time), with SELECT policies scoped to the deployment
+owner (runtime rows only for strategies the owner has bound); model state,
+deduplication keys, policy snapshots and breach context stay unreadable.
 
 For an existing database, configure its actual maintenance authority and use:
 

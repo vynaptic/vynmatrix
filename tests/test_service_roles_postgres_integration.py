@@ -483,6 +483,14 @@ _UI_COLUMN_EXPECTATIONS = (
     ("canonical_signals", "features", False),
     ("execution_metrics", "metadata", False),
     ("prices", "close", False),
+    # Revision 0109: the readiness checklist's status columns, and nothing else.
+    ("strategy_runtime_states", "last_source_ts", True),
+    ("strategy_runtime_states", "state_payload", False),
+    ("execution_decision_logs", "status", True),
+    ("execution_decision_logs", "idempotency_key", False),
+    ("execution_decision_logs", "binding_config_snapshot", False),
+    ("risk_breaches", "rule_code", True),
+    ("risk_breaches", "context", False),
 )
 _UI_TABLES = (
     "daily_nav",
@@ -493,6 +501,9 @@ _UI_TABLES = (
     "executions",
     "canonical_signals",
     "prices",
+    "strategy_runtime_states",
+    "execution_decision_logs",
+    "risk_breaches",
 )
 
 
@@ -602,6 +613,117 @@ def test_backend_owner_ui_reads_are_column_scoped_and_owner_only() -> None:
                     connection.execute(
                         sa.text("DELETE FROM daily_nav WHERE account_id IN (:own, :other)"),
                         {"own": own_account, "other": other_account},
+                    )
+    finally:
+        backend.dispose()
+        admin.dispose()
+
+
+@pytest.mark.integration
+def test_backend_readiness_reads_are_granted_and_owner_only() -> None:
+    """Revision 0109: the readiness checklist's reads run as the backend login."""
+    from datetime import UTC, datetime, timedelta
+
+    from backend import ui_readiness
+    from sqlalchemy.orm import Session
+
+    from lib_application.services.account_onboarding import owner_scope
+
+    admin = sa.create_engine(_admin_url(), future=True)
+    backend = _runtime_engine(_admin_url(), "vm_backend_login")
+    try:
+        with _tenant_rows(admin) as (own_user, other_user, own_account, other_account):
+            accounts = {"own": own_account, "other": other_account}
+            bound, unbound = f"rls_bound_{own_user[-12:]}", f"rls_unbound_{own_user[-12:]}"
+            strategies = {"bound": bound, "unbound": unbound}
+            with admin.begin() as connection:
+                connection.execute(
+                    sa.text(
+                        """
+                        INSERT INTO strategies (strategy_id, strategy_name, asset_class)
+                        VALUES (:bound, :bound, 'crypto'), (:unbound, :unbound, 'crypto')
+                        """
+                    ),
+                    strategies,
+                )
+                connection.execute(
+                    sa.text(
+                        """
+                        INSERT INTO user_strategy_bindings (
+                            user_id, strategy_id, broker_account_id, execution_modes_allowed,
+                            asset_classes_allowed, is_active, autopilot, entries_enabled,
+                            exits_enabled
+                        )
+                        VALUES (
+                            :own_user, :bound, :own, '["spot"]', '["crypto"]',
+                            false, false, false, false
+                        )
+                        """
+                    ),
+                    {"own_user": own_user, "bound": bound, "own": own_account},
+                )
+                connection.execute(
+                    sa.text(
+                        """
+                        INSERT INTO strategy_runtime_states (
+                            worker_id, strategy_id, strategy_version, symbols, source,
+                            timeframe, consolidation_minutes, config_fingerprint,
+                            state_schema_version, state_payload
+                        )
+                        SELECT 'worker-' || id, id, '1.0.0', '[]', 'test', '1m', 1,
+                               repeat('f', 64), 1, '{}'
+                        FROM (VALUES (:bound), (:unbound)) AS ids (id)
+                        """
+                    ),
+                    strategies,
+                )
+                connection.execute(
+                    sa.text(
+                        """
+                        INSERT INTO risk_breaches (
+                            user_id, broker_account_id, rule_code, severity, context
+                        )
+                        VALUES (:own_user, :own, 'own_rule', 'block', '{}'),
+                               (:other_user, :other, 'other_rule', 'block', '{}')
+                        """
+                    ),
+                    {"own_user": own_user, "other_user": other_user, **accounts},
+                )
+            try:
+                with Session(backend) as session, owner_scope(session) as owner_id:
+                    since = datetime.now(tz=UTC) - timedelta(days=1)
+                    # Asked for another user's account too, it still sees only its own.
+                    blocks = ui_readiness._latest_blocks(
+                        session, owner_id, [own_account, other_account], since
+                    )
+                    assert {key: row.rule_code for key, row in blocks.items()} == {
+                        own_account: "own_rule"
+                    }
+                    assert ui_readiness._latest_decisions(session, owner_id, [1], since) == {}
+                    # Runtime rows are visible only for strategies the owner has bound.
+                    assert set(ui_readiness._worker_states(session, [bound, unbound])) == {bound}
+            finally:
+                with admin.begin() as connection:
+                    connection.execute(
+                        sa.text(
+                            "DELETE FROM strategy_runtime_states "
+                            "WHERE strategy_id IN (:bound, :unbound)"
+                        ),
+                        strategies,
+                    )
+                    connection.execute(
+                        sa.text("DELETE FROM user_strategy_bindings WHERE strategy_id = :bound"),
+                        strategies,
+                    )
+                    connection.execute(
+                        sa.text("DELETE FROM strategies WHERE strategy_id IN (:bound, :unbound)"),
+                        strategies,
+                    )
+                    connection.execute(
+                        sa.text(
+                            "DELETE FROM risk_breaches WHERE broker_account_id IN (:own, :other)"
+                        ),
+                        accounts,
                     )
     finally:
         backend.dispose()

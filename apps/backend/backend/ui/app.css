@@ -714,6 +714,41 @@ details.as-table summary {
   cursor: pointer;
 }
 
+details.readiness {
+  margin-top: 0.3rem;
+}
+
+details.readiness summary {
+  cursor: pointer;
+}
+
+/* Inline, so a long "Blocked: ..." wraps beside the disclosure marker. */
+details.readiness summary .status {
+  display: inline;
+}
+
+details.readiness summary .status::before {
+  display: inline-block;
+  margin-right: 0.4rem;
+  vertical-align: -0.05em;
+}
+
+.checklist {
+  display: grid;
+  min-width: min(18rem, 70vw);
+  gap: 0.45rem;
+  margin: 0.5rem 0 0.2rem;
+  padding: 0;
+  list-style: none;
+}
+
+.checklist .check-detail {
+  display: block;
+  max-width: 34rem;
+  color: var(--ink-2);
+  font-size: 0.82rem;
+}
+
 /* ------------------------------------------------------------- activity */
 
 .feed {

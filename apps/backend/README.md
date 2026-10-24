@@ -40,9 +40,16 @@ The UI cannot place an order, hold a secret, or release a strategy.
   strategy version; delete anything (the backend role holds `DELETE` on no
   table, so switching a binding off is the honest control); accept key material
   in any field; or change an account's broker, environment or `config_key`.
-- **Data.** `ui_queries.py` selects explicit columns only, because migration
-  `0107_backend_ui_read` grants the backend role column-level SELECT on exactly
-  those columns with owner-scoped row policies. A test fails if a query reads an
+- **Readiness.** Each binding on the Strategies page carries a checklist
+  (`ui_readiness.py`) of why it is or is not trading: released, mode, account
+  connected, a signal worker processing market data, the last scoring decision
+  with its reason, and the last risk block on the account. A failed condition
+  is `blocked`; recent history is a `warn`. It reports recorded state and
+  re-runs no gate.
+- **Data.** `ui_queries.py` and `ui_readiness.py` select explicit columns only,
+  because migrations `0107_backend_ui_read` and `0109_backend_ui_readiness`
+  grant the backend role column-level SELECT on exactly those columns with
+  owner-scoped row policies. A test fails if a query reads an
   ungranted column or a grant goes unused. Equity, realized P&L and positions are
   projections recorded by the execution engine, shown with their as-of time in
   the account currency; nothing is recomputed and currencies are never added.

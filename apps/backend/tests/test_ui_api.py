@@ -26,6 +26,7 @@ from lib_application.db.models import (
     CanonicalSignal,
     DailyNav,
     Execution,
+    ExecutionDecisionLog,
     ExecutionMetric,
     Instrument,
     InstrumentPrice,
@@ -33,7 +34,9 @@ from lib_application.db.models import (
     Order,
     OrderIntent,
     Position,
+    RiskBreach,
     Strategy,
+    StrategyRuntimeState,
     StrategyVersion,
     User,
     UserStrategyBinding,
@@ -524,7 +527,11 @@ def test_strategies_lists_the_catalogue_with_binding_signal_and_recorded_pnl(
     assert swing["released"] is True
     # binding_id addresses the row for a change; mode names the legal flag
     # combination the control offers instead of four independent switches.
-    assert swing["bindings"] == [
+    # The readiness checklist has its own tests below.
+    assert [
+        {key: value for key, value in binding.items() if key != "readiness"}
+        for binding in swing["bindings"]
+    ] == [
         {
             "binding_id": 1,
             "account_id": 1,
@@ -570,6 +577,215 @@ def test_a_newly_registered_strategy_is_listed_with_its_version_before_it_ever_t
 
     counts = client.get("/api/ui/overview", headers=AUTH).json()["strategies"]
     assert counts == {"catalogue": 3, "released": 1, "bound": 1, "active": 1}
+
+
+# ------------------------------------------------------- readiness checklist
+
+
+def _runtime_state(
+    session: Any, *, strategy_id: str = "swing_v1", minutes_ago: int | None, bar: int = 60
+) -> None:
+    session.add(
+        StrategyRuntimeState(
+            worker_id=f"worker-{strategy_id}",
+            strategy_id=strategy_id,
+            strategy_version="1.1.0",
+            symbols=["BTC-USDC"],
+            source="coinbase_live",
+            timeframe="1m",
+            consolidation_minutes=bar,
+            config_fingerprint="f" * 64,
+            state_schema_version=1,
+            state_payload={"secret_model_state": 1},
+            last_source_ts=None
+            if minutes_ago is None
+            else _naive(NOW - timedelta(minutes=minutes_ago)),
+        )
+    )
+
+
+def _decision(
+    session: Any,
+    *,
+    key: str,
+    user: str,
+    status: str,
+    reason: str | None,
+    minutes_ago: int,
+    binding: int | None = 1,
+) -> None:
+    session.add(
+        ExecutionDecisionLog(
+            user_id=user,
+            binding_id=binding,
+            instr_id=1,
+            should_execute=status != "skipped",
+            status=status,
+            idempotency_key=key,
+            reasoning={"trigger_reason": reason, "risk_caps": {"secret_cap": 1}},
+            binding_config_snapshot={"secret_snapshot": 1},
+            ts=NOW - timedelta(minutes=minutes_ago),
+        )
+    )
+
+
+def _checks(client: TestClient, strategy_id: str = "swing_v1") -> dict[str, Any]:
+    rows = client.get("/api/ui/strategies", headers=AUTH).json()["strategies"]
+    (binding,) = next(row for row in rows if row["strategy_id"] == strategy_id)["bindings"]
+    readiness = binding["readiness"]
+    assert [check["key"] for check in readiness["checks"]] == [
+        "release",
+        "mode",
+        "account",
+        "worker",
+        "decision",
+        "risk",
+    ]
+    return {"ready": readiness["ready"], **{c["key"]: c for c in readiness["checks"]}}
+
+
+def test_readiness_names_the_missing_worker_as_what_blocks_a_bound_strategy(
+    client: TestClient,
+) -> None:
+    """Released, switched on, connected -- and silent, because no worker runs it."""
+    checks = _checks(client)
+
+    assert checks["ready"] is False
+    assert (checks["release"]["state"], checks["mode"]["state"]) == ("ok", "ok")
+    assert checks["account"]["state"] == "ok"
+    assert checks["worker"]["state"] == "blocked"
+    assert "STRATEGY_LIST" in checks["worker"]["detail"]
+    assert checks["decision"]["state"] == "unknown"
+    assert checks["decision"]["at"] is None
+    assert checks["risk"]["state"] == "ok"
+
+
+def test_readiness_is_ready_with_a_fresh_worker_and_explains_the_last_skip(
+    client: TestClient, factory: Any
+) -> None:
+    with factory() as s:
+        _runtime_state(s, minutes_ago=5)
+        _decision(s, key="old", user="owner", status="executed", reason="met", minutes_ago=90)
+        _decision(
+            s,
+            key="new",
+            user="owner",
+            status="skipped",
+            reason="Asset score 0.31 (abs 0.31) below threshold 0.6",
+            minutes_ago=10,
+        )
+        # Another user's newer decision on the same binding id is never the owner's.
+        _decision(
+            s, key="peer", user="peer", status="failed", reason="peer-only-reason", minutes_ago=1
+        )
+        s.add(
+            RiskBreach(
+                user_id="owner",
+                broker_account_id=1,
+                rule_code="max_total_exposure_pct",
+                severity="block",
+                context={"secret_context": 1},
+                occurred_at=NOW - timedelta(hours=2),
+            )
+        )
+        s.add(
+            RiskBreach(
+                user_id="owner",
+                broker_account_id=1,
+                rule_code="stale_warning",
+                severity="warn",
+                occurred_at=NOW - timedelta(minutes=1),
+            )
+        )
+        s.commit()
+
+    checks = _checks(client)
+
+    assert checks["ready"] is True
+    assert checks["worker"]["state"] == "ok"
+    assert checks["worker"]["at"] is not None
+    assert checks["decision"]["state"] == "warn"
+    assert "below threshold 0.6" in checks["decision"]["detail"]
+    assert checks["risk"]["state"] == "warn"
+    # Only blocks count; a warning is not the reason an order did not happen.
+    assert "max_total_exposure_pct" in checks["risk"]["detail"]
+    body = client.get("/api/ui/strategies", headers=AUTH).text
+    for secret in (
+        "secret_model_state",
+        "secret_cap",
+        "secret_snapshot",
+        "secret_context",
+        "peer-only-reason",
+    ):
+        assert secret not in body
+
+
+def test_readiness_reports_a_stale_worker_and_a_switched_off_binding(
+    client: TestClient, factory: Any
+) -> None:
+    with factory() as s:
+        # Hourly bars: three missed bars, not three missed minutes, make it stale.
+        _runtime_state(s, minutes_ago=150, bar=60)
+        binding = s.get(UserStrategyBinding, 1)
+        binding.is_active = False
+        binding.autopilot = False
+        binding.entries_enabled = False
+        binding.exits_enabled = False
+        s.commit()
+    checks = _checks(client)
+    assert checks["ready"] is False
+    assert checks["mode"]["state"] == "blocked"
+    assert checks["worker"]["state"] == "ok"
+
+    with factory() as s:
+        s.get(StrategyRuntimeState, "worker-swing_v1").last_source_ts = _naive(
+            NOW - timedelta(minutes=200)
+        )
+        s.commit()
+    assert _checks(client)["worker"]["state"] == "warn"
+
+
+def test_readiness_explains_an_unreleased_binding_and_a_revoked_account(
+    client: TestClient, factory: Any
+) -> None:
+    with factory() as s:
+        s.get(LinkedBrokerAccount, 1).status = "revoked"
+        s.add(
+            UserStrategyBinding(
+                user_id="owner",
+                strategy_id="ported_v1",
+                broker_account_id=1,
+                is_active=False,
+                autopilot=False,
+                entries_enabled=False,
+                exits_enabled=False,
+            )
+        )
+        _runtime_state(s, strategy_id="ported_v1", minutes_ago=None)
+        s.commit()
+    checks = _checks(client, "ported_v1")
+    assert checks["release"]["state"] == "blocked"
+    assert checks["account"]["state"] == "blocked"
+    assert "revoked" in checks["account"]["detail"]
+    # A worker that has never processed a bar is not a running pipeline.
+    assert checks["worker"]["state"] == "warn"
+
+
+def test_a_failing_readiness_query_degrades_only_the_checklist(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backend import ui_readiness
+    from sqlalchemy import text
+
+    def _refused(session: Any, *_args: Any, **_kwargs: Any) -> Any:
+        return session.execute(text("SELECT nothing FROM a_table_that_is_not_there")).all()
+
+    monkeypatch.setattr(ui_readiness, "_worker_states", _refused)
+    rows = client.get("/api/ui/strategies", headers=AUTH).json()["strategies"]
+    swing = next(row for row in rows if row["strategy_id"] == "swing_v1")
+    assert swing["bindings"][0]["readiness"] is None
+    assert swing["released"] is True
+    assert swing["last_signal"]["action"] == "long"
 
 
 def test_pnl_is_per_account_in_the_account_currency(client: TestClient) -> None:
@@ -745,7 +961,7 @@ def test_assets_are_same_origin_with_no_inline_script_or_style() -> None:
     assert " onclick=" not in index
 
 
-def test_every_column_the_read_models_touch_is_granted_by_migration_0107(
+def test_every_column_the_read_models_touch_is_granted_by_migrations_0107_and_0109(
     client: TestClient, factory: Any
 ) -> None:
     """SQLite cannot refuse a column, PostgreSQL will: keep the queries inside the grants."""
@@ -766,11 +982,21 @@ def test_every_column_the_read_models_touch_is_granted_by_migration_0107(
         return module
 
     migration = _load("0107_backend_ui_read")
-    # ``0108`` grants the version endpoint's columns and belongs to the same guard.
+    readiness = _load("0109_backend_ui_readiness")
+    # ``0108`` grants the version endpoint's columns and ``0109`` the readiness
+    # checklist's; both belong to the same guard.
     granted_columns = {
         **migration.READ_COLUMNS,
         _load("0108_deployment_record").TABLE: _load("0108_deployment_record").READ_COLUMNS,
+        **readiness.READ_COLUMNS,
     }
+    policy_keys = {**migration.POLICY_KEYS, **readiness.POLICY_KEYS}
+    with factory() as s:
+        # Every readiness query must run for the capture to see its columns.
+        _runtime_state(s, minutes_ago=5)
+        _decision(s, key="grant", user="owner", status="skipped", reason="r", minutes_ago=5)
+        s.add(RiskBreach(user_id="owner", broker_account_id=1, rule_code="x", severity="block"))
+        s.commit()
 
     statements: list[str] = []
     engine = factory.kw["bind"]
@@ -792,11 +1018,7 @@ def test_every_column_the_read_models_touch_is_granted_by_migration_0107(
     for table, granted in granted_columns.items():
         used = set(re.findall(rf"\b{table}\.(\w+)\b", sql))
         # A row policy filters on its key column even where no query names it.
-        used |= (
-            {migration.POLICY_KEYS[table]} & set(granted)
-            if table in migration.POLICY_KEYS
-            else set()
-        )
+        used |= {policy_keys[table]} & set(granted) if table in policy_keys else set()
         if used != set(granted):
             mismatches[table] = {
                 "ungranted": sorted(used - set(granted)),

@@ -51,6 +51,8 @@ from lib_application.services.binding_control import (
 )
 from lib_common.logging import get_logger
 
+from . import ui_readiness
+
 logger = get_logger(__name__)
 
 _BLOCKED_MODE = "blocked"
@@ -602,6 +604,27 @@ def strategies(session: Session, owner_id: str) -> dict[str, Any]:
             }
         )
 
+    readiness = _section(
+        session,
+        "readiness",
+        lambda: ui_readiness.binding_readiness(
+            session,
+            owner_id,
+            (
+                {**entry, "strategy_id": strategy_id}
+                for strategy_id, entries in bindings_by_strategy.items()
+                for entry in entries
+            ),
+            released_ids=released_ids,
+            account_status={account_id: row.status for account_id, row in accounts.items()},
+        ),
+    )
+    for entries in bindings_by_strategy.values():
+        for entry in entries:
+            entry["readiness"] = (
+                None if readiness is None else _serialise_readiness(readiness[entry["binding_id"]])
+            )
+
     realized: dict[str, dict[int, Decimal]] | None = None
     if metric_rows is not None:
         realized = defaultdict(lambda: defaultdict(lambda: Decimal(0)))
@@ -648,6 +671,13 @@ def strategies(session: Session, owner_id: str) -> dict[str, Any]:
             }
         )
     return {"as_of": iso_utc(datetime.now(tz=UTC)), "strategies": items}
+
+
+def _serialise_readiness(readiness: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ready": readiness["ready"],
+        "checks": [{**check, "at": iso_utc(check["at"])} for check in readiness["checks"]],
+    }
 
 
 def _released_strategy_ids(session: Session) -> set[str]:

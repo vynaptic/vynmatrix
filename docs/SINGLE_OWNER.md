@@ -98,16 +98,18 @@ existing databases, migration/rollback, and recovery.
 
 ## Owner UI
 
-A read-only owner UI is served by the backend from the application group; it
-needs no fourth container and does not bring multi-tenancy back.
+An owner UI is served by the backend from the application group; it needs no
+fourth container and does not bring multi-tenancy back.
 [apps/backend/README.md](../apps/backend/README.md#owner-ui) owns its routes,
-authentication and data sources. It gives execution visibility only: the
-account, strategies and bindings, and recorded profit and loss.
+authentication and data sources. It shows the account, strategies and bindings
+with a readiness checklist for each binding, and recorded profit and loss. Its
+only writes are switching a released strategy's binding between Off, Close
+only and Trading, and editing the owner profile and non-secret account fields.
 
-Write flows remain future work: owner profile, accounts, broker credentials,
-strategy configuration and bindings, risk mandates and calendars stay with the
-existing administrative API and CLI. Any such UI must authenticate to the same
-owner boundary and preserve the same current-state execution checks.
+Releasing strategies, broker credentials, strategy configuration, risk
+mandates and calendars stay with the existing administrative API and CLI. Any
+further UI must authenticate to the same owner boundary and preserve the same
+current-state execution checks.
 
 ## Deferred decisions
 

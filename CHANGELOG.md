@@ -9,6 +9,14 @@ Git history.
 
 ### Added
 
+- A readiness checklist for each binding on the owner UI's Strategies page. It
+  says why a bound strategy is or is not trading, in pipeline order: released,
+  mode, account connected, a signal worker processing market data, the last
+  scoring decision with its reason, and the last blocking risk breach on the
+  account. A failed condition reads **Blocked**; recent history is a warning.
+  It reads recorded state only and changes nothing. Migration `0109` grants the
+  backend role column-level `SELECT` on exactly the columns it reads, with
+  owner-scoped row policies.
 - The owner UI can switch a strategy on. A released strategy binds to one of the
   owner's connected accounts in one of three modes — **Off**, **Close only** or
   **Trading** — which are the combinations of the four authority flags that

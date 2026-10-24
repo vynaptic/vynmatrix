@@ -65,6 +65,51 @@ function modeChip(mode) {
   return h("span", { class: "chip chip-off", text: "Off" });
 }
 
+// One status per readiness check. The marker's shape, not only its colour,
+// carries the state (see .status-* in app.css).
+const CHECK_STATUS = {
+  ok: "status status-good",
+  warn: "status status-warning",
+  blocked: "status status-critical",
+  unknown: "status",
+};
+
+// Why a binding is or is not trading, as the server recorded it. A blocked
+// check is a condition that stops it; a warning reports what last happened.
+function readiness(binding) {
+  const checklist = binding.readiness;
+  if (!checklist) {
+    return h("span", { class: "cell-sub", text: "Checklist unavailable" });
+  }
+  const blocked = checklist.checks.filter((check) => check.state === "blocked");
+  const summary = checklist.ready
+    ? h("span", { class: "status status-good", text: "Ready" })
+    : h("span", {
+        class: "status status-critical",
+        text: `Blocked: ${blocked.map((check) => check.label.toLowerCase()).join(", ")}`,
+      });
+  return h(
+    "details",
+    { class: "readiness" },
+    h("summary", {}, summary),
+    h(
+      "ul",
+      { class: "checklist" },
+      checklist.checks.map((check) =>
+        h(
+          "li",
+          {},
+          h("span", { class: CHECK_STATUS[check.state] || "status", text: check.label }),
+          h("span", { class: "check-detail", text: check.detail }),
+          check.at
+            ? h("span", { class: "cell-sub", title: fmtDateTime(check.at), text: fmtAgo(check.at) })
+            : null,
+        ),
+      ),
+    ),
+  );
+}
+
 function bindingCell(row) {
   if (!(row.bindings || []).length) {
     return h("span", {
@@ -83,6 +128,7 @@ function bindingCell(row) {
         text: binding.account_name || `Account ${binding.account_id}`,
       }),
       h("span", { class: "cell-sub" }, modeChip(binding.mode)),
+      readiness(binding),
     ),
   );
 }
@@ -266,7 +312,7 @@ export function view(data, ctx) {
     section("At a glance", null, summary),
     section(
       "All strategies",
-      "A strategy trades only once maintenance releases it, it is bound to an account, and you switch it on. Releasing is not done from this page; the rest is.",
+      "A strategy trades only once maintenance releases it, it is bound to an account, you switch it on, and a signal worker is running it. Open a binding's status to see which of these holds. Releasing is not done from this page; switching on is.",
       h("div", { class: "panel" }, list),
     ),
   ];

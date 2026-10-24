@@ -56,6 +56,13 @@ owner UI:
    instrument route, session coverage and the execution checks above remain
    independent of every earlier step.
 
+Once a strategy is bound, the owner UI's Strategies page shows a readiness
+checklist for each binding: released, mode, account connected, a signal worker
+processing market data (which needs the strategy enabled in its `config.json`
+and named in `STRATEGY_LIST`), the last scoring decision with its reason, and
+the last risk block on the account. It reports recorded state and changes
+nothing.
+
 The maintenance canary action applies only to the exact eligible Swing release
 with paper mode and the live gate false. It enables no account/binding and does
 not generalize to another candidate. Use
