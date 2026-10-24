@@ -110,6 +110,14 @@ function readiness(binding) {
   );
 }
 
+// A binding's scope is its strategy's declared universe. An empty scope is
+// every instrument, which no other active strategy on that account may share.
+function scopeLabel(instruments) {
+  return instruments && instruments.length
+    ? `Trades ${instruments.join(", ")}`
+    : "Trades every instrument";
+}
+
 function bindingCell(row) {
   if (!(row.bindings || []).length) {
     return h("span", {
@@ -128,6 +136,7 @@ function bindingCell(row) {
         text: binding.account_name || `Account ${binding.account_id}`,
       }),
       h("span", { class: "cell-sub" }, modeChip(binding.mode)),
+      h("span", { class: "cell-sub", text: scopeLabel(binding.instruments_allowed) }),
       readiness(binding),
     ),
   );
@@ -214,7 +223,8 @@ function editor(row, ctx) {
         detail: binding
           ? `On ${binding.account_name || `account ${binding.account_id}`}, ` +
             `from ${MODE_LABEL[current] || current} to ${chosen.label}.`
-          : `Bind to ${accountLabel(connected, account)} as ${chosen.label}.`,
+          : `Bind to ${accountLabel(connected, account)} as ${chosen.label}, ` +
+            "for the instruments its release declares.",
         consequence: chosen.consequence,
         confirmLabel: chosen.label,
         run: async () => {
@@ -312,7 +322,7 @@ export function view(data, ctx) {
     section("At a glance", null, summary),
     section(
       "All strategies",
-      "A strategy trades only once maintenance releases it, it is bound to an account, you switch it on, and a signal worker is running it. Open a binding's status to see which of these holds. Releasing is not done from this page; switching on is.",
+      "A strategy trades only once maintenance releases it, it is bound to an account, you switch it on, and a signal worker is running it. Open a binding's status to see which of these holds. Releasing is not done from this page; switching on is. Strategies can share an account when they trade no instrument in common.",
       h("div", { class: "panel" }, list),
     ),
   ];

@@ -15,6 +15,10 @@ Two rules are new, and both close gaps the route had:
 * **Modes.** Three CHECK constraints make most combinations of the four
   authority flags illegal. :data:`MODES` is the subset that is always legal, so a
   caller choosing a mode cannot construct a row the database will reject.
+
+A UI binding is scoped to the universe its strategy's release declares
+(:func:`declared_universe`). An unscoped binding covers every instrument, and
+the overlap rule then leaves room for one active strategy per account.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from lib_application.db.models import (
@@ -208,6 +212,65 @@ def canonical_instruments(session: Session, values: Sequence[Any] | None) -> lis
     return canonical
 
 
+def declared_universe(session: Session, strategy_id: str) -> list[str] | None:
+    """The instruments a strategy's release says it trades, as catalogue symbols.
+
+    A binding made from the owner UI takes this as its scope, so two strategies
+    with disjoint universes can share an account without either one claiming
+    every instrument. The active release is read; a strategy bound before it is
+    released falls back to its newest version.
+
+    ``None`` -- every instrument -- is returned only where the release names no
+    fixed list: a membership universe such as a point-in-time index
+    (``universe_contract``), or a version with no ``universe`` at all. That
+    scope still overlaps every other active strategy on the account.
+    """
+    version = session.scalar(
+        select(StrategyVersion)
+        .where(StrategyVersion.strategy_id == strategy_id)
+        .order_by(
+            case((StrategyVersion.status == "active", 0), else_=1),
+            StrategyVersion.strat_ver_id.desc(),
+        )
+        .limit(1)
+    )
+    params = version.default_params if version is not None else None
+    if not isinstance(params, Mapping) or params.get("universe_contract"):
+        return None
+    raw = params.get("universe")
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        tokens = [token.strip() for token in raw.split(",") if token.strip()]
+    elif isinstance(raw, (list, tuple)):
+        tokens = [str(token).strip() for token in raw if str(token).strip()]
+    else:
+        msg = f"strategy {strategy_id} declares a universe that is not a list of instruments"
+        raise BindingControlError(msg, status_code=422)
+    if not tokens:
+        return None
+    try:
+        return canonical_instruments(session, tokens)
+    except BindingControlError as exc:
+        msg = f"strategy {strategy_id} trades an instrument the catalogue cannot resolve: {exc}"
+        raise BindingControlError(msg, status_code=exc.status_code) from exc
+
+
+def shared_instruments(
+    session: Session, left: Sequence[Any] | None, right: Sequence[Any] | None
+) -> list[str] | None:
+    """The instruments both scopes authorize, sorted; ``None`` when either is unrestricted.
+
+    An empty scope means "every instrument", so it shares everything with any
+    other scope -- including another empty one.
+    """
+    if not left or not right:
+        return None
+    left_scope = set(canonical_instruments(session, [str(item) for item in left]) or [])
+    right_scope = set(canonical_instruments(session, [str(item) for item in right]) or [])
+    return sorted(left_scope & right_scope)
+
+
 def scopes_overlap(
     session: Session, left: Sequence[Any] | None, right: Sequence[Any] | None
 ) -> bool:
@@ -215,11 +278,8 @@ def scopes_overlap(
 
     An empty scope means "everything", so it overlaps anything.
     """
-    if not left or not right:
-        return True
-    left_scope = set(canonical_instruments(session, [str(item) for item in left]) or [])
-    right_scope = set(canonical_instruments(session, [str(item) for item in right]) or [])
-    return bool(left_scope & right_scope)
+    shared = shared_instruments(session, left, right)
+    return shared is None or bool(shared)
 
 
 def reject_conflicting_active(
@@ -231,10 +291,11 @@ def reject_conflicting_active(
     instruments: list[str] | None,
     existing_binding_id: int | None,
 ) -> None:
-    """One active strategy per account and instrument scope.
+    """One active strategy per account and instrument.
 
     Only an activation can conflict: switching a binding off, or saving an
-    inactive one, is always allowed.
+    inactive one, is always allowed. The refusal names the strategy in the way
+    and what the two share, because that is what the owner has to change.
     """
     if not is_active:
         return
@@ -244,15 +305,26 @@ def reject_conflicting_active(
     )
     if existing_binding_id is not None:
         query = query.filter(UserStrategyBinding.binding_id != existing_binding_id)
-    for candidate in query.all():
+    for candidate in query.order_by(UserStrategyBinding.binding_id).all():
         if candidate.strategy_id == strategy_id:
             continue
-        if scopes_overlap(session, list(candidate.instruments_allowed or []) or None, instruments):
-            msg = (
-                "another active strategy already owns an overlapping instrument "
-                f"scope on broker_account_id={broker_account_id}"
-            )
-            raise BindingControlError(msg, status_code=409)
+        held = list(candidate.instruments_allowed or []) or None
+        shared = shared_instruments(session, held, instruments)
+        if shared is not None and not shared:
+            continue
+        if shared is not None:
+            overlap = ", ".join(shared)
+        elif held is None:
+            overlap = "every instrument"
+        else:
+            overlap = f"{', '.join(map(str, held))}, and this binding covers every instrument"
+        msg = (
+            f"overlapping instrument scope on broker_account_id={broker_account_id}: "
+            f"{candidate.strategy_id} is already switched on for {overlap}. Two active "
+            "strategies never share an instrument on one account; switch "
+            f"{candidate.strategy_id} off, or bind this strategy to another account"
+        )
+        raise BindingControlError(msg, status_code=409)
 
 
 def lock_account(session: Session, *, owner_id: str, account_id: int) -> LinkedBrokerAccount:
@@ -389,7 +461,10 @@ def create_binding(
     broker_account_id: int,
     mode: str,
 ) -> UserStrategyBinding:
-    """Bind a released strategy to one of the owner's connected accounts."""
+    """Bind a strategy to one of the owner's connected accounts, scoped to its universe.
+
+    Any mode but ``off`` needs a release.
+    """
     if mode not in MODES:
         msg = f"unsupported mode: {mode}"
         raise BindingControlError(msg, status_code=422)
@@ -412,28 +487,34 @@ def create_binding(
     if existing is not None:
         msg = "this strategy is already bound to that account; change it instead"
         raise BindingControlError(msg, status_code=409)
+    # The scope is the strategy's own declared universe, not "everything": an
+    # unscoped binding overlaps every other strategy, so it would leave room
+    # for exactly one active strategy per account.
+    instruments = declared_universe(session, strategy_id)
     reject_conflicting_active(
         session,
         broker_account_id=broker_account_id,
         strategy_id=strategy_id,
         is_active=flags.is_active,
-        instruments=None,
+        instruments=instruments,
         existing_binding_id=None,
     )
     row = UserStrategyBinding(
         user_id=owner_id,
         strategy_id=strategy_id,
         broker_account_id=broker_account_id,
+        instruments_allowed=instruments,
         **flags.as_fields(),
     )
     session.add(row)
     session.flush()
+    fields = ["mode"] if instruments is None else ["instruments_allowed", "mode"]
     append_audit(
         session,
         user_id=owner_id,
         account_id=broker_account_id,
         action="binding.create",
-        request_payload={**changed_fields(["mode"]), "mode": mode},
+        request_payload={**changed_fields(fields), "mode": mode},
         response_payload={"binding_id": int(row.binding_id)},
     )
     return row
@@ -527,6 +608,7 @@ __all__ = [
     "canonical_instruments",
     "create_binding",
     "deactivate_binding",
+    "declared_universe",
     "load_binding",
     "lock_account",
     "mode_of",
@@ -535,6 +617,7 @@ __all__ = [
     "require_broker_allowed",
     "require_release",
     "scopes_overlap",
+    "shared_instruments",
     "trading_state",
     "validate_numeric",
 ]

@@ -541,6 +541,8 @@ def test_strategies_lists_the_catalogue_with_binding_signal_and_recorded_pnl(
             "autopilot": True,
             "entries_enabled": True,
             "exits_enabled": True,
+            # A binding made before scoping covers every instrument.
+            "instruments_allowed": None,
         }
     ]
     assert swing["last_signal"]["action"] == "long"
@@ -1242,6 +1244,80 @@ def test_binding_twice_points_at_the_existing_row_instead_of_duplicating(
 
     assert again.status_code == 409
     assert "already bound" in again.json()["detail"]
+
+
+def _release(session: Any, strategy_id: str, universe: Any) -> None:
+    session.add(
+        Strategy(
+            strategy_id=strategy_id,
+            strategy_name=strategy_id,
+            asset_class="crypto",
+            is_active=True,
+        )
+    )
+    session.flush()
+    session.add(
+        StrategyVersion(
+            strategy_id=strategy_id,
+            semver="1.0.0",
+            param_schema={},
+            default_params={"universe": universe, "asset_class": "crypto"},
+            status="active",
+        )
+    )
+
+
+def test_two_released_strategies_with_disjoint_universes_both_trade_one_account(
+    client: TestClient, factory: Any
+) -> None:
+    """Each binding is scoped to its strategy's universe; only a shared instrument conflicts."""
+    with factory() as session:
+        _release(session, "btc_v1", "BTC-USDC")
+        _release(session, "eth_v1", ["ETHUSDC"])
+        _release(session, "majors_v1", "BTCUSDC,ETHUSDC")
+        session.commit()
+
+    def bind(strategy_id: str) -> Any:
+        return client.post(
+            "/api/ui/bindings",
+            json={"strategy_id": strategy_id, "broker_account_id": 1, "mode": "trading"},
+            headers=AUTH,
+        )
+
+    # The fixture's swing binding names no scope, so it holds every instrument.
+    blocked = bind("btc_v1")
+    assert blocked.status_code == 409
+    assert "swing_v1 is already switched on for every instrument" in blocked.json()["detail"]
+    swing = client.get(CONTROL, headers=AUTH).json()["bindings"][0]["binding_id"]
+    switched_off = client.post(
+        f"/api/ui/bindings/{swing}",
+        json={"expected": {"mode": "trading"}, "changes": {"mode": "off"}},
+        headers=AUTH,
+    )
+    assert switched_off.status_code == 200, switched_off.text
+
+    for strategy_id in ("btc_v1", "eth_v1"):
+        bound = bind(strategy_id)
+        assert bound.status_code == 200, bound.text
+        assert bound.json()["mode"] == "trading"
+
+    overlapping = bind("majors_v1")
+    assert overlapping.status_code == 409
+    detail = overlapping.json()["detail"]
+    assert "btc_v1 is already switched on for BTCUSDC" in detail
+    assert "switch btc_v1 off, or bind this strategy to another account" in detail
+
+    rows = {
+        row["strategy_id"]: row
+        for row in client.get("/api/ui/strategies", headers=AUTH).json()["strategies"]
+    }
+    assert rows["btc_v1"]["bindings"][0]["instruments_allowed"] == ["BTCUSDC"]
+    assert rows["eth_v1"]["bindings"][0]["instruments_allowed"] == ["ETHUSDC"]
+    assert rows["swing_v1"]["bindings"][0]["instruments_allowed"] is None
+    assert rows["majors_v1"]["bindings"] == []
+    activity = client.get(CONTROL, headers=AUTH).json()["activity"]
+    assert (activity[0]["action"], activity[0]["status"]) == ("binding.create", "error")
+    assert activity[1]["fields"] == ["instruments_allowed", "mode"]
 
 
 def test_every_column_a_write_touches_is_granted_for_update(

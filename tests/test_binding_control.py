@@ -271,3 +271,226 @@ def test_trading_state_counts_only_the_owners_bindings_and_only_active_ones_as_o
     assert trading_state(catalogue_session, "owner") == TradingState(
         released=1, bound=2, switched_on=1
     )
+
+
+# ------------------------------------------------------------- universe scope
+
+
+@pytest.fixture
+def universe_session() -> Any:
+    """One owner account, three crypto instruments, and strategies declaring universes.
+
+    ``btc_v1`` and ``eth_v1`` are disjoint; ``majors_v1`` shares BTCUSDC with
+    ``btc_v1``; ``index_v1`` declares a membership universe, not a list.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from lib_application.db.models import (
+        Base,
+        Broker,
+        Instrument,
+        LinkedBrokerAccount,
+        Strategy,
+        StrategyVersion,
+        User,
+    )
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    session = sessionmaker(engine, expire_on_commit=False)()
+    declared = {
+        "btc_v1": {"universe": "BTC-USDC", "asset_class": "crypto"},
+        "eth_v1": {"universe": ["ETHUSDC"], "asset_class": "crypto"},
+        "majors_v1": {"universe": "BTCUSDC, SOLUSDC,BTCUSDC", "asset_class": "crypto"},
+        "index_v1": {
+            "universe": "SP500",
+            "universe_contract": "point_in_time_sp500_membership",
+            "asset_class": "equity",
+        },
+        "unknown_v1": {"universe": "DOGEUSDC", "asset_class": "crypto"},
+    }
+    session.add_all(
+        [
+            User(user_id="owner", email="owner@example.invalid", base_ccy="EUR"),
+            Broker(broker_id=6, code="paper", name="Paper"),
+            *(
+                Instrument(
+                    instr_id=number,
+                    asset_class="crypto",
+                    canonical=symbol,
+                    settlement_currency="USDC",
+                )
+                for number, symbol in enumerate(("BTCUSDC", "ETHUSDC", "SOLUSDC"), start=1)
+            ),
+            *(
+                Strategy(strategy_id=strategy_id, strategy_name=strategy_id, is_active=True)
+                for strategy_id in declared
+            ),
+        ]
+    )
+    session.flush()
+    session.add_all(
+        [
+            *(
+                StrategyVersion(
+                    strategy_id=strategy_id,
+                    semver="1.0.0",
+                    param_schema={},
+                    default_params=params,
+                    status="active",
+                )
+                for strategy_id, params in declared.items()
+            ),
+            LinkedBrokerAccount(
+                account_id=1,
+                display_name="Owner paper",
+                user_id="owner",
+                broker_id=6,
+                environment="paper",
+                base_ccy="EUR",
+                paper_initial_equity=Decimal("1000"),
+                paper_initial_cash=Decimal("1000"),
+            ),
+        ]
+    )
+    session.commit()
+    yield session
+    session.close()
+    engine.dispose()
+
+
+def _create(session: Any, strategy_id: str, mode: str = "trading") -> Any:
+    from lib_application.services.binding_control import create_binding
+
+    row = create_binding(
+        session, owner_id="owner", strategy_id=strategy_id, broker_account_id=1, mode=mode
+    )
+    session.commit()
+    return row
+
+
+def test_a_declared_universe_resolves_to_catalogue_symbols(universe_session: Any) -> None:
+    from lib_application.services.binding_control import declared_universe
+
+    # A normalized form, a JSON array, and a padded comma string with a repeat.
+    assert declared_universe(universe_session, "btc_v1") == ["BTCUSDC"]
+    assert declared_universe(universe_session, "eth_v1") == ["ETHUSDC"]
+    assert declared_universe(universe_session, "majors_v1") == ["BTCUSDC", "SOLUSDC"]
+
+
+def test_a_universe_that_is_not_a_fixed_list_is_every_instrument(universe_session: Any) -> None:
+    """A membership universe cannot be pinned, so it keeps the unscoped default."""
+    from lib_application.db.models import Strategy
+    from lib_application.services.binding_control import declared_universe
+
+    universe_session.add(Strategy(strategy_id="bare_v1", strategy_name="bare", is_active=True))
+    universe_session.commit()
+
+    assert declared_universe(universe_session, "index_v1") is None
+    assert declared_universe(universe_session, "bare_v1") is None  # no version at all
+
+
+def test_the_active_release_wins_over_a_newer_unreleased_version(universe_session: Any) -> None:
+    from lib_application.db.models import StrategyVersion
+    from lib_application.services.binding_control import declared_universe
+
+    universe_session.add(
+        StrategyVersion(
+            strategy_id="btc_v1",
+            semver="2.0.0",
+            param_schema={},
+            default_params={"universe": "ETHUSDC"},
+            status="registered",
+        )
+    )
+    universe_session.commit()
+
+    assert declared_universe(universe_session, "btc_v1") == ["BTCUSDC"]
+
+
+def test_an_instrument_the_catalogue_lacks_refuses_the_binding(universe_session: Any) -> None:
+    with pytest.raises(BindingControlError) as raised:
+        _create(universe_session, "unknown_v1", mode="off")
+
+    assert raised.value.status_code == 422
+    assert "unknown_v1" in raised.value.detail
+    assert "DOGEUSDC" in raised.value.detail
+
+
+def test_shared_instruments_names_the_overlap_and_none_means_everything(
+    universe_session: Any,
+) -> None:
+    from lib_application.services.binding_control import scopes_overlap, shared_instruments
+
+    assert shared_instruments(universe_session, ["BTCUSDC"], ["ETHUSDC"]) == []
+    assert shared_instruments(universe_session, ["SOLUSDC", "BTCUSDC"], ["BTC-USDC"]) == ["BTCUSDC"]
+    assert shared_instruments(universe_session, None, ["ETHUSDC"]) is None
+    assert scopes_overlap(universe_session, ["BTCUSDC"], ["ETHUSDC"]) is False
+    assert scopes_overlap(universe_session, ["BTCUSDC"], ["BTCUSDC"]) is True
+    assert scopes_overlap(universe_session, [], ["ETHUSDC"]) is True
+
+
+def test_two_strategies_with_disjoint_universes_both_trade_one_account(
+    universe_session: Any,
+) -> None:
+    btc = _create(universe_session, "btc_v1")
+    eth = _create(universe_session, "eth_v1")
+
+    assert (btc.is_active, list(btc.instruments_allowed)) == (True, ["BTCUSDC"])
+    assert (eth.is_active, list(eth.instruments_allowed)) == (True, ["ETHUSDC"])
+
+
+def test_an_overlapping_pair_is_refused_naming_the_strategy_and_the_instrument(
+    universe_session: Any,
+) -> None:
+    _create(universe_session, "btc_v1")
+
+    with pytest.raises(BindingControlError) as raised:
+        _create(universe_session, "majors_v1")
+
+    assert raised.value.status_code == 409
+    assert "btc_v1 is already switched on for BTCUSDC" in raised.value.detail
+    assert "SOLUSDC" not in raised.value.detail  # only what the two actually share
+
+
+def test_a_membership_universe_still_conflicts_with_any_active_strategy(
+    universe_session: Any,
+) -> None:
+    _create(universe_session, "btc_v1")
+
+    with pytest.raises(BindingControlError) as raised:
+        _create(universe_session, "index_v1")
+
+    assert raised.value.status_code == 409
+    assert "BTCUSDC, and this binding covers every instrument" in raised.value.detail
+
+
+def test_switching_a_prepared_binding_on_applies_the_same_overlap_rule(
+    universe_session: Any,
+) -> None:
+    from lib_application.services.binding_control import patch_binding
+
+    _create(universe_session, "btc_v1")
+    eth = _create(universe_session, "eth_v1", mode="off")
+    majors = _create(universe_session, "majors_v1", mode="off")
+
+    with pytest.raises(BindingControlError) as raised:
+        patch_binding(
+            universe_session,
+            owner_id="owner",
+            binding_id=int(majors.binding_id),
+            expected={"mode": "off"},
+            changes={"mode": "trading"},
+        )
+    assert raised.value.status_code == 409
+    universe_session.rollback()
+
+    switched = patch_binding(
+        universe_session,
+        owner_id="owner",
+        binding_id=int(eth.binding_id),
+        expected={"mode": "off"},
+        changes={"mode": "trading"},
+    )
+    assert mode_of(switched) == "trading"

@@ -9,6 +9,15 @@ Git history.
 
 ### Added
 
+- More than one strategy can trade the same account from the owner UI. A new
+  binding is scoped to the instruments its strategy's release declares,
+  resolved through the instrument catalogue, instead of to every instrument, so
+  strategies that share no instrument can all be in **Trading** on one account.
+  Two active strategies still never share an instrument on one account; the
+  refusal now names the strategy in the way and what the two share. The
+  Strategies page shows each binding's scope. A membership universe such as the
+  point-in-time S&P 500 keeps the old every-instrument scope, and so does a
+  binding made before this change; `POST /bindings` can re-scope either.
 - A readiness checklist for each binding on the owner UI's Strategies page. It
   says why a bound strategy is or is not trading, in pipeline order: released,
   mode, account connected, a signal worker processing market data, the last

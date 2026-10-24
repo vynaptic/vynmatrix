@@ -88,7 +88,8 @@ footer names the build that is running.
 
 From the Strategies page you can switch a released strategy on for one of your
 accounts — **Off**, **Close only** or **Trading** — and Settings holds your
-profile and your broker accounts. Releasing a strategy stays a maintenance
+profile and your broker accounts. Several strategies can trade one account as
+long as no two of them trade the same instrument. Releasing a strategy stays a maintenance
 action, and no field in the browser ever accepts a broker key.
 
 ## 5. Keep it up to date

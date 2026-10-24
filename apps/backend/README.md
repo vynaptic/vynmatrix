@@ -36,6 +36,16 @@ The UI cannot place an order, hold a secret, or release a strategy.
   too, in a transaction of their own, because the rolled-back change carries
   nothing. Profile and account edits reuse `PATCH /owner` and
   `PATCH /broker-accounts/{id}` unchanged.
+- **Scope.** A UI binding is scoped to the instruments its strategy's release
+  declares (`parameters.universe` in the version's `default_params`, resolved
+  through the instrument catalogue), so strategies that share no instrument can
+  all trade one account. Two active strategies still never share an instrument
+  on one account: the refusal (HTTP 409) names the strategy in the way and the
+  instruments they share. A membership universe (`universe_contract`, such as
+  the point-in-time S&P 500) cannot be pinned to a list and keeps the unscoped
+  default, every instrument, so it needs an account of its own. The UI shows the
+  scope but cannot change it; `POST /bindings` sets any other scope, including
+  for a binding made before scoping, which covers every instrument.
 - **What the UI still cannot do.** Release, activate, deprecate or pull a
   strategy version; delete anything (the backend role holds `DELETE` on no
   table, so switching a binding off is the honest control); accept key material
