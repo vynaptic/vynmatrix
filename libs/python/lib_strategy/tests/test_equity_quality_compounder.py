@@ -474,3 +474,10 @@ def test_departed_incumbent_cannot_reuse_a_current_instrument_identity() -> None
             entries_allowed=True,
             policy=policy,
         )
+
+
+def test_configuration_digest_unchanged_by_gate() -> None:
+    # The inert adverse-news gate must not alter the released 0.2.0 identity.
+    assert quality_compounder_configuration_sha256("0.2.0") == (
+        "950fa8d190f9793224289c74c54e946eaf305d369bf4746194666d134f00ff74"
+    )
