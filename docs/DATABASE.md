@@ -115,7 +115,7 @@ cannot change after relevant activity. Never place a secret in a command line.
 
 ## Existing databases, migrations, and rollback
 
-The current linear Alembic head is 0110_asset_class_binding_scope. Verify the
+The current linear Alembic head is 0111_adverse_news_gate_storage. Verify the
 revision from scripts/db/alembic/versions rather than copying a transient
 command result. Revisions 0099 through 0104 introduce single-owner controls,
 safe reference registration, control-plane guards, commercial-tenancy removal,
@@ -186,6 +186,13 @@ the useful schema map; inspect models and Alembic for column-level truth.
 | Accounting projections | positions, daily_nav, execution_metrics | Rebuildable views derived from canonical fills |
 | Feedback | signal_performance, mode_performance, strategy feedback and trackers | Attributed evaluation and audit decisions |
 | Market evidence | prices, watermarks, panel/factor/rank/rebalance records | Revisioned source data and strategy evidence |
+
+Equity observations accept the news_coverage kind, which records adverse-news
+screening coverage per instrument. equity_model_inference_records is an
+append-only table (immutable trigger on PostgreSQL) holding the exact request
+and response bodies of each model inference, keyed by input digest and tied to
+its source lineage and entitlement scope. Migration 0111 refuses to downgrade
+once either kind of evidence exists.
 
 Signal storage uses long, short, flat, and hold. SignalAction CLOSE maps to flat;
 use normalize_scoring_action rather than a manual lowercase conversion.

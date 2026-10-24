@@ -21,6 +21,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -136,7 +137,7 @@ class EquityObservation(Base):
             "'earnings_event', 'market_cap', 'security_identity', "
             "'analyst_estimate', 'news_event', 'call_transcript', "
             "'insider_transaction', 'positioning', 'macro_release', "
-            "'factor_risk_exposure')",
+            "'factor_risk_exposure', 'news_coverage')",
             name="ck_equity_observation_kind",
         ),
         CheckConstraint(
@@ -266,6 +267,42 @@ class EquityObservationValue(Base):
     )
 
 
+class EquityModelInferenceRecord(Base):
+    """Exact request and response bodies of one model inference, keyed by input digest."""
+
+    __tablename__ = "equity_model_inference_records"
+
+    model_input_sha256: Mapped[str] = mapped_column(String(_DIGEST_LENGTH), primary_key=True)
+    lineage_id: Mapped[str] = mapped_column(
+        String(_DIGEST_LENGTH),
+        ForeignKey("equity_source_lineages.lineage_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    model_output_sha256: Mapped[str] = mapped_column(String(_DIGEST_LENGTH), nullable=False)
+    request_json: Mapped[Any] = mapped_column(JSONType, nullable=False)
+    response_json: Mapped[Any] = mapped_column(JSONType, nullable=False)
+    request_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    response_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    entitlement_scope: Mapped[str] = mapped_column(String(100), nullable=False)
+    entitlement_owner_user_id: Mapped[str | None] = mapped_column(
+        String(50),
+        ForeignKey("users.user_id", ondelete="RESTRICT"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "length(model_input_sha256) = 64",
+            name="ck_equity_model_inference_input_digest",
+        ),
+        CheckConstraint(
+            "length(model_output_sha256) = 64",
+            name="ck_equity_model_inference_output_digest",
+        ),
+        Index("ix_equity_model_inference_lineage", "lineage_id"),
+    )
+
+
 def _reject_equity_observation_update(
     _mapper: Any,
     _connection: Any,
@@ -288,12 +325,14 @@ for _immutable_model in (
     EquitySourceLineage,
     EquityObservation,
     EquityObservationValue,
+    EquityModelInferenceRecord,
 ):
     event.listen(_immutable_model, "before_update", _reject_equity_observation_update)
     event.listen(_immutable_model, "before_delete", _reject_equity_observation_delete)
 
 
 __all__ = [
+    "EquityModelInferenceRecord",
     "EquityObservation",
     "EquityObservationValue",
     "EquitySourceLineage",

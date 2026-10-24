@@ -84,6 +84,7 @@ from .equity_evidence import (
     EquityRankSnapshotRow,
 )
 from .equity_observations import (
+    EquityModelInferenceRecord,
     EquityObservation,
     EquityObservationValue,
     EquitySourceLineage,
@@ -309,6 +310,7 @@ __all__ = [
     "EquityFactorEvidence",
     "EquityFactorSnapshot",
     "EquityFactorSnapshotDetail",
+    "EquityModelInferenceRecord",
     "EquityObservation",
     "EquityObservationValue",
     "EquityRankSnapshot",
