@@ -8,7 +8,7 @@ provider query becomes a ``news_coverage`` observation. Both go through
 
 from __future__ import annotations
 
-import re
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -26,16 +26,19 @@ from lib_application.services.equity_observation_writer import (
 )
 from lib_common.hashing import canonical_json_hash
 from lib_strategy.adverse_news_questions import (
+    ADVERSE_NEWS_MODEL,
+    ADVERSE_NEWS_MODEL_VERSION,
     ADVERSE_NEWS_QUESTION_SET_VERSION,
+    ADVERSE_NEWS_QUESTIONS,
     AdverseNewsAnswers,
     AdverseNewsArticle,
     inference_configuration_sha256,
     model_artifact_sha256,
     output_schema_sha256,
     prompt_schema_sha256,
+    split_model_id,
 )
 
-_MODEL_PATTERN: Final = re.compile(r"^([a-z]+)-(\d+\.\d+\.\d+)$")
 _MODEL_PROVIDER: Final = "typesafe"
 _ADJUSTMENT_POLICY: Final = "not-applicable"
 _MISSING_DATA_POLICY: Final = "fail-closed"
@@ -159,10 +162,30 @@ def _aware_utc(value: datetime, field: str) -> datetime:
 
 
 def _split_model(model: object) -> tuple[str, str]:
-    match = _MODEL_PATTERN.fullmatch(model) if isinstance(model, str) else None
-    if match is None:
-        _invalid("response model must look like <name>-<major.minor.patch>")
-    return match.group(1), match.group(2)
+    model_name, model_version = split_model_id(model)
+    if model_version != ADVERSE_NEWS_MODEL_VERSION:
+        _invalid(f"model version {model_version!r} is not {ADVERSE_NEWS_MODEL_VERSION!r}")
+    return model_name, model_version
+
+
+def _matches_bytes(raw: bytes, parsed: Mapping[str, object]) -> bool:
+    try:
+        return bool(json.loads(raw) == parsed)
+    except ValueError:
+        return False
+
+
+def _check_exchange(exchange: TypeSafeExchange) -> None:
+    """Require the pinned request and bytes that are exactly the recorded JSON."""
+    request = exchange.request_json
+    if request.get("model") != ADVERSE_NEWS_MODEL:
+        _invalid(f"request model {request.get('model')!r} is not {ADVERSE_NEWS_MODEL!r}")
+    if request.get("questions") != ADVERSE_NEWS_QUESTIONS:
+        _invalid("request questions are not the pinned adverse-news questions")
+    if not _matches_bytes(exchange.request_bytes, request):
+        _invalid("request bytes do not match the request JSON")
+    if not _matches_bytes(exchange.response_bytes, exchange.response_json):
+        _invalid("response bytes do not match the response JSON")
 
 
 def _record_inference(
@@ -207,6 +230,7 @@ def persist_adverse_news_classification(
 ) -> str:
     """Write one classification and its inference record; return the observation id."""
     answers = AdverseNewsAnswers.from_response(exchange.response_json)
+    _check_exchange(exchange)
     model = exchange.response_json["model"]
     model_name, model_version = _split_model(model)
     input_sha256 = canonical_json_hash(exchange.request_json)
@@ -293,8 +317,11 @@ def persist_news_coverage(
         _invalid("skipped articles must be a subset of returned articles")
     query_window_start = _aware_utc(query_window_start, "query_window_start")
     query_window_end = _aware_utc(query_window_end, "query_window_end")
+    completed_at = _aware_utc(completed_at, "completed_at")
     if query_window_end <= query_window_start:
         _invalid("query window must end after it starts")
+    if completed_at < query_window_end:
+        _invalid("completed_at cannot precede query_window_end")
     values = [
         _text("provider_query_identity", provider_query_identity),
         _timestamp("query_window_end", query_window_end),

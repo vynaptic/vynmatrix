@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -38,6 +39,7 @@ from lib_strategy.adverse_news_questions import (
     ADVERSE_NEWS_MODEL,
     AdverseNewsArticle,
     GateReason,
+    adverse_news_request_body,
 )
 from lib_strategy.data_authority import (
     DataUseScope,
@@ -58,6 +60,7 @@ _CUTOFF = datetime(2026, 12, 31, 21, tzinfo=UTC)
 _PUBLISHED = _CUTOFF - timedelta(days=10)
 _CLASSIFIED = _CUTOFF + timedelta(hours=12)
 _COMPLETED = _CUTOFF + timedelta(hours=7)
+_BUILT = _CUTOFF + timedelta(hours=72)
 _POLICY = AdverseNewsGatePolicy()
 
 # Probabilities are binary fractions so SQLite's float-backed NUMERIC round-trips them.
@@ -154,23 +157,20 @@ def _classify(
     published_at: datetime = _PUBLISHED,
     available_after: timedelta = timedelta(minutes=2),
     received_at: datetime = _CLASSIFIED,
-    model: str = ADVERSE_NEWS_MODEL,
     provider: str = _PROVIDER,
 ) -> str:
     probabilities = answers or _ADVERSE
     response: dict[str, object] = {
-        "model": model,
+        "model": ADVERSE_NEWS_MODEL,
         "answers": {
             **{key: {"type": "noul", "noul": value} for key, value in probabilities.items()},
             "negative_severity": {"type": "score", "probabilities": _SEVERITY},
         },
         "usage": {"input_tokens": 10},
     }
-    request: dict[str, object] = {
-        "model": model,
-        "state": {"article": article_id, "instrument": instrument_id, "answers": probabilities},
-        "questions": {},
-    }
+    request = adverse_news_request_body(
+        {"article": article_id, "instrument": instrument_id, "answers": probabilities}
+    )
     return persist_adverse_news_classification(
         session,
         lineage=_lineage(ADVERSE_NEWS_GATE_CONTRACT, f"article/{article_id}", provider=provider),
@@ -189,8 +189,8 @@ def _classify(
         exchange=TypeSafeExchange(
             request_json=request,
             response_json=response,
-            request_bytes=b"request",
-            response_bytes=b"response",
+            request_bytes=json.dumps(request).encode(),
+            response_bytes=json.dumps(response).encode(),
             received_at=received_at,
         ),
     )
@@ -224,12 +224,14 @@ def _resolve(
     *,
     instrument_ids: tuple[int, ...] = (1,),
     policy: AdverseNewsGatePolicy = _POLICY,
+    built_at: datetime = _BUILT,
 ) -> dict[int, AdverseNewsGateResult]:
     session.commit()
     return dict(
         resolve_quality_compounder_adverse_news_gate(
             session,
             cutoff=_CUTOFF,
+            built_at=built_at,
             instrument_ids=instrument_ids,
             policy=policy,
             provider_authority_policy=_authority(),
@@ -608,7 +610,121 @@ def test_cutoff_must_be_timezone_aware() -> None:
         resolve_quality_compounder_adverse_news_gate(
             session,
             cutoff=datetime(2026, 12, 31, 21),
+            built_at=_BUILT,
             instrument_ids=(1,),
             policy=_POLICY,
             provider_authority_policy=_authority(),
         )
+
+
+def test_built_at_must_be_timezone_aware() -> None:
+    with _session() as session, pytest.raises(ValueError, match="built_at"):
+        resolve_quality_compounder_adverse_news_gate(
+            session,
+            cutoff=_CUTOFF,
+            built_at=datetime(2027, 1, 2),
+            instrument_ids=(1,),
+            policy=_POLICY,
+            provider_authority_policy=_authority(),
+        )
+
+
+def test_coverage_completed_after_build_is_not_admitted() -> None:
+    with _session() as session:
+        _coverage(session, [], completed_at=_CUTOFF + timedelta(hours=30))
+        result = _resolve(session, built_at=_CUTOFF + timedelta(hours=24))[1]
+    assert result == AdverseNewsGateResult(GateReason.NEWS_COVERAGE_UNAVAILABLE, (), 0)
+
+
+def test_replay_at_original_build_ignores_later_records() -> None:
+    built_at = _CUTOFF + timedelta(hours=24)
+    with _session() as session:
+        _classify(session, answers=_CLEAR)
+        coverage = _coverage(session, ["art-1"])
+        original = _resolve(session, built_at=built_at)[1]
+        # Later records: a coverage listing an unclassified article and an adverse
+        # classification, both landing after the build but before T + 72 h.
+        _coverage(
+            session,
+            ["art-1", "art-2"],
+            start=_CUTOFF - timedelta(days=30),
+            completed_at=_CUTOFF + timedelta(hours=30),
+        )
+        _classify(
+            session,
+            article_id="art-3",
+            answers=_ADVERSE,
+            received_at=_CUTOFF + timedelta(hours=31),
+        )
+        replayed = _resolve(session, built_at=built_at)[1]
+        later = _resolve(session)[1]
+    assert original.reason is None
+    assert replayed == original
+    assert replayed.observation_ids == tuple(sorted((_classified_id(session, "art-1"), coverage)))
+    assert later.reason is GateReason.NEWS_EVIDENCE_INVALID
+
+
+def _classified_id(session: Session, article_id: str) -> str:
+    found = session.scalar(
+        sa.select(EquityObservation.observation_id).where(
+            EquityObservation.observation_kind == "news_event",
+            EquityObservation.source_record_identity.startswith(f"{article_id}|"),
+        )
+    )
+    assert found is not None
+    return str(found)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "expected_prompt_schema_sha256",
+        "expected_output_schema_sha256",
+        "expected_inference_configuration_sha256",
+        "expected_model_artifact_sha256",
+    ],
+)
+def test_provenance_digest_mismatch_is_invalid(field_name: str) -> None:
+    policy = replace(_POLICY, **{field_name: "0" * 64})  # type: ignore[arg-type]
+    with _session() as session:
+        _classify(session, answers=_CLEAR)
+        _coverage(session, ["art-1"])
+        result = _resolve(session, policy=policy)[1]
+    assert result.reason is GateReason.NEWS_EVIDENCE_INVALID
+
+
+def test_classified_before_article_was_available_is_invalid() -> None:
+    with _session() as session:
+        _classify(session, answers=_CLEAR, received_at=_PUBLISHED + timedelta(minutes=1))
+        _coverage(session, ["art-1"])
+        result = _resolve(session)[1]
+    assert result.reason is GateReason.NEWS_EVIDENCE_INVALID
+
+
+def test_classified_before_model_release_is_invalid() -> None:
+    released = (_PUBLISHED + timedelta(days=1)).date()
+    policy = replace(_POLICY, model_released_on=released)
+    with _session() as session:
+        _classify(session, answers=_CLEAR, received_at=_PUBLISHED + timedelta(hours=1))
+        _coverage(session, ["art-1"])
+        result = _resolve(session, policy=policy)[1]
+    assert result.reason is GateReason.NEWS_EVIDENCE_INVALID
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"coverage_min_delay": timedelta(0)},
+        {"coverage_min_delay": timedelta(hours=-1)},
+        {"deadline": timedelta(hours=6)},
+        {"deadline": timedelta(hours=72, seconds=1)},
+        {"lookback_days": 0},
+    ],
+)
+def test_policy_rejects_invalid_timing(overrides: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match=r"coverage_min_delay|deadline|lookback_days"):
+        AdverseNewsGatePolicy(**overrides)  # type: ignore[arg-type]
+
+
+def test_policy_model_version_derives_from_pinned_model() -> None:
+    assert f"jev-{_POLICY.model_version}" == ADVERSE_NEWS_MODEL

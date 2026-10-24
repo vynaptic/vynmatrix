@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -35,6 +37,7 @@ from lib_strategy.adverse_news_questions import (
     ADVERSE_NEWS_QUESTION_SET_VERSION,
     AdverseNewsAnswerError,
     AdverseNewsArticle,
+    adverse_news_request_body,
 )
 from lib_strategy.data_authority import (
     DataUseScope,
@@ -146,16 +149,20 @@ def _response(model: str = ADVERSE_NEWS_MODEL) -> dict[str, object]:
     }
 
 
+def _request(state: dict[str, object] | None = None) -> dict[str, object]:
+    return adverse_news_request_body(state or {"a": 1})
+
+
 def _exchange(
     response: dict[str, object] | None = None, *, request: dict[str, object] | None = None
 ) -> TypeSafeExchange:
-    request = request or {"model": ADVERSE_NEWS_MODEL, "state": {"a": 1}, "questions": {}}
+    request = request or _request()
     response = response or _response()
     return TypeSafeExchange(
         request_json=request,
         response_json=response,
-        request_bytes=b"request",
-        response_bytes=b"response",
+        request_bytes=json.dumps(request).encode(),
+        response_bytes=json.dumps(response).encode(),
         received_at=_RECEIVED,
     )
 
@@ -285,7 +292,7 @@ def test_conflicting_observation_content_raises() -> None:
     with _session() as session:
         _classify(session)
         with pytest.raises(AdverseNewsPersistenceError):
-            _classify(session, exchange=_exchange(changed, request={"model": "x", "state": {}}))
+            _classify(session, exchange=_exchange(changed, request=_request({"b": 2})))
 
 
 def test_one_article_two_instruments_gets_two_records() -> None:
@@ -294,7 +301,7 @@ def test_one_article_two_instruments_gets_two_records() -> None:
         second = _classify(
             session,
             instrument_id=2,
-            exchange=_exchange(request={"model": ADVERSE_NEWS_MODEL, "state": {"b": 2}}),
+            exchange=_exchange(request=_request({"b": 2})),
         )
         identities = {
             str(row.source_record_identity) for row in session.scalars(sa.select(EquityObservation))
@@ -405,3 +412,62 @@ def test_coverage_requires_aware_window() -> None:
             returned_article_ids=[],
             skipped_article_ids=[],
         )
+
+
+def test_request_for_another_model_is_rejected() -> None:
+    request = {**_request(), "model": "jev-1.13.0"}
+    with _session() as session, pytest.raises(AdverseNewsPersistenceError, match="model"):
+        _classify(session, exchange=_exchange(request=request))
+
+
+def test_request_with_other_questions_is_rejected() -> None:
+    request = {**_request(), "questions": {}}
+    with _session() as session, pytest.raises(AdverseNewsPersistenceError, match="questions"):
+        _classify(session, exchange=_exchange(request=request))
+
+
+@pytest.mark.parametrize("side", ["request", "response"])
+def test_exchange_bytes_must_match_parsed_json(side: str) -> None:
+    exchange = _exchange()
+    if side == "request":
+        exchange = replace(exchange, request_bytes=b'{"model":"x"}')
+    else:
+        exchange = replace(exchange, response_bytes=b"not json")
+    with _session() as session:
+        with pytest.raises(AdverseNewsPersistenceError, match=side):
+            _classify(session, exchange=exchange)
+        assert session.scalar(sa.select(sa.func.count()).select_from(EquityObservation)) == 0
+
+
+def _coverage_completed(completed_at: datetime) -> str:
+    with _session() as session:
+        observation_id = persist_news_coverage(
+            session,
+            lineage=_lineage(NEWS_COVERAGE_GATE_CONTRACT, "query/aaa"),
+            instrument_id=1,
+            query_window_start=_CUTOFF - timedelta(days=90),
+            query_window_end=_CUTOFF,
+            completed_at=completed_at,
+            provider_query_identity="query-1",
+            returned_article_ids=[],
+            skipped_article_ids=[],
+        )
+        row = session.get(EquityObservation, observation_id)
+        assert row is not None
+        return str(row.available_at)
+
+
+def test_coverage_completed_at_must_be_aware() -> None:
+    with pytest.raises(AdverseNewsPersistenceError, match="completed_at"):
+        _coverage_completed(datetime(2025, 2, 4, 5))
+
+
+def test_coverage_completed_before_window_end_is_rejected() -> None:
+    with pytest.raises(AdverseNewsPersistenceError, match="completed_at"):
+        _coverage_completed(_CUTOFF - timedelta(seconds=1))
+
+
+def test_coverage_completed_at_is_utc_normalized() -> None:
+    plus_two = timezone(timedelta(hours=2))
+    completed = _CUTOFF + timedelta(hours=7)
+    assert _coverage_completed(completed.astimezone(plus_two)) == _coverage_completed(completed)

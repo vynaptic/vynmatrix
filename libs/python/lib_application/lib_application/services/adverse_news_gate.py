@@ -9,16 +9,21 @@ unchanged.
 
 Rules (design spec sections 5.2, 7 and 8):
 
+* Build bound: ``B = min(built_at, T + deadline)``. Nothing recorded after the
+  panel build counts, so a replay with the original ``built_at`` returns the
+  original result however many records land later.
 * Coverage: records whose window reaches ``T`` and that completed within
-  ``[T + coverage_min_delay, T + deadline]`` must, without gaps, span
-  ``(T - lookback, T]``. They are validated at ``T + deadline``; coverage is
-  the one kind exempt from the ``available_at <= T`` rule.
+  ``[T + coverage_min_delay, B]`` must, without gaps, span
+  ``(T - lookback, T]``. They are validated at ``B``; coverage is the one kind
+  exempt from the ``available_at <= T`` rule.
 * Selection: classifications with the policy's question-set and model version,
-  ``source_available_at <= T`` and ``original_published_at > T - lookback``.
-  Anything else is skipped, which is not an error.
-* Admissibility: each selected classification passes the validator at ``T``,
-  the pinned model was released on or before ``T``, and it was classified no
-  later than ``T + deadline``.
+  ``source_available_at <= T``, ``original_published_at > T - lookback`` and
+  ``classified_at <= built_at``. Anything else is skipped, which is not an error.
+* Admissibility: each selected classification passes the validator at ``T``;
+  carries the policy's prompt, output, inference-configuration and model
+  digests; the pinned model was released on or before ``T`` and on or before
+  the day it classified; and it was classified no earlier than the article was
+  available and no later than ``T + deadline``.
 * Completeness: every article a covering record returned is skipped or has a
   selected, validated classification under the policy versions.
 
@@ -45,7 +50,9 @@ from lib_application.services.equity_optional_factor_sources import (
 )
 from lib_common.logging import get_logger
 from lib_strategy.adverse_news_questions import (
+    ADVERSE_NEWS_MODEL,
     ADVERSE_NEWS_MODEL_RELEASED_ON,
+    ADVERSE_NEWS_MODEL_VERSION,
     ADVERSE_NEWS_QUESTION_SET_VERSION,
     LOOKBACK_DAYS,
     UNSETTLED_VERDICTS,
@@ -55,6 +62,10 @@ from lib_strategy.adverse_news_questions import (
     GateReason,
     classify_article,
     gate_reason,
+    inference_configuration_sha256,
+    model_artifact_sha256,
+    output_schema_sha256,
+    prompt_schema_sha256,
 )
 from lib_strategy.data_authority import ProviderAuthorityPolicy
 from lib_strategy.equity_optional_factors import (
@@ -79,9 +90,17 @@ _PROBABILITY_FIELDS: Final = frozenset(
         "price_recap_probability",
     }
 )
+_DIGEST_FIELDS: Final = (
+    ("prompt_or_feature_schema_sha256", "expected_prompt_schema_sha256"),
+    ("output_schema_sha256", "expected_output_schema_sha256"),
+    ("inference_configuration_sha256", "expected_inference_configuration_sha256"),
+    ("model_artifact_sha256", "expected_model_artifact_sha256"),
+)
+_MAX_DEADLINE: Final = timedelta(hours=72)
 _SELECTION_FIELDS: Final = frozenset(
     {
         "classified_at",
+        *(stored for stored, _ in _DIGEST_FIELDS),
         "model_version",
         "original_published_at",
         "question_set_version",
@@ -118,14 +137,22 @@ class AdverseNewsGatePolicy:
     """Frozen gate identity: which classifications count, and the timing bounds."""
 
     question_set_version: str = ADVERSE_NEWS_QUESTION_SET_VERSION
-    model_version: str = "1.14.0"
+    model_version: str = ADVERSE_NEWS_MODEL_VERSION
     model_released_on: date = ADVERSE_NEWS_MODEL_RELEASED_ON
     lookback_days: int = LOOKBACK_DAYS
     coverage_min_delay: timedelta = timedelta(hours=6)
-    deadline: timedelta = timedelta(hours=72)
+    deadline: timedelta = _MAX_DEADLINE
+    expected_prompt_schema_sha256: str = field(default_factory=prompt_schema_sha256)
+    expected_output_schema_sha256: str = field(default_factory=output_schema_sha256)
+    expected_inference_configuration_sha256: str = field(
+        default_factory=inference_configuration_sha256
+    )
+    expected_model_artifact_sha256: str = field(
+        default_factory=lambda: model_artifact_sha256(ADVERSE_NEWS_MODEL)
+    )
 
     def __post_init__(self) -> None:
-        for name in ("question_set_version", "model_version"):
+        for name in ("question_set_version", "model_version", *(e for _, e in _DIGEST_FIELDS)):
             value = getattr(self, name)
             if not isinstance(value, str) or not value or value != value.strip():
                 _reject(f"{name} must be non-blank canonical text")
@@ -139,10 +166,16 @@ class AdverseNewsGatePolicy:
             or self.lookback_days <= 0
         ):
             _reject("lookback_days must be a positive integer")
-        if self.coverage_min_delay < timedelta(0):
-            _reject("coverage_min_delay cannot be negative")
+        if not isinstance(self.coverage_min_delay, timedelta) or not isinstance(
+            self.deadline, timedelta
+        ):
+            _reject("coverage_min_delay and deadline must be timedeltas")
+        if self.coverage_min_delay <= timedelta(0):
+            _reject("coverage_min_delay must be positive")
         if self.deadline <= self.coverage_min_delay:
             _reject("deadline must be later than coverage_min_delay")
+        if self.deadline > _MAX_DEADLINE:
+            _reject("deadline cannot exceed 72 hours")
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,18 +231,26 @@ def resolve_quality_compounder_adverse_news_gate(
     session: Session,
     *,
     cutoff: datetime,
+    built_at: datetime,
     instrument_ids: Sequence[int],
     policy: AdverseNewsGatePolicy,
     provider_authority_policy: ProviderAuthorityPolicy,
 ) -> Mapping[int, AdverseNewsGateResult]:
-    """Return the adverse-news gate result for each instrument at cutoff ``T``."""
-    if not isinstance(cutoff, datetime) or cutoff.tzinfo is None or cutoff.utcoffset() is None:
-        _reject("cutoff must be timezone-aware")
+    """Return the adverse-news gate result for each instrument at cutoff ``T``.
+
+    ``built_at`` is the panel-build instant; replaying with the same value
+    reproduces the original result.
+    """
+    for name, value in (("cutoff", cutoff), ("built_at", built_at)):
+        if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+            _reject(f"{name} must be timezone-aware")
     if not isinstance(policy, AdverseNewsGatePolicy):
         _reject("policy must be an AdverseNewsGatePolicy")
     if any(isinstance(item, bool) or not isinstance(item, int) for item in instrument_ids):
         _reject("instrument_ids must be integers")
     cutoff = cutoff.astimezone(UTC)
+    built_at = built_at.astimezone(UTC)
+    bound = min(built_at, cutoff + policy.deadline)
     results: dict[int, AdverseNewsGateResult] = {}
     for instrument_id in sorted(set(instrument_ids)):
         ledger = _InstrumentLedger(instrument_id)
@@ -217,6 +258,7 @@ def resolve_quality_compounder_adverse_news_gate(
             session,
             ledger=ledger,
             cutoff=cutoff,
+            bound=bound,
             policy=policy,
             provider_authority_policy=provider_authority_policy,
         )
@@ -227,6 +269,7 @@ def resolve_quality_compounder_adverse_news_gate(
             session,
             ledger=ledger,
             cutoff=cutoff,
+            built_at=built_at,
             policy=policy,
             provider_authority_policy=provider_authority_policy,
         )
@@ -236,6 +279,7 @@ def resolve_quality_compounder_adverse_news_gate(
             "adverse_news_gate.resolved",
             instrument_id=instrument_id,
             cutoff=cutoff.isoformat(),
+            built_at=built_at.isoformat(),
             reason=results[instrument_id].reason,
             unsettled_count=results[instrument_id].unsettled_count,
         )
@@ -247,10 +291,11 @@ def _admitted_coverage(
     *,
     ledger: _InstrumentLedger,
     cutoff: datetime,
+    bound: datetime,
     policy: AdverseNewsGatePolicy,
     provider_authority_policy: ProviderAuthorityPolicy,
 ) -> tuple[_Coverage, ...]:
-    """Validate every coverage record that can attest the window ending at ``T``."""
+    """Validate every coverage record, completed by ``bound``, that attests ``T``."""
     candidates = session.scalars(
         select(EquityObservation)
         .where(
@@ -259,7 +304,7 @@ def _admitted_coverage(
             EquityObservation.disposition == _OBSERVED,
             EquityObservation.event_at >= _stored(session, cutoff),
             EquityObservation.available_at >= _stored(session, cutoff + policy.coverage_min_delay),
-            EquityObservation.available_at <= _stored(session, cutoff + policy.deadline),
+            EquityObservation.available_at <= _stored(session, bound),
         )
         .order_by(EquityObservation.observation_id)
     ).all()
@@ -273,7 +318,7 @@ def _admitted_coverage(
                 contract=NEWS_COVERAGE_GATE_CONTRACT,
                 factor_version=NEWS_COVERAGE_FACTOR_VERSION,
                 observation_id=observation_id,
-                cutoff=cutoff + policy.deadline,
+                cutoff=bound,
                 provider_authority_policy=provider_authority_policy,
                 expected_instrument_id=ledger.instrument_id,
             )
@@ -332,6 +377,7 @@ def _admitted_classifications(
     *,
     ledger: _InstrumentLedger,
     cutoff: datetime,
+    built_at: datetime,
     policy: AdverseNewsGatePolicy,
     provider_authority_policy: ProviderAuthorityPolicy,
 ) -> frozenset[str]:
@@ -356,7 +402,9 @@ def _admitted_classifications(
     for observation in latest:
         observation_id = str(observation.observation_id)
         rows = rows_by_id.get(observation_id, {})
-        if not _selected(rows, cutoff=cutoff, window_start=window_start, policy=policy):
+        if not _selected(
+            rows, cutoff=cutoff, built_at=built_at, window_start=window_start, policy=policy
+        ):
             continue
         ledger.observation_ids.add(observation_id)
         article_id = _article_id(str(observation.source_record_identity))
@@ -380,18 +428,26 @@ def _selected(
     rows: Mapping[str, list[EquityObservationValue]],
     *,
     cutoff: datetime,
+    built_at: datetime,
     window_start: datetime,
     policy: AdverseNewsGatePolicy,
 ) -> bool:
-    """Apply spec section 8 selection; a mismatch is a skip, never an error."""
+    """Apply spec section 8 selection; a mismatch is a skip, never an error.
+
+    A classification made after ``built_at`` did not exist at the build, so it
+    is skipped rather than invalid: that keeps a replay at ``built_at`` stable.
+    """
     if _single_text(rows, "question_set_version") != policy.question_set_version:
         return False
     if _single_text(rows, "model_version") != policy.model_version:
         return False
     available = _single_timestamp(rows, "source_available_at")
     published = _single_timestamp(rows, "original_published_at")
+    classified = _single_timestamp(rows, "classified_at")
     # A missing timestamp value is selected so the validator rejects it, not skipped.
     if available is not None and available > cutoff:
+        return False
+    if classified is not None and classified > built_at:
         return False
     return published is None or published > window_start
 
@@ -427,14 +483,38 @@ def _admitted_verdict(
     except _VALIDATION_ERRORS as exc:
         ledger.invalidate(observation_id, str(exc))
         return None
-    if policy.model_released_on > cutoff.date():
-        ledger.invalidate(observation_id, "pinned model was released after the cutoff")
-        return None
-    classified_at = _single_timestamp(rows, "classified_at")
-    if classified_at is None or classified_at > cutoff + policy.deadline:
-        ledger.invalidate(observation_id, "classified after the panel-build deadline")
+    detail = _admissibility_failure(rows, cutoff=cutoff, policy=policy)
+    if detail is not None:
+        ledger.invalidate(observation_id, detail)
         return None
     return classify_article(answers)
+
+
+def _admissibility_failure(
+    rows: Mapping[str, list[EquityObservationValue]],
+    *,
+    cutoff: datetime,
+    policy: AdverseNewsGatePolicy,
+) -> str | None:
+    """Return why a validated classification is inadmissible, or ``None``."""
+    for stored, expected in _DIGEST_FIELDS:
+        if _single_text(rows, stored) != getattr(policy, expected):
+            return f"{stored} does not match the gate policy"
+    if policy.model_released_on > cutoff.date():
+        return "pinned model was released after the cutoff"
+    classified_at = _single_timestamp(rows, "classified_at")
+    available_at = _single_timestamp(rows, "source_available_at")
+    if classified_at is None or available_at is None:
+        return "classified_at and source_available_at are required"
+    failures = (
+        (classified_at > cutoff + policy.deadline, "classified after the panel-build deadline"),
+        (classified_at < available_at, "classified before the article was available"),
+        (
+            classified_at.date() < policy.model_released_on,
+            "classified before the pinned model was released",
+        ),
+    )
+    return next((detail for failed, detail in failures if failed), None)
 
 
 def _check_completeness(
