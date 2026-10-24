@@ -483,6 +483,11 @@ Classifications are validated at cutoff `T`, so a provider correction
 available after `T` never displaces the original at `T`. Coverage records are
 validated at `T + 72 h`.
 
+The resolver takes the panel-build instant `built_at` and bounds evidence at
+`min(built_at, T + 72 h)`: coverage completed and classifications made after
+`built_at` are ignored, so replaying with the original `built_at` reproduces the
+original result.
+
 Classifying after `T` with a model that was released before `T` adds no later
 information. The pinned model is the same artifact before and after `T`, and the
 article was available by `T`.

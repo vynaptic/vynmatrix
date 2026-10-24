@@ -635,3 +635,8 @@ from `main` before Task 1.
   `DatabaseQualityCompounderPanelResolver`, pass `reason` into
   `quality_compounder_market_ineligibility_reason`, add the observation IDs to
   the manifest ledger, and go through release.
+- **Provider-correction writer.** Spec section 3 step 4 revisions have no
+  production path yet; this is a prerequisite for `0.3.0`.
+- **Migration 0111 integration run.** Run
+  `tests/test_deployment_lifecycle_postgres_integration.py` (the 0111 trigger and
+  grants) before `0.3.0`.
