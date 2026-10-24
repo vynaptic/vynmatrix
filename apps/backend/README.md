@@ -43,9 +43,18 @@ The UI cannot place an order, hold a secret, or release a strategy.
   on one account: the refusal (HTTP 409) names the strategy in the way and the
   instruments they share. A membership universe (`universe_contract`, such as
   the point-in-time S&P 500) cannot be pinned to a list and keeps the unscoped
-  default, every instrument, so it needs an account of its own. The UI shows the
-  scope but cannot change it; `POST /bindings` sets any other scope, including
-  for a binding made before scoping, which covers every instrument.
+  default, every instrument, so it needs an account of its own. The Strategies
+  page changes a binding's scope to another non-empty list (`instruments_allowed`
+  in the patch, each entry resolved through the catalogue and compared as a set),
+  which is how two strategies whose universes overlap share one account: narrow
+  one until they share nothing. Whenever the binding is active, or the same patch
+  switches it on, the overlap rule runs against the new scope. A change may not
+  drop an instrument the strategy still holds on that account: scoring routes
+  signals by the scope and execution re-checks it before every exit, so that
+  position could no longer close. Holdings are read from the canonical
+  execution ledger (each fill signed by its intent's side, per strategy), not
+  from the per-account `positions` projection. Setting a scope back to every
+  instrument is left to `POST /bindings`.
 - **What the UI still cannot do.** Release, activate, deprecate or pull a
   strategy version; delete anything (the backend role holds `DELETE` on no
   table, so switching a binding off is the honest control); accept key material

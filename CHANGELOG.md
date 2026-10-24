@@ -18,6 +18,14 @@ Git history.
   Strategies page shows each binding's scope. A membership universe such as the
   point-in-time S&P 500 keeps the old every-instrument scope, and so does a
   binding made before this change; `POST /bindings` can re-scope either.
+- The owner UI can change a binding's instrument scope, so strategies whose
+  declared universes overlap can still share one account: narrow one of them
+  (for example SwingHighLowPMO to ETHUSDC and SOLUSDC beside a BTCUSDC
+  strategy) and both can be in **Trading**. The new scope is a non-empty list of
+  catalogue instruments. The overlap rule runs against it whenever the binding
+  is or becomes active, and a change that drops an instrument the strategy still
+  holds on that account is refused, because that position's close signals would
+  stop reaching it.
 - A readiness checklist for each binding on the owner UI's Strategies page. It
   says why a bound strategy is or is not trading, in pipeline order: released,
   mode, account connected, a signal worker processing market data, the last

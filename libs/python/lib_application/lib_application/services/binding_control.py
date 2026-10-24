@@ -18,7 +18,12 @@ Two rules are new, and both close gaps the route had:
 
 A UI binding is scoped to the universe its strategy's release declares
 (:func:`declared_universe`). An unscoped binding covers every instrument, and
-the overlap rule then leaves room for one active strategy per account.
+the overlap rule then leaves room for one active strategy per account. The
+owner may later patch that scope to another non-empty list, so two strategies
+whose universes overlap can still split one account between them. A patch may
+not drop an instrument the strategy still holds on that account
+(:func:`reject_stranded_positions`): scoring routes signals by the scope, so the
+position's close signals would no longer reach the binding.
 """
 
 from __future__ import annotations
@@ -33,8 +38,11 @@ from sqlalchemy.orm import Session
 
 from lib_application.db.models import (
     Broker,
+    Execution,
     Instrument,
     LinkedBrokerAccount,
+    Order,
+    OrderIntent,
     Strategy,
     StrategyVersion,
     UserStrategyBinding,
@@ -100,9 +108,13 @@ NUMERIC_FIELDS: dict[str, tuple[Decimal, Decimal, bool]] = {
 }
 MAX_OPEN_POSITIONS = (1, 1000)
 
+#: The binding's instrument scope. A patch may set it to a non-empty list only;
+#: widening a binding to every instrument stays a CLI decision.
+SCOPE_FIELD = "instruments_allowed"
+
 #: What a UI patch may address. Everything else on the row stays where the CLI
 #: and the catalogue put it.
-PATCHABLE: frozenset[str] = frozenset({"mode", *NUMERIC_FIELDS, "max_open_positions"})
+PATCHABLE: frozenset[str] = frozenset({"mode", *NUMERIC_FIELDS, "max_open_positions", SCOPE_FIELD})
 
 
 def mode_of(row: Any) -> str:
@@ -322,7 +334,75 @@ def reject_conflicting_active(
             f"overlapping instrument scope on broker_account_id={broker_account_id}: "
             f"{candidate.strategy_id} is already switched on for {overlap}. Two active "
             "strategies never share an instrument on one account; switch "
-            f"{candidate.strategy_id} off, or bind this strategy to another account"
+            f"{candidate.strategy_id} off, narrow one of the two scopes so they share "
+            "none, or bind this strategy to another account"
+        )
+        raise BindingControlError(msg, status_code=409)
+
+
+def held_instruments(
+    session: Session, *, broker_account_id: int, strategy_id: str | None
+) -> list[str]:
+    """Instruments a strategy still holds on an account, as catalogue symbols, sorted.
+
+    The source is the canonical execution ledger: exact ``executions`` joined to
+    the ``orders`` and ``order_intents`` that own them. The signed sum of a
+    strategy's fills is the net quantity its FIFO replay would leave, and it
+    needs no price. The ``positions`` table is not used: it is a projection, and
+    it is kept per account, so it cannot say which strategy holds a position.
+    Every column read here is inside the backend's ``0107`` read grant.
+    """
+    if strategy_id is None:
+        return []
+    signed = case((OrderIntent.side == "BUY", Execution.qty), else_=-Execution.qty)
+    rows = session.execute(
+        select(Instrument.canonical)
+        .select_from(Execution)
+        .join(Order, Order.order_id == Execution.order_id)
+        .join(OrderIntent, OrderIntent.intent_id == Order.intent_id)
+        .join(Instrument, Instrument.instr_id == Execution.instr_id)
+        .where(
+            Order.account_id == broker_account_id,
+            OrderIntent.strategy_id == strategy_id,
+        )
+        .group_by(Execution.instr_id, Instrument.canonical)
+        .having(func.sum(signed) != 0)
+    ).scalars()
+    return sorted({str(symbol) for symbol in rows})
+
+
+def reject_stranded_positions(
+    session: Session,
+    *,
+    broker_account_id: int,
+    strategy_id: str | None,
+    current: frozenset[str] | None,
+    proposed: Sequence[str],
+) -> None:
+    """Refuse a new scope that drops an instrument the strategy still holds.
+
+    Scoring routes a strategy's signals only to bindings whose scope names the
+    instrument, and execution re-checks the scope before every order, exits
+    included. Dropping a held instrument would leave its position with no way
+    to close. ``current`` is the scope as stored (``None`` is every
+    instrument); a holding that the stored scope already excludes is not
+    dropped by this change, so it does not block it.
+    """
+    kept = set(proposed)
+    stranded = [
+        symbol
+        for symbol in held_instruments(
+            session, broker_account_id=broker_account_id, strategy_id=strategy_id
+        )
+        if symbol not in kept and (current is None or symbol in current)
+    ]
+    if stranded:
+        held = ", ".join(stranded)
+        msg = (
+            f"{strategy_id} still holds an open position in {held} on "
+            f"broker_account_id={broker_account_id}. Removing it from the scope would stop "
+            "that position's close signals from reaching this binding; keep it in the "
+            "scope until the position is closed"
         )
         raise BindingControlError(msg, status_code=409)
 
@@ -438,6 +518,36 @@ def _matches(current: Any, supplied: Any) -> bool:
     return bool(current == supplied)
 
 
+def _scope(session: Session, value: Any) -> frozenset[str] | None:
+    """A stored or expected scope as a set of canonical symbols; ``None`` is everything.
+
+    An empty list also means every instrument, the meaning scoring and the
+    overlap rule already give it.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        msg = f"{SCOPE_FIELD} must be a list of instruments or null"
+        raise BindingControlError(msg, status_code=422)
+    if not value:
+        return None
+    return frozenset(canonical_instruments(session, list(value)) or [])
+
+
+def _requested_scope(session: Session, value: Any) -> list[str]:
+    """The new scope: a non-empty list, every entry resolved through the catalogue."""
+    if not isinstance(value, (list, tuple)) or not value:
+        msg = (
+            f"{SCOPE_FIELD} must be a non-empty list of instruments; "
+            "a binding cannot be widened to every instrument from here"
+        )
+        raise BindingControlError(msg, status_code=422)
+    if any(not str(item).strip() for item in value):
+        msg = f"{SCOPE_FIELD} names a blank instrument"
+        raise BindingControlError(msg, status_code=422)
+    return canonical_instruments(session, list(value)) or []
+
+
 def load_binding(session: Session, *, owner_id: str, binding_id: int) -> UserStrategyBinding:
     row = (
         session.query(UserStrategyBinding)
@@ -528,36 +638,62 @@ def patch_binding(
     expected: Mapping[str, Any],
     changes: Mapping[str, Any],
 ) -> UserStrategyBinding:
-    """Change only the supplied fields, and only if they still hold their expected value."""
+    """Change only the supplied fields, and only if they still hold their expected value.
+
+    A scope change is compared as a set of canonical symbols, so order and
+    broker aliases do not make a current value look stale. Whenever the binding
+    is or becomes active, the overlap rule runs against the scope it will have
+    after this patch.
+    """
     _fence(expected, changes)
     row = load_binding(session, owner_id=owner_id, binding_id=binding_id)
-    account = lock_account(session, owner_id=owner_id, account_id=int(row.broker_account_id))
+    account_id = int(row.broker_account_id)
+    account = lock_account(session, owner_id=owner_id, account_id=account_id)
     require_broker_allowed(session, account=account, allowed_brokers=row.allowed_brokers)
+    mode = changes.get("mode")
+    if mode is not None and mode not in MODES:
+        msg = f"unsupported mode: {mode}"
+        raise BindingControlError(msg, status_code=422)
+    scope = _requested_scope(session, changes[SCOPE_FIELD]) if SCOPE_FIELD in changes else None
+    stored_scope = _scope(session, row.instruments_allowed) if scope is not None else None
     for key, supplied in expected.items():
-        current = _current(row, key)
-        if not _matches(current, supplied) and not _matches(current, changes[key]):
+        if key == SCOPE_FIELD:
+            fresh = stored_scope in (_scope(session, supplied), frozenset(scope or []))
+        else:
+            current = _current(row, key)
+            fresh = _matches(current, supplied) or _matches(current, changes[key])
+        if not fresh:
             msg = f"stale expected value for {key}"
             raise BindingControlError(msg, status_code=409)
-    mode = changes.get("mode")
-    if mode is not None:
-        if mode not in MODES:
-            msg = f"unsupported mode: {mode}"
-            raise BindingControlError(msg, status_code=422)
-        flags = MODES[mode]
-        if flags.is_active:
-            require_release(session, row.strategy_id)
-            reject_conflicting_active(
-                session,
-                broker_account_id=int(row.broker_account_id),
-                strategy_id=row.strategy_id,
-                is_active=True,
-                instruments=list(row.instruments_allowed or []) or None,
-                existing_binding_id=int(row.binding_id),
-            )
+    if scope is not None:
+        reject_stranded_positions(
+            session,
+            broker_account_id=account_id,
+            strategy_id=row.strategy_id,
+            current=stored_scope,
+            proposed=scope,
+        )
+    flags = MODES[mode] if mode is not None else None
+    if flags is not None and flags.is_active:
+        require_release(session, row.strategy_id)
+    active_after = flags.is_active if flags is not None else bool(row.is_active)
+    if active_after and (scope is not None or flags is not None):
+        scope_after = scope if scope is not None else list(row.instruments_allowed or []) or None
+        reject_conflicting_active(
+            session,
+            broker_account_id=account_id,
+            strategy_id=row.strategy_id,
+            is_active=True,
+            instruments=scope_after,
+            existing_binding_id=int(row.binding_id),
+        )
+    if flags is not None:
         for field, value in flags.as_fields().items():
             setattr(row, field, value)
+    if scope is not None:
+        row.instruments_allowed = scope
     for key, value in changes.items():
-        if key == "mode":
+        if key in {"mode", SCOPE_FIELD}:
             continue
         setattr(row, key, validate_numeric(key, value))
     session.flush()
@@ -602,6 +738,7 @@ __all__ = [
     "MODES",
     "NUMERIC_FIELDS",
     "PATCHABLE",
+    "SCOPE_FIELD",
     "BindingControlError",
     "BindingMode",
     "TradingState",
@@ -609,11 +746,13 @@ __all__ = [
     "create_binding",
     "deactivate_binding",
     "declared_universe",
+    "held_instruments",
     "load_binding",
     "lock_account",
     "mode_of",
     "patch_binding",
     "reject_conflicting_active",
+    "reject_stranded_positions",
     "require_broker_allowed",
     "require_release",
     "scopes_overlap",

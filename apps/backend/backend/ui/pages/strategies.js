@@ -1,5 +1,6 @@
 // Strategies: what exists in the catalogue, what is bound to an account, what
-// it did last -- and the one control that switches a binding on or off.
+// it did last -- and the control that switches a binding on or off and sets
+// which instruments it trades.
 
 import { confirmAction } from "../app.js";
 import {
@@ -14,6 +15,7 @@ import {
   h,
   section,
   table,
+  textField,
   titleCase,
 } from "../format.js";
 
@@ -118,6 +120,21 @@ function scopeLabel(instruments) {
     : "Trades every instrument";
 }
 
+// The scope the owner typed, as a list of symbols. The server resolves each one
+// through the instrument catalogue and refuses one it does not know.
+function parseScope(text) {
+  return [...new Set(text.split(/[\s,]+/).filter(Boolean))];
+}
+
+// Whether two scopes name the same instruments, ignoring order and case. Only
+// the server knows broker aliases, so an alias of a current symbol is sent and
+// resolves to the scope the binding already has.
+function sameScope(left, right) {
+  const a = new Set((left || []).map((item) => item.toUpperCase()));
+  const b = new Set((right || []).map((item) => item.toUpperCase()));
+  return a.size === b.size && [...a].every((item) => b.has(item));
+}
+
 function bindingCell(row) {
   if (!(row.bindings || []).length) {
     return h("span", {
@@ -185,6 +202,8 @@ function editor(row, ctx) {
 
   let account = binding ? binding.account_id : connected[0].account_id;
   let mode = binding ? binding.mode : "off";
+  const currentScope = binding ? binding.instruments_allowed : null;
+  let scopeDraft = currentScope ? currentScope.join(", ") : "";
 
   const accountControl = choice(
     `account-${row.strategy_id}`,
@@ -206,6 +225,13 @@ function editor(row, ctx) {
     },
   );
   if (binding) accountControl.disabled = true;
+  const scopeControl = binding
+    ? textField(`scope-${row.strategy_id}`, scopeDraft, {
+        onInput: (value) => {
+          scopeDraft = value;
+        },
+      })
+    : null;
 
   const apply = h("button", {
     class: "primary",
@@ -213,25 +239,64 @@ function editor(row, ctx) {
     onclick: async () => {
       const chosen = MODES.find((item) => item.value === mode);
       const current = binding ? binding.mode : "off";
-      if (binding && mode === current) {
-        error.textContent = "That is already its mode.";
+      const instruments = parseScope(scopeDraft);
+      const modeChanged = !binding || mode !== current;
+      const scopeChanged = Boolean(binding) && !sameScope(instruments, currentScope);
+      if (!modeChanged && !scopeChanged) {
+        error.textContent = "That is already its mode and its scope.";
+        return;
+      }
+      if (scopeChanged && !instruments.length) {
+        error.textContent =
+          "Name at least one instrument. Widening a binding to every instrument " +
+          "is not done from this page.";
         return;
       }
       error.textContent = "";
+      // Only what changed is sent, each fenced by the value shown on this page.
+      const expected = {};
+      const changes = {};
+      if (modeChanged) {
+        expected.mode = current;
+        changes.mode = mode;
+      }
+      if (scopeChanged) {
+        expected.instruments_allowed = currentScope;
+        changes.instruments_allowed = instruments;
+      }
+      const where = binding ? binding.account_name || `account ${binding.account_id}` : "";
       const done = await confirmAction({
-        title: `${row.name}: ${chosen.label}`,
+        title: `${row.name}: ${modeChanged ? chosen.label : "Instrument scope"}`,
         detail: binding
-          ? `On ${binding.account_name || `account ${binding.account_id}`}, ` +
-            `from ${MODE_LABEL[current] || current} to ${chosen.label}.`
+          ? [
+              modeChanged
+                ? `On ${where}, from ${MODE_LABEL[current] || current} to ${chosen.label}.`
+                : `On ${where}.`,
+              scopeChanged
+                ? `It trades ${instruments.join(", ")} instead of ` +
+                  `${currentScope ? currentScope.join(", ") : "every instrument"}.`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" ")
           : `Bind to ${accountLabel(connected, account)} as ${chosen.label}, ` +
             "for the instruments its release declares.",
-        consequence: chosen.consequence,
-        confirmLabel: chosen.label,
+        consequence: [
+          modeChanged ? chosen.consequence : null,
+          scopeChanged
+            ? "Signals for any other instrument no longer reach it. A scope that drops an " +
+              "instrument it still holds, or shares one with another active strategy on " +
+              "this account, is refused."
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" "),
+        confirmLabel: modeChanged ? chosen.label : "Change scope",
         run: async () => {
           if (binding) {
             await ctx.api.send("POST", `/api/ui/bindings/${binding.binding_id}`, {
-              expected: { mode: current },
-              changes: { mode },
+              expected,
+              changes,
             });
           } else {
             await ctx.api.send("POST", "/api/ui/bindings", {
@@ -253,6 +318,11 @@ function editor(row, ctx) {
       binding ? "An existing binding stays on its account." : null),
     field(`mode-${row.strategy_id}`, "Mode", modeControl,
       "Entries always run on autopilot; close-only never opens a position."),
+    scopeControl
+      ? field(`scope-${row.strategy_id}`, "Instruments", scopeControl,
+        "Catalogue symbols, separated by commas. Narrow it so it shares no " +
+          "instrument with another active strategy on this account.")
+      : null,
     h("div", { class: "editor-actions" }, apply, error),
   );
 }

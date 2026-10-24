@@ -1182,7 +1182,9 @@ def test_a_patch_may_only_name_the_fields_the_control_offers(client: TestClient)
     for expected, changes in (
         ({"is_active": True}, {"is_active": False}),
         ({"strategy_id": "swing_v1"}, {"strategy_id": "ported_v1"}),
-        ({"instruments_allowed": None}, {"instruments_allowed": ["BTCUSDC"]}),
+        ({"broker_account_id": 1}, {"broker_account_id": 2}),
+        # The instrument scope is patchable; its other dimensions are not.
+        ({"asset_classes_allowed": ["crypto"]}, {"asset_classes_allowed": ["equity"]}),
     ):
         refused = client.post(
             f"/api/ui/bindings/{binding_id}",
@@ -1305,7 +1307,8 @@ def test_two_released_strategies_with_disjoint_universes_both_trade_one_account(
     assert overlapping.status_code == 409
     detail = overlapping.json()["detail"]
     assert "btc_v1 is already switched on for BTCUSDC" in detail
-    assert "switch btc_v1 off, or bind this strategy to another account" in detail
+    assert "switch btc_v1 off, narrow one of the two scopes" in detail
+    assert "or bind this strategy to another account" in detail
 
     rows = {
         row["strategy_id"]: row
@@ -1320,6 +1323,66 @@ def test_two_released_strategies_with_disjoint_universes_both_trade_one_account(
     assert activity[1]["fields"] == ["instruments_allowed", "mode"]
 
 
+def test_narrowing_a_binding_shares_its_account_but_never_strands_a_position(
+    client: TestClient, factory: Any
+) -> None:
+    """The fixture's swing binding covers every instrument and holds BTC long, ETH short."""
+    with factory() as session:
+        session.add(
+            Instrument(
+                instr_id=3, asset_class="crypto", canonical="SOLUSDC", settlement_currency="USDC"
+            )
+        )
+        _release(session, "sol_v1", "SOLUSDC")
+        session.commit()
+    swing = client.get(CONTROL, headers=AUTH).json()["bindings"][0]["binding_id"]
+
+    def bind_sol() -> Any:
+        return client.post(
+            "/api/ui/bindings",
+            json={"strategy_id": "sol_v1", "broker_account_id": 1, "mode": "trading"},
+            headers=AUTH,
+        )
+
+    def scope(expected: Any, changes: Any) -> Any:
+        return client.post(
+            f"/api/ui/bindings/{swing}",
+            json={
+                "expected": {"instruments_allowed": expected},
+                "changes": {"instruments_allowed": changes},
+            },
+            headers=AUTH,
+        )
+
+    assert bind_sol().status_code == 409
+
+    stranding = scope(None, ["BTCUSDC"])
+    assert stranding.status_code == 409
+    assert "swing_v1 still holds an open position in ETHUSDC" in stranding.json()["detail"]
+
+    narrowed = scope(None, ["BTC-USDC", "ETHUSDC"])
+    assert narrowed.status_code == 200, narrowed.text
+    assert narrowed.json()["mode"] == "trading"
+    shared = bind_sol()
+    assert shared.status_code == 200, shared.text
+    assert shared.json()["mode"] == "trading"
+
+    widening = scope(["ETHUSDC", "BTCUSDC"], ["BTCUSDC", "ETHUSDC", "SOLUSDC"])
+    assert widening.status_code == 409
+    assert "sol_v1 is already switched on for SOLUSDC" in widening.json()["detail"]
+
+    rows = {
+        row["strategy_id"]: row
+        for row in client.get("/api/ui/strategies", headers=AUTH).json()["strategies"]
+    }
+    assert rows["swing_v1"]["bindings"][0]["instruments_allowed"] == ["BTCUSDC", "ETHUSDC"]
+    assert rows["sol_v1"]["bindings"][0]["instruments_allowed"] == ["SOLUSDC"]
+    assert {rows[name]["bindings"][0]["mode"] for name in ("swing_v1", "sol_v1")} == {"trading"}
+    activity = client.get(CONTROL, headers=AUTH).json()["activity"]
+    assert (activity[0]["action"], activity[0]["status"]) == ("binding.patch", "error")
+    assert activity[0]["fields"] == ["instruments_allowed"]
+
+
 def test_every_column_a_write_touches_is_granted_for_update(
     client: TestClient, factory: Any
 ) -> None:
@@ -1327,7 +1390,9 @@ def test_every_column_a_write_touches_is_granted_for_update(
 
     The read guard above covers ``SELECT``. This is its write half: it captures
     the ``UPDATE`` statements the control surface emits and checks each one
-    against the column-level grant ``0102`` actually made.
+    against the column-level grant ``0102`` actually made. A scope patch also
+    reads the execution ledger to find open positions, so those reads are held
+    to the ``0107`` read grant here: the read guard runs only the GET routes.
     """
     import importlib.util
     import re
@@ -1335,18 +1400,25 @@ def test_every_column_a_write_touches_is_granted_for_update(
 
     from sqlalchemy import event
 
-    path = (
-        Path(__file__).resolve().parents[3]
-        / "scripts/db/alembic/versions/0102_owner_control_plane.py"
-    )
-    spec = importlib.util.spec_from_file_location("owner_control_plane", path)
-    assert spec is not None
-    assert spec.loader is not None
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
+    versions = Path(__file__).resolve().parents[3] / "scripts/db/alembic/versions"
+
+    def _load(name: str) -> Any:
+        spec = importlib.util.spec_from_file_location(name, versions / f"{name}.py")
+        assert spec is not None
+        assert spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    migration = _load("0102_owner_control_plane")
     granted = {
         "users": {name.strip() for name in migration._PROFILE_COLUMNS.split(",")},
         "linked_broker_accounts": {name.strip() for name in migration._ACCOUNT_COLUMNS.split(",")},
+    }
+    ledger_grants = {
+        table: set(columns)
+        for table, columns in _load("0107_backend_ui_read").READ_COLUMNS.items()
+        if table in {"executions", "orders", "order_intents"}
     }
 
     statements: list[str] = []
@@ -1358,6 +1430,15 @@ def test_every_column_a_write_touches_is_granted_for_update(
     binding_id = client.get(CONTROL, headers=AUTH).json()["bindings"][0]["binding_id"]
     event.listen(engine, "before_cursor_execute", _capture)
     try:
+        scoped = client.post(
+            f"/api/ui/bindings/{binding_id}",
+            json={
+                "expected": {"instruments_allowed": None},
+                "changes": {"instruments_allowed": ["BTCUSDC", "ETHUSDC"]},
+            },
+            headers=AUTH,
+        )
+        assert scoped.status_code == 200, scoped.text
         assert (
             client.post(
                 f"/api/ui/bindings/{binding_id}",
@@ -1397,6 +1478,13 @@ def test_every_column_a_write_touches_is_granted_for_update(
             ungranted.setdefault(table, set()).update(excess)
 
     assert ungranted == {}, ungranted
+    sql = "\n".join(statements)
+    ledger_reads = {table: set(re.findall(rf"\b{table}\.(\w+)\b", sql)) for table in ledger_grants}
+    assert {table: used - ledger_grants[table] for table, used in ledger_reads.items()} == {
+        table: set() for table in ledger_grants
+    }
+    # The position guard did read the ledger, so the check above is not vacuous.
+    assert all(ledger_reads.values()), ledger_reads
     # And the guard has teeth: these writes really did emit an UPDATE per table.
     updated = {
         match.group(1)

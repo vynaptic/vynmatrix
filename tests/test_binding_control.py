@@ -153,16 +153,22 @@ def test_open_positions_accepts_its_bounds() -> None:
     assert validate_numeric("max_open_positions", high) == high
 
 
-def test_the_patchable_set_is_the_mode_plus_the_bounded_numbers() -> None:
-    """Nothing that carries identity, tenancy or scope is reachable from a patch."""
-    assert {"mode", "max_open_positions", *NUMERIC_FIELDS} == PATCHABLE
+def test_the_patchable_set_is_the_mode_the_bounded_numbers_and_the_instrument_scope() -> None:
+    """Nothing that carries identity or tenancy is reachable from a patch.
+
+    The instrument scope is, because two strategies whose declared universes
+    overlap can share an account only once the owner narrows one of them. Every
+    other scope dimension stays where the CLI put it.
+    """
+    assert {"mode", "max_open_positions", *NUMERIC_FIELDS, "instruments_allowed"} == PATCHABLE
     for forbidden in (
         "user_id",
         "binding_id",
         "strategy_id",
         "broker_account_id",
-        "instruments_allowed",
         "asset_classes_allowed",
+        "sectors_allowed",
+        "allowed_brokers",
         "created_at",
         "is_active",
         "entries_enabled",
@@ -494,3 +500,307 @@ def test_switching_a_prepared_binding_on_applies_the_same_overlap_rule(
         changes={"mode": "trading"},
     )
     assert mode_of(switched) == "trading"
+
+
+# ------------------------------------------------------------- scope patches
+
+
+def _fill(
+    session: Any, *, number: int, strategy: str, instr: int, side: str, qty: str = "0.5"
+) -> None:
+    """One exact ledger fill for ``strategy`` on the owner's account."""
+    from datetime import datetime
+
+    from lib_application.db.models import Execution, Order, OrderIntent
+
+    session.add(
+        OrderIntent(
+            intent_id=number,
+            user_id="owner",
+            account_id=1,
+            strategy_id=strategy,
+            canonical_signal_id=number,
+            side=side,
+            execution_mode="spot",
+            broker_environment="paper",
+            method="SPOT",
+            payload={},
+            status="routed",
+        )
+    )
+    session.add(
+        Order(
+            order_id=number,
+            intent_id=number,
+            broker_id=6,
+            account_id=1,
+            settlement_currency="USDC",
+            client_order_id=f"client-{number}",
+            state="filled",
+        )
+    )
+    session.add(
+        Execution(
+            exec_id=number,
+            order_id=number,
+            instr_id=instr,
+            fill_ts=datetime(2026, 10, 1, 12, number),
+            qty=Decimal(qty),
+            price=Decimal("100"),
+            fee_ccy="USDC",
+            fee_amount=Decimal("0"),
+            venue="paper",
+            trade_id=f"trade-{number}",
+        )
+    )
+    session.commit()
+
+
+def _scope_patch(
+    session: Any, binding: Any, *, expected: dict[str, Any], changes: dict[str, Any]
+) -> Any:
+    from lib_application.services.binding_control import patch_binding
+
+    row = patch_binding(
+        session,
+        owner_id="owner",
+        binding_id=int(binding.binding_id),
+        expected=expected,
+        changes=changes,
+    )
+    session.commit()
+    return row
+
+
+def test_narrowing_one_binding_lets_two_overlapping_universes_trade_one_account(
+    universe_session: Any,
+) -> None:
+    """The patch that narrows the scope may also switch the binding on, in one step."""
+    _create(universe_session, "btc_v1")
+    majors = _create(universe_session, "majors_v1", mode="off")
+
+    narrowed = _scope_patch(
+        universe_session,
+        majors,
+        # The expected value is a set: order and broker aliases do not matter.
+        expected={"mode": "off", "instruments_allowed": ["SOLUSDC", "BTC-USDC"]},
+        changes={"mode": "trading", "instruments_allowed": ["sol-usdc"]},
+    )
+
+    assert (mode_of(narrowed), list(narrowed.instruments_allowed)) == ("trading", ["SOLUSDC"])
+
+
+def test_widening_an_active_binding_into_another_strategys_instrument_is_refused(
+    universe_session: Any,
+) -> None:
+    _create(universe_session, "btc_v1")
+    majors = _create(universe_session, "majors_v1", mode="off")
+    _scope_patch(
+        universe_session,
+        majors,
+        expected={"mode": "off", "instruments_allowed": ["BTCUSDC", "SOLUSDC"]},
+        changes={"mode": "trading", "instruments_allowed": ["SOLUSDC"]},
+    )
+
+    with pytest.raises(BindingControlError) as raised:
+        _scope_patch(
+            universe_session,
+            majors,
+            expected={"instruments_allowed": ["SOLUSDC"]},
+            changes={"instruments_allowed": ["SOLUSDC", "BTCUSDC"]},
+        )
+
+    assert raised.value.status_code == 409
+    assert "btc_v1 is already switched on for BTCUSDC" in raised.value.detail
+    assert "narrow one of the two scopes" in raised.value.detail
+
+
+def test_an_inactive_binding_may_take_an_overlapping_scope_it_cannot_switch_on(
+    universe_session: Any,
+) -> None:
+    """Only authority conflicts; the overlap rule runs again when it is switched on."""
+    _create(universe_session, "btc_v1")
+    eth = _create(universe_session, "eth_v1", mode="off")
+
+    widened = _scope_patch(
+        universe_session,
+        eth,
+        expected={"instruments_allowed": ["ETHUSDC"]},
+        changes={"instruments_allowed": ["ETHUSDC", "BTCUSDC"]},
+    )
+    assert list(widened.instruments_allowed) == ["ETHUSDC", "BTCUSDC"]
+
+    with pytest.raises(BindingControlError) as raised:
+        _scope_patch(universe_session, eth, expected={"mode": "off"}, changes={"mode": "trading"})
+    assert raised.value.status_code == 409
+
+
+@pytest.mark.parametrize(
+    "value",
+    [[], None, "SOLUSDC", ["SOLUSDC", " "]],
+    ids=["empty", "every-instrument", "not-a-list", "blank-entry"],
+)
+def test_a_scope_change_must_be_a_non_empty_list_of_instruments(
+    universe_session: Any, value: Any
+) -> None:
+    majors = _create(universe_session, "majors_v1", mode="off")
+
+    with pytest.raises(BindingControlError) as raised:
+        _scope_patch(
+            universe_session,
+            majors,
+            expected={"instruments_allowed": ["BTCUSDC", "SOLUSDC"]},
+            changes={"instruments_allowed": value},
+        )
+
+    assert raised.value.status_code == 422
+
+
+def test_a_scope_naming_an_instrument_the_catalogue_lacks_is_refused(
+    universe_session: Any,
+) -> None:
+    majors = _create(universe_session, "majors_v1", mode="off")
+
+    with pytest.raises(BindingControlError) as raised:
+        _scope_patch(
+            universe_session,
+            majors,
+            expected={"instruments_allowed": ["BTCUSDC", "SOLUSDC"]},
+            changes={"instruments_allowed": ["DOGEUSDC"]},
+        )
+
+    assert raised.value.status_code == 422
+    assert "DOGEUSDC" in raised.value.detail
+
+
+def test_a_stale_expected_scope_is_refused_but_a_repeated_patch_is_not(
+    universe_session: Any,
+) -> None:
+    majors = _create(universe_session, "majors_v1", mode="off")
+
+    with pytest.raises(BindingControlError) as raised:
+        _scope_patch(
+            universe_session,
+            majors,
+            expected={"instruments_allowed": ["BTCUSDC"]},
+            changes={"instruments_allowed": ["SOLUSDC"]},
+        )
+    assert raised.value.status_code == 409
+    assert raised.value.detail == "stale expected value for instruments_allowed"
+    universe_session.rollback()
+
+    change = {"instruments_allowed": ["SOLUSDC"]}
+    _scope_patch(
+        universe_session,
+        majors,
+        expected={"instruments_allowed": ["BTCUSDC", "SOLUSDC"]},
+        changes=change,
+    )
+    # A retry of the same patch finds the value it wanted and is not stale.
+    again = _scope_patch(
+        universe_session,
+        majors,
+        expected={"instruments_allowed": ["BTCUSDC", "SOLUSDC"]},
+        changes=change,
+    )
+    assert list(again.instruments_allowed) == ["SOLUSDC"]
+
+
+def test_dropping_an_instrument_the_strategy_still_holds_is_refused(
+    universe_session: Any,
+) -> None:
+    """Its close signals would no longer reach the binding, so the position would strand."""
+    majors = _create(universe_session, "majors_v1", mode="close_only")
+    _fill(universe_session, number=1, strategy="majors_v1", instr=3, side="BUY")
+
+    with pytest.raises(BindingControlError) as raised:
+        _scope_patch(
+            universe_session,
+            majors,
+            expected={"instruments_allowed": ["BTCUSDC", "SOLUSDC"]},
+            changes={"instruments_allowed": ["BTCUSDC"]},
+        )
+
+    assert raised.value.status_code == 409
+    assert "majors_v1 still holds an open position in SOLUSDC" in raised.value.detail
+    assert "keep it in the scope until the position is closed" in raised.value.detail
+    universe_session.rollback()
+
+    # Narrowing away an instrument it does not hold is still allowed.
+    kept = _scope_patch(
+        universe_session,
+        majors,
+        expected={"instruments_allowed": ["BTCUSDC", "SOLUSDC"]},
+        changes={"instruments_allowed": ["SOLUSDC"]},
+    )
+    assert list(kept.instruments_allowed) == ["SOLUSDC"]
+
+
+def test_a_short_position_or_an_unscoped_binding_holds_its_instrument_too(
+    universe_session: Any,
+) -> None:
+    from lib_application.db.models import UserStrategyBinding
+
+    universe_session.add(
+        UserStrategyBinding(
+            user_id="owner",
+            strategy_id="majors_v1",
+            broker_account_id=1,
+            instruments_allowed=None,
+            **MODES["off"].as_fields(),
+        )
+    )
+    universe_session.commit()
+    unscoped = universe_session.query(UserStrategyBinding).one()
+    _fill(universe_session, number=1, strategy="majors_v1", instr=2, side="SELL")
+
+    with pytest.raises(BindingControlError) as raised:
+        _scope_patch(
+            universe_session,
+            unscoped,
+            expected={"instruments_allowed": None},
+            changes={"instruments_allowed": ["BTCUSDC", "SOLUSDC"]},
+        )
+
+    assert raised.value.status_code == 409
+    assert "open position in ETHUSDC" in raised.value.detail
+
+
+def test_a_closed_position_or_another_strategys_holding_does_not_block_a_narrowing(
+    universe_session: Any,
+) -> None:
+    """The ledger attributes each fill to its strategy; the account total is not the test."""
+    from lib_application.services.binding_control import held_instruments
+
+    majors = _create(universe_session, "majors_v1", mode="off")
+    _fill(universe_session, number=1, strategy="majors_v1", instr=3, side="BUY")
+    _fill(universe_session, number=2, strategy="majors_v1", instr=3, side="SELL")
+    _fill(universe_session, number=3, strategy="btc_v1", instr=1, side="BUY")
+
+    assert held_instruments(universe_session, broker_account_id=1, strategy_id="majors_v1") == []
+    assert held_instruments(universe_session, broker_account_id=1, strategy_id="btc_v1") == [
+        "BTCUSDC"
+    ]
+    narrowed = _scope_patch(
+        universe_session,
+        majors,
+        expected={"instruments_allowed": ["BTCUSDC", "SOLUSDC"]},
+        changes={"instruments_allowed": ["ETHUSDC"]},
+    )
+    assert list(narrowed.instruments_allowed) == ["ETHUSDC"]
+
+
+def test_a_scope_patch_is_audited_by_field_name_never_by_value(universe_session: Any) -> None:
+    from lib_application.db.models import ApiAuditLog
+
+    majors = _create(universe_session, "majors_v1", mode="off")
+    _scope_patch(
+        universe_session,
+        majors,
+        expected={"instruments_allowed": ["BTCUSDC", "SOLUSDC"]},
+        changes={"instruments_allowed": ["SOLUSDC"]},
+    )
+
+    audit = universe_session.query(ApiAuditLog).filter(ApiAuditLog.action == "binding.patch").one()
+    assert audit.req == {"fields": ["instruments_allowed"]}
+    assert "SOLUSDC" not in str(audit.req)
