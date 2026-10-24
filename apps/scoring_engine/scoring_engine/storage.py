@@ -291,7 +291,9 @@ class AppScoreStore(_StoreOps):
                     return []
 
                 instrument_ids = self._collect_instrument_ids(rows)
-                instrument_map = self._load_instrument_map(s, instrument_ids)
+                instrument_map = self._load_instrument_map(
+                    s, instrument_ids, self._collect_unlisted_asset_classes(rows)
+                )
                 sector_map = self._load_sector_map(s, self._collect_sector_ids(rows))
                 sizing_map = self._load_sizing_profiles(s, rows)
 

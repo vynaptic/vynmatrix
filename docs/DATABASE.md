@@ -101,7 +101,7 @@ cannot change after relevant activity. Never place a secret in a command line.
 
 ## Existing databases, migrations, and rollback
 
-The current linear Alembic head is 0109_backend_ui_readiness. Verify the
+The current linear Alembic head is 0110_asset_class_binding_scope. Verify the
 revision from scripts/db/alembic/versions rather than copying a transient
 command result. Revisions 0099 through 0104 introduce single-owner controls,
 safe reference registration, control-plane guards, commercial-tenancy removal,
@@ -121,6 +121,10 @@ execution_decision_logs (binding, status, reasoning, time) and risk_breaches
 (account, rule, severity, time), with SELECT policies scoped to the deployment
 owner (runtime rows only for strategies the owner has bound); model state,
 deduplication keys, policy snapshots and breach context stay unreadable.
+0110 makes the binding overlap trigger read a binding without an instrument
+list as every instrument in its asset_classes_allowed rather than every
+instrument; its downgrade restores the 0077 rule and refuses while two active
+bindings on one account rely on that separation.
 
 For an existing database, configure its actual maintenance authority and use:
 
@@ -178,6 +182,16 @@ entry and exit flags remain separate. The default binding mode policy is fixed;
 the other supported policies are best_return, lowest_risk, highest_sharpe, and
 user_rotating. Their ranking applies only when the resolved execution mode is
 best or auto and still respects the binding's allowed modes.
+
+Two active strategies never share an instrument on one account. The
+vm_validate_strategy_binding trigger and binding_control.BindingScope apply one
+rule: a binding's instruments_allowed list is its whole scope; without a list
+the scope is every catalogued instrument whose asset_class is in
+asset_classes_allowed. Scoring and execution enforce that bound, so a list-free
+equity binding (a membership universe such as the point-in-time S&P 500) and a
+binding listing only crypto instruments can share an account. An empty or
+non-canonical asset_classes_allowed bounds nothing and conflicts with every
+other active strategy.
 
 ## Reference and market data
 

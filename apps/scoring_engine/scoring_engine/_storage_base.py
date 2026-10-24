@@ -8,7 +8,7 @@ from datetime import datetime
 from types import ModuleType
 from typing import Any
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, or_
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -29,8 +29,8 @@ from .storage_base import ScoreStore
 logger = get_logger(__name__)
 
 # Sentinel asset filter that matches no real symbol — used when a binding's
-# asset_classes_allowed currently resolves to zero instruments, so it matches
-# nothing rather than everything (BD-2).
+# asset_classes_allowed currently resolves to zero catalogued instruments, so
+# it matches nothing rather than everything (BD-2).
 _NO_ASSET_MATCH = "__no_asset_class_match__"
 
 # Active session for the current scoring unit-of-work (request-scoped). When
@@ -440,6 +440,19 @@ class _StoreInfra(ScoreStore):
                     ids.add(int(item))
         return ids
 
+    def _collect_unlisted_asset_classes(self, rows: Iterable[Any]) -> set[str]:
+        """Asset classes that bound a binding with no instrument list.
+
+        Those bindings cover every catalogued instrument in their classes, so
+        the instrument map must hold all of them, not only listed ids.
+        """
+        classes: set[str] = set()
+        for row in rows:
+            if row.instruments_allowed:
+                continue
+            classes.update(str(value) for value in row.asset_classes_allowed or [] if value)
+        return classes
+
     def _collect_sector_ids(self, rows: Iterable[Any]) -> set[int]:
         ids: set[int] = set()
         for row in rows:
@@ -450,17 +463,29 @@ class _StoreInfra(ScoreStore):
                     ids.add(int(item))
         return ids
 
-    def _load_instrument_map(self, session: Session, instrument_ids: set[int]) -> dict[int, Any]:
+    def _load_instrument_map(
+        self,
+        session: Session,
+        instrument_ids: set[int],
+        asset_classes: set[str] | None = None,
+    ) -> dict[int, Any]:
+        """Catalogue rows by id: the listed ids, plus every instrument in ``asset_classes``."""
         if app_models is None:
             return {}
-        if not instrument_ids:
+        if not instrument_ids and not asset_classes:
             return {}
+        instrument = app_models.Instrument
         instruments = (
-            session.query(app_models.Instrument)
-            .filter(app_models.Instrument.instr_id.in_(instrument_ids))
+            session.query(instrument)
+            .filter(
+                or_(
+                    instrument.instr_id.in_(instrument_ids),
+                    instrument.asset_class.in_(asset_classes or set()),
+                )
+            )
             .all()
         )
-        return {instrument.instr_id: instrument for instrument in instruments}
+        return {row.instr_id: row for row in instruments}
 
     def _load_sector_map(self, session: Session, sector_ids: set[int]) -> dict[int, str]:
         if app_models is None:
@@ -517,8 +542,10 @@ class _StoreInfra(ScoreStore):
         if row.asset_classes_allowed:
             # BD-2: an asset-class allow-list must match only instruments in those
             # classes, NOT every asset (the old ["*"] dropped the restriction).
-            # Resolve to the concrete symbols; if none currently exist for those
-            # classes, match nothing (sentinel) rather than everything.
+            # Resolve to the concrete catalogue symbols (``list_bindings`` loads
+            # every instrument of these classes); if none exist, match nothing
+            # (sentinel) rather than everything. The overlap rule
+            # (``binding_control.BindingScope``) relies on this bound.
             allowed_classes = {c for c in row.asset_classes_allowed if c}
             class_symbols = [
                 instr.canonical

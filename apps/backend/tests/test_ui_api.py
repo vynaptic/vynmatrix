@@ -541,8 +541,10 @@ def test_strategies_lists_the_catalogue_with_binding_signal_and_recorded_pnl(
             "autopilot": True,
             "entries_enabled": True,
             "exits_enabled": True,
-            # A binding made before scoping covers every instrument.
+            # A binding made before scoping has no list: every instrument in
+            # its asset classes (the model's default, crypto).
             "instruments_allowed": None,
+            "asset_classes_allowed": ["crypto"],
         }
     ]
     assert swing["last_signal"]["action"] == "long"
@@ -1248,12 +1250,18 @@ def test_binding_twice_points_at_the_existing_row_instead_of_duplicating(
     assert "already bound" in again.json()["detail"]
 
 
-def _release(session: Any, strategy_id: str, universe: Any) -> None:
+def _release(session: Any, strategy_id: str, universe: Any, *, asset_class: str = "crypto") -> None:
+    """Release a strategy; a ``None`` universe is a membership universe with no list."""
+    params: dict[str, Any] = {"asset_class": asset_class}
+    if universe is None:
+        params["universe_contract"] = "point_in_time_sp500_membership"
+    else:
+        params["universe"] = universe
     session.add(
         Strategy(
             strategy_id=strategy_id,
             strategy_name=strategy_id,
-            asset_class="crypto",
+            asset_class=asset_class,
             is_active=True,
         )
     )
@@ -1263,7 +1271,7 @@ def _release(session: Any, strategy_id: str, universe: Any) -> None:
             strategy_id=strategy_id,
             semver="1.0.0",
             param_schema={},
-            default_params={"universe": universe, "asset_class": "crypto"},
+            default_params=params,
             status="active",
         )
     )
@@ -1286,10 +1294,10 @@ def test_two_released_strategies_with_disjoint_universes_both_trade_one_account(
             headers=AUTH,
         )
 
-    # The fixture's swing binding names no scope, so it holds every instrument.
+    # The fixture's swing binding names no list, so it holds every crypto instrument.
     blocked = bind("btc_v1")
     assert blocked.status_code == 409
-    assert "swing_v1 is already switched on for every instrument" in blocked.json()["detail"]
+    assert "swing_v1 is already switched on for BTCUSDC" in blocked.json()["detail"]
     swing = client.get(CONTROL, headers=AUTH).json()["bindings"][0]["binding_id"]
     switched_off = client.post(
         f"/api/ui/bindings/{swing}",
@@ -1320,7 +1328,43 @@ def test_two_released_strategies_with_disjoint_universes_both_trade_one_account(
     assert rows["majors_v1"]["bindings"] == []
     activity = client.get(CONTROL, headers=AUTH).json()["activity"]
     assert (activity[0]["action"], activity[0]["status"]) == ("binding.create", "error")
-    assert activity[1]["fields"] == ["instruments_allowed", "mode"]
+    assert activity[1]["fields"] == ["asset_classes_allowed", "instruments_allowed", "mode"]
+
+
+def test_an_equity_membership_strategy_trades_beside_crypto_on_one_account(
+    client: TestClient, factory: Any
+) -> None:
+    """The asset-class rule end to end: no list, bounded to equity, beside crypto."""
+    with factory() as session:
+        _release(session, "quality_v1", None, asset_class="equity")
+        _release(session, "value_v1", None, asset_class="equity")
+        session.commit()
+
+    def bind(strategy_id: str) -> Any:
+        return client.post(
+            "/api/ui/bindings",
+            json={"strategy_id": strategy_id, "broker_account_id": 1, "mode": "trading"},
+            headers=AUTH,
+        )
+
+    # The fixture's swing binding is switched on for every crypto instrument.
+    quality = bind("quality_v1")
+    assert quality.status_code == 200, quality.text
+    assert quality.json()["mode"] == "trading"
+
+    # A second equity strategy without a list would share every equity instrument.
+    value = bind("value_v1")
+    assert value.status_code == 409
+    detail = value.json()["detail"]
+    assert "quality_v1 is already switched on for every equity instrument" in detail
+
+    rows = {
+        row["strategy_id"]: row
+        for row in client.get("/api/ui/strategies", headers=AUTH).json()["strategies"]
+    }
+    scope = rows["quality_v1"]["bindings"][0]
+    assert (scope["instruments_allowed"], scope["asset_classes_allowed"]) == (None, ["equity"])
+    assert rows["swing_v1"]["bindings"][0]["mode"] == "trading"
 
 
 def test_narrowing_a_binding_shares_its_account_but_never_strands_a_position(

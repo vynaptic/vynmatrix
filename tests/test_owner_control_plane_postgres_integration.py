@@ -8,6 +8,8 @@ isolated test database using its migration identity.
 from __future__ import annotations
 
 import importlib.util
+import itertools
+import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -25,11 +27,13 @@ from lib_application.db.models import (
     Broker,
     BrokerCredential,
     ExecutionLog,
+    Instrument,
     LinkedBrokerAccount,
     Strategy,
     User,
     UserStrategyBinding,
 )
+from lib_application.services.binding_control import BindingScope, scopes_overlap
 
 pytestmark = pytest.mark.integration
 _OWNER = "backend-owner:textual"
@@ -556,3 +560,187 @@ def test_backend_still_cannot_delete_a_binding(
         "DELETE FROM public.user_strategy_bindings WHERE broker_account_id = :account_id",
         account_id=owned_id,
     )
+
+
+# --------------------------------------------- asset classes in the overlap rule
+
+#: Test-only catalogue rows, one per class the rule must tell apart.
+_SCOPE_INSTRUMENTS = {
+    "OVLTESTBTC": "crypto",
+    "OVLTESTETH": "crypto",
+    "OVLTESTAAPL": "equity",
+    "OVLTESTSPY": "etf",
+}
+_SCOPE_STRATEGIES = {
+    "overlap-crypto": "crypto",
+    "overlap-quality": "equity",
+    "overlap-value": "equity",
+    "overlap-etf": "etf",
+}
+#: ``(instruments_allowed, asset_classes_allowed)`` pairs, as stored.
+_SCOPES: dict[str, tuple[list[str] | None, list[str]]] = {
+    "btc": (["OVLTESTBTC"], ["crypto"]),
+    "btc+eth": (["OVLTESTETH", "OVLTESTBTC"], ["crypto"]),
+    "eth": (["OVLTESTETH"], ["crypto"]),
+    "aapl": (["OVLTESTAAPL"], ["equity"]),
+    # A list is the whole scope; its own asset classes do not narrow it.
+    "aapl-labelled-crypto": (["OVLTESTAAPL"], ["crypto"]),
+    "equity": (None, ["equity"]),
+    "etf": (None, ["etf"]),
+    "equity+etf": (None, ["equity", "etf"]),
+    "crypto": (None, ["crypto"]),
+    # Classes that bound nothing: not canonical, or empty.
+    "not-canonical": (None, ["Equity"]),
+    "no-classes": (None, []),
+}
+
+
+def _catalogue_scope_fixtures(connection: sa.Connection) -> None:
+    """Instruments of three classes and four strategies, as the migration identity."""
+    with Session(bind=connection, join_transaction_mode="create_savepoint") as session:
+        session.add_all(
+            [
+                *(
+                    Instrument(asset_class=asset_class, canonical=symbol, settlement_currency="USD")
+                    for symbol, asset_class in _SCOPE_INSTRUMENTS.items()
+                ),
+                *(
+                    Strategy(strategy_id=strategy_id, strategy_name=strategy_id, asset_class=cls)
+                    for strategy_id, cls in _SCOPE_STRATEGIES.items()
+                ),
+            ]
+        )
+        session.commit()
+
+
+def _switch_on(
+    connection: sa.Connection,
+    account_id: int,
+    strategy_id: str,
+    scope: tuple[list[str] | None, list[str]],
+) -> None:
+    instruments, asset_classes = scope
+    connection.execute(
+        sa.text(
+            "INSERT INTO public.user_strategy_bindings "
+            "(user_id, strategy_id, broker_account_id, is_active, entries_enabled, "
+            " exits_enabled, autopilot, execution_modes_allowed, asset_classes_allowed, "
+            " instruments_allowed) "
+            "VALUES (:user_id, :strategy_id, :account_id, true, true, true, true, "
+            " CAST(:modes AS json), CAST(:classes AS json), CAST(:instruments AS json))"
+        ),
+        {
+            "user_id": _OWNER,
+            "strategy_id": strategy_id,
+            "account_id": account_id,
+            "modes": '["spot"]',
+            "classes": json.dumps(asset_classes),
+            "instruments": None if instruments is None else json.dumps(instruments),
+        },
+    )
+
+
+def test_postgresql_lets_an_equity_membership_binding_trade_beside_crypto(
+    database: tuple[sa.Connection, int, int],
+) -> None:
+    """The done criterion at the database boundary, written by the backend role."""
+    connection, owned_id, _ = database
+    _catalogue_scope_fixtures(connection)
+    _as_backend(connection)
+
+    _switch_on(connection, owned_id, "overlap-crypto", _SCOPES["btc+eth"])
+    _switch_on(connection, owned_id, "overlap-quality", _SCOPES["equity"])
+    # ETFs are not equities, so an ETF strategy without a list fits too.
+    _switch_on(connection, owned_id, "overlap-etf", _SCOPES["etf"])
+
+    assert (
+        connection.scalar(
+            sa.text(
+                "SELECT count(*) FROM public.user_strategy_bindings "
+                "WHERE broker_account_id = :account_id AND is_active"
+            ),
+            {"account_id": owned_id},
+        )
+        == 3
+    )
+
+
+_OVERLAP = "another active strategy owns an overlapping account/instrument scope"
+_INVALID_CLASSES = "binding has invalid asset_classes_allowed"
+
+
+@pytest.mark.parametrize(
+    ("scope", "reason"),
+    [
+        ("equity", _OVERLAP),
+        ("aapl", _OVERLAP),
+        ("equity+etf", _OVERLAP),
+        ("btc", _OVERLAP),
+        ("crypto", _OVERLAP),
+        # A class list that bounds nothing never reaches the overlap check: the
+        # trigger refuses it first, so only a legacy row can hold one.
+        ("not-canonical", _INVALID_CLASSES),
+        ("no-classes", _INVALID_CLASSES),
+    ],
+    ids=lambda value: value if value not in (_OVERLAP, _INVALID_CLASSES) else "",
+)
+def test_postgresql_still_refuses_every_real_overlap(
+    database: tuple[sa.Connection, int, int], scope: str, reason: str
+) -> None:
+    """Beside crypto BTC/ETH and list-free equity, none of these may switch on."""
+    connection, owned_id, _ = database
+    _catalogue_scope_fixtures(connection)
+    _as_backend(connection)
+    _switch_on(connection, owned_id, "overlap-crypto", _SCOPES["btc+eth"])
+    _switch_on(connection, owned_id, "overlap-quality", _SCOPES["equity"])
+
+    with pytest.raises(sa.exc.DBAPIError) as error, connection.begin_nested():
+        _switch_on(connection, owned_id, "overlap-value", _SCOPES[scope])
+    assert reason in str(error.value.orig)
+
+
+def test_the_python_rule_and_the_trigger_function_agree(
+    database: tuple[sa.Connection, int, int],
+) -> None:
+    """``BindingScope`` and ``vm_binding_scopes_overlap`` give one answer for every pair."""
+    connection, _, _ = database
+    _catalogue_scope_fixtures(connection)
+    session = Session(bind=connection, join_transaction_mode="create_savepoint")
+    sql = sa.text(
+        "SELECT public.vm_binding_scopes_overlap("
+        " public.vm_binding_instrument_ids(CAST(:left_ids AS json)),"
+        " public.vm_binding_asset_classes(CAST(:left_classes AS json)),"
+        " public.vm_binding_instrument_ids(CAST(:right_ids AS json)),"
+        " public.vm_binding_asset_classes(CAST(:right_classes AS json)))"
+    )
+    answers: dict[tuple[str, str], bool] = {}
+    for left, right in itertools.product(_SCOPES, repeat=2):
+        (left_ids, left_classes), (right_ids, right_classes) = _SCOPES[left], _SCOPES[right]
+        in_sql = connection.scalar(
+            sql,
+            {
+                "left_ids": None if left_ids is None else json.dumps(left_ids),
+                "left_classes": json.dumps(left_classes),
+                "right_ids": None if right_ids is None else json.dumps(right_ids),
+                "right_classes": json.dumps(right_classes),
+            },
+        )
+        in_python = scopes_overlap(
+            session,
+            BindingScope.of(left_ids, left_classes),
+            BindingScope.of(right_ids, right_classes),
+        )
+        assert in_sql is in_python, (left, right, in_sql, in_python)
+        answers[(left, right)] = in_python
+    session.close()
+
+    assert answers[("equity", "btc+eth")] is False
+    assert answers[("equity", "crypto")] is False
+    assert answers[("equity", "etf")] is False
+    assert answers[("btc", "eth")] is False
+    assert answers[("equity", "aapl")] is True
+    assert answers[("equity", "aapl-labelled-crypto")] is True
+    assert answers[("equity", "equity+etf")] is True
+    assert answers[("btc", "btc+eth")] is True
+    assert answers[("not-canonical", "btc")] is True
+    assert answers[("no-classes", "etf")] is True

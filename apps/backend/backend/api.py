@@ -654,6 +654,7 @@ def create_app(  # noqa: PLR0915
                 strategy_id=payload.strategy_id,
                 is_active=payload.is_active,
                 instruments=canonical,
+                asset_classes=payload.asset_classes_allowed,
                 existing_binding_id=int(row.binding_id) if row is not None else None,
             )
             if row is None:

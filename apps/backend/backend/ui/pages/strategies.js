@@ -112,11 +112,15 @@ function readiness(binding) {
   );
 }
 
-// A binding's scope is its strategy's declared universe. An empty scope is
-// every instrument, which no other active strategy on that account may share.
-function scopeLabel(instruments) {
-  return instruments && instruments.length
-    ? `Trades ${instruments.join(", ")}`
+// A binding's scope is its strategy's declared universe. Without a list it is
+// every instrument in the binding's asset classes, none of which another
+// active strategy on that account may trade.
+function scopeLabel(binding) {
+  const instruments = binding.instruments_allowed || [];
+  const classes = binding.asset_classes_allowed || [];
+  if (instruments.length) return `Trades ${instruments.join(", ")}`;
+  return classes.length
+    ? `Trades every ${classes.join(" or ")} instrument`
     : "Trades every instrument";
 }
 
@@ -153,7 +157,7 @@ function bindingCell(row) {
         text: binding.account_name || `Account ${binding.account_id}`,
       }),
       h("span", { class: "cell-sub" }, modeChip(binding.mode)),
-      h("span", { class: "cell-sub", text: scopeLabel(binding.instruments_allowed) }),
+      h("span", { class: "cell-sub", text: scopeLabel(binding) }),
       readiness(binding),
     ),
   );
@@ -280,7 +284,7 @@ function editor(row, ctx) {
               .filter(Boolean)
               .join(" ")
           : `Bind to ${accountLabel(connected, account)} as ${chosen.label}, ` +
-            "for the instruments its release declares.",
+            "for the instruments and asset class its strategy declares.",
         consequence: [
           modeChanged ? chosen.consequence : null,
           scopeChanged

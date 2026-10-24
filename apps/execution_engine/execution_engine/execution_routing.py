@@ -90,7 +90,13 @@ def _validate_current_binding_instrument_scope(
     instrument_id: int,
     enforce_allowlist: bool = True,
 ) -> None:
-    """Require a current instrument and, normally, its binding allowlist scope."""
+    """Require a current instrument and, normally, its binding allowlist scope.
+
+    A binding with an instrument list authorizes exactly that list. A binding
+    without one authorizes every instrument in its ``asset_classes_allowed``,
+    the bound the account overlap rule (``binding_control.BindingScope``)
+    assumes when it lets an equity and a crypto strategy share an account.
+    """
     from lib_application.db.models import Instrument  # noqa: PLC0415
 
     instrument = session.get(Instrument, instrument_id)
@@ -101,6 +107,16 @@ def _validate_current_binding_instrument_scope(
         return
     raw_instrument_scope = binding.instruments_allowed
     if raw_instrument_scope is None:
+        raw_classes = binding.asset_classes_allowed
+        if not isinstance(raw_classes, (list, tuple)) or not raw_classes:
+            msg = f"Binding {binding_id} has an invalid current asset class scope"
+            raise CurrentAuthorityError(msg)
+        if str(instrument.asset_class) not in {str(value) for value in raw_classes}:
+            msg = (
+                f"Binding {binding_id} does not authorize {instrument.asset_class} "
+                f"instrument {instrument.canonical}"
+            )
+            raise CurrentAuthorityError(msg)
         return
     if not isinstance(raw_instrument_scope, (list, tuple)):
         msg = f"Binding {binding_id} has an invalid current instrument scope"

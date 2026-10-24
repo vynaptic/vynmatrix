@@ -482,6 +482,62 @@ def test_current_authority_rejects_changed_binding_instrument_scope() -> None:
         )
 
 
+def test_a_binding_without_a_list_authorizes_only_its_asset_classes() -> None:
+    """No list means every instrument of the binding's classes, never everything.
+
+    The account overlap rule lets an equity binding without a list share an
+    account with a crypto strategy; this is the check that makes that true.
+    """
+    sessions = _authority_session_factory(
+        autopilot=True,
+        entries_enabled=True,
+        exits_enabled=True,
+    )
+    resolver = ExecutionRouteResolver(
+        default_mode="paper",
+        session_factory=sessions,
+        canonical_execution_store=None,
+    )
+
+    def _scope(asset_classes: list[str]) -> None:
+        with sessions() as session:
+            binding = session.get(UserStrategyBinding, 7)
+            assert binding is not None
+            binding.instruments_allowed = None
+            binding.asset_classes_allowed = asset_classes
+            session.commit()
+
+    def _validate(action: str) -> None:
+        resolver.validate_current_authority(
+            strategy_version="1.0.0",
+            user_id="user-1",
+            binding_id=7,
+            strategy_id="swing_high_low_pmo_v1",
+            account_id=42,
+            broker_type=BrokerType.COINBASE,
+            environment="paper",
+            credential_ref="coinbase-account-42",
+            action=action,
+            instrument_id=1,
+        )
+
+    _scope(["equity"])
+    for action in ("long", "close"):
+        with pytest.raises(
+            CurrentAuthorityError, match="does not authorize crypto instrument BTC/USD"
+        ):
+            _validate(action)
+
+    _scope(["equity", "crypto"])
+    _validate("long")
+    _validate("close")
+
+    # An empty class list bounds nothing, so it authorizes nothing.
+    _scope([])
+    with pytest.raises(CurrentAuthorityError, match="invalid current asset class scope"):
+        _validate("close")
+
+
 def test_revoked_command_is_blocked_before_broker_resolution(monkeypatch) -> None:
     engine = ExecutionEngine(
         order_builder=_FakeOrderBuilder(),

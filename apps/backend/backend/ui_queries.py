@@ -581,6 +581,7 @@ def strategies(session: Session, owner_id: str) -> dict[str, Any]:
             UserStrategyBinding.entries_enabled,
             UserStrategyBinding.exits_enabled,
             UserStrategyBinding.instruments_allowed,
+            UserStrategyBinding.asset_classes_allowed,
         )
         .where(
             UserStrategyBinding.user_id == owner_id,
@@ -601,9 +602,10 @@ def strategies(session: Session, owner_id: str) -> dict[str, Any]:
                 "autopilot": bool(binding.autopilot),
                 "entries_enabled": bool(binding.entries_enabled),
                 "exits_enabled": bool(binding.exits_enabled),
-                # ``None`` is every instrument, which no other active strategy
-                # on the account can then share.
+                # ``None`` is every instrument in ``asset_classes_allowed``;
+                # no other active strategy on the account may trade one of them.
                 "instruments_allowed": list(binding.instruments_allowed or []) or None,
+                "asset_classes_allowed": list(binding.asset_classes_allowed or []),
             }
         )
 

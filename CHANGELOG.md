@@ -16,8 +16,8 @@ Git history.
   Two active strategies still never share an instrument on one account; the
   refusal now names the strategy in the way and what the two share. The
   Strategies page shows each binding's scope. A membership universe such as the
-  point-in-time S&P 500 keeps the old every-instrument scope, and so does a
-  binding made before this change; `POST /bindings` can re-scope either.
+  point-in-time S&P 500 has no list (see the next entry). A binding made before
+  this change keeps its old scope; `POST /bindings` can re-scope it.
 - The owner UI can change a binding's instrument scope, so strategies whose
   declared universes overlap can still share one account: narrow one of them
   (for example SwingHighLowPMO to ETHUSDC and SOLUSDC beside a BTCUSDC
@@ -26,6 +26,16 @@ Git history.
   is or becomes active, and a change that drops an instrument the strategy still
   holds on that account is refused, because that position's close signals would
   stop reaching it.
+- An equity strategy with a membership universe, such as USQualityCompounder,
+  can be in **Trading** beside crypto strategies on one account. A new binding
+  takes its strategy's declared asset class as `asset_classes_allowed`, taken
+  as declared: an ETF strategy is `etf`, never `equity`. A binding without an
+  instrument list now covers every instrument in its asset classes rather than
+  every instrument, in the backend's overlap rule and in the
+  `vm_validate_strategy_binding` trigger (migration `0110`) alike, so a second
+  active strategy is refused only when the two can trade a common instrument.
+  The downgrade of `0110` refuses while two active bindings on one account
+  rely on that separation.
 - A readiness checklist for each binding on the owner UI's Strategies page. It
   says why a bound strategy is or is not trading, in pipeline order: released,
   mode, account connected, a signal worker processing market data, the last
@@ -115,6 +125,13 @@ Git history.
 - The Strategies page reported a strategy as released when `strategies.is_active`
   was true even if no version was active, which is weaker than the gate. It now
   reports exactly what the gate accepts.
+- A binding without an instrument list now trades. Scoring resolved its asset
+  classes only against instruments that some binding listed by id, and active
+  lists hold symbols, so such a binding matched no signal at all; it now
+  matches every catalogued instrument of its classes. Execution checks the same
+  bound before each order, where it used to accept any instrument. A binding
+  made earlier with no list takes the model default, `crypto`: check its scope
+  before switching it on.
 - Host-side `vmdev db migrate`, `vmdev db roles`, `vmdev db catalogue` and
   `vmdev user` resolve the container database hostname to the published loopback
   listener themselves. They no longer require a hand-exported, rewritten

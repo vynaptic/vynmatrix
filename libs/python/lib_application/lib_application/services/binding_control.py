@@ -17,9 +17,11 @@ Two rules are new, and both close gaps the route had:
   caller choosing a mode cannot construct a row the database will reject.
 
 A UI binding is scoped to the universe its strategy's release declares
-(:func:`declared_universe`). An unscoped binding covers every instrument, and
-the overlap rule then leaves room for one active strategy per account. The
-owner may later patch that scope to another non-empty list, so two strategies
+(:func:`declared_universe`) and to the asset class its strategy declares
+(:func:`declared_asset_classes`). A binding with no instrument list covers every
+instrument in its asset classes (:class:`BindingScope`), so an equity strategy
+with a membership universe can share an account with crypto strategies. The
+owner may later patch the scope to another non-empty list, so two strategies
 whose universes overlap can still split one account between them. A patch may
 not drop an instrument the strategy still holds on that account
 (:func:`reject_stranded_positions`): scoring routes signals by the scope, so the
@@ -52,6 +54,7 @@ from lib_application.services.instrument_resolution import (
     InstrumentResolutionError,
     resolve_instrument,
 )
+from lib_common.asset_classes import CANONICAL_ASSET_CLASSES, normalize_asset_class
 
 
 class BindingControlError(ValueError):
@@ -232,10 +235,12 @@ def declared_universe(session: Session, strategy_id: str) -> list[str] | None:
     every instrument. The active release is read; a strategy bound before it is
     released falls back to its newest version.
 
-    ``None`` -- every instrument -- is returned only where the release names no
-    fixed list: a membership universe such as a point-in-time index
-    (``universe_contract``), or a version with no ``universe`` at all. That
-    scope still overlaps every other active strategy on the account.
+    ``None`` -- no list -- is returned only where the release names no fixed
+    list: a membership universe such as a point-in-time index
+    (``universe_contract``), or a version with no ``universe`` at all. Such a
+    binding covers every instrument in its asset classes
+    (:func:`declared_asset_classes`), so it overlaps only strategies that can
+    trade an instrument of the same class.
     """
     version = session.scalar(
         select(StrategyVersion)
@@ -268,28 +273,108 @@ def declared_universe(session: Session, strategy_id: str) -> list[str] | None:
         raise BindingControlError(msg, status_code=exc.status_code) from exc
 
 
+def declared_asset_classes(session: Session, strategy_id: str) -> list[str]:
+    """The asset class a strategy declares, as a binding's ``asset_classes_allowed``.
+
+    The catalogue row's ``asset_class`` is taken as declared: an ETF strategy is
+    ``etf`` and a cash-index strategy is ``index``, never ``equity``. A binding
+    with no instrument list is bounded by this value alone, so a strategy that
+    declares none is refused rather than given a default.
+    """
+    strategy = session.get(Strategy, strategy_id)
+    if strategy is None:
+        msg = "strategy not found"
+        raise BindingControlError(msg, status_code=404)
+    declared = str(strategy.asset_class or "").strip()
+    if not declared:
+        msg = (
+            f"strategy {strategy_id} declares no asset class; register its release "
+            "through the catalogue first"
+        )
+        raise BindingControlError(msg, status_code=422)
+    try:
+        return [normalize_asset_class(declared, field_name="strategy asset_class")]
+    except ValueError as exc:
+        msg = f"strategy {strategy_id} declares an unsupported asset class: {exc}"
+        raise BindingControlError(msg, status_code=422) from exc
+
+
+@dataclass(frozen=True)
+class BindingScope:
+    """What one binding can trade, as scoring and execution enforce it.
+
+    ``instruments`` is a fixed list of catalogue symbols. When it is set it is
+    the whole scope: scoring and execution do not consult the asset classes.
+    When it is ``None`` the binding covers every catalogued instrument whose
+    asset class is in ``asset_classes``. ``asset_classes`` is ``None`` when it
+    does not bound anything -- empty, or holding a value that is not a
+    canonical asset class -- and then the scope is every instrument.
+
+    The ``vm_binding_scopes_overlap`` SQL function (migration
+    ``0110_asset_class_binding_scope``) applies the same reading.
+    """
+
+    instruments: tuple[str, ...] | None
+    asset_classes: frozenset[str] | None
+
+    @classmethod
+    def of(
+        cls, instruments: Sequence[Any] | None, asset_classes: Sequence[Any] | None
+    ) -> BindingScope:
+        """Read a binding's two stored columns; an empty instrument list is no list."""
+        listed = tuple(str(item) for item in instruments or [])
+        classes = frozenset(str(value) for value in asset_classes or [])
+        bounded = bool(classes) and classes <= CANONICAL_ASSET_CLASSES
+        return cls(listed or None, classes if bounded else None)
+
+    def describe(self) -> str:
+        """The scope in the owner's words, for a refusal."""
+        if self.instruments is not None:
+            return ", ".join(self.instruments)
+        if self.asset_classes is None:
+            return "every instrument"
+        return f"every {' or '.join(sorted(self.asset_classes))} instrument"
+
+
+def _classes_of(session: Session, symbols: Sequence[str]) -> dict[str, str]:
+    """Each canonical symbol's catalogue asset class."""
+    rows = session.execute(
+        select(Instrument.canonical, Instrument.asset_class).where(
+            Instrument.canonical.in_(list(symbols))
+        )
+    ).all()
+    return {str(canonical): str(asset_class) for canonical, asset_class in rows}
+
+
 def shared_instruments(
-    session: Session, left: Sequence[Any] | None, right: Sequence[Any] | None
+    session: Session, left: BindingScope, right: BindingScope
 ) -> list[str] | None:
-    """The instruments both scopes authorize, sorted; ``None`` when either is unrestricted.
+    """The instruments both scopes authorize, sorted.
 
-    An empty scope means "every instrument", so it shares everything with any
-    other scope -- including another empty one.
+    ``None`` means the two share an open-ended set: neither has an instrument
+    list and their asset classes meet (or one is not bounded by class). An
+    instrument has exactly one catalogue asset class, so a list-free scope
+    limited to ``equity`` shares nothing with one limited to ``crypto``, or
+    with a list of crypto instruments.
     """
-    if not left or not right:
-        return None
-    left_scope = set(canonical_instruments(session, [str(item) for item in left]) or [])
-    right_scope = set(canonical_instruments(session, [str(item) for item in right]) or [])
-    return sorted(left_scope & right_scope)
+    if left.instruments is not None and right.instruments is not None:
+        left_scope = set(canonical_instruments(session, list(left.instruments)) or [])
+        right_scope = set(canonical_instruments(session, list(right.instruments)) or [])
+        return sorted(left_scope & right_scope)
+    if left.instruments is None and right.instruments is None:
+        if left.asset_classes is None or right.asset_classes is None:
+            return None
+        return None if left.asset_classes & right.asset_classes else []
+    listed, open_ended = (left, right) if left.instruments is not None else (right, left)
+    symbols = canonical_instruments(session, list(listed.instruments or ())) or []
+    if open_ended.asset_classes is None:
+        return sorted(symbols)
+    classes = _classes_of(session, symbols)
+    return sorted(symbol for symbol in symbols if classes.get(symbol) in open_ended.asset_classes)
 
 
-def scopes_overlap(
-    session: Session, left: Sequence[Any] | None, right: Sequence[Any] | None
-) -> bool:
-    """Whether two binding scopes can authorize the same instrument.
-
-    An empty scope means "everything", so it overlaps anything.
-    """
+def scopes_overlap(session: Session, left: BindingScope, right: BindingScope) -> bool:
+    """Whether two binding scopes can authorize the same instrument."""
     shared = shared_instruments(session, left, right)
     return shared is None or bool(shared)
 
@@ -301,16 +386,20 @@ def reject_conflicting_active(
     strategy_id: str | None,
     is_active: bool,
     instruments: list[str] | None,
+    asset_classes: Sequence[str],
     existing_binding_id: int | None,
 ) -> None:
     """One active strategy per account and instrument.
 
     Only an activation can conflict: switching a binding off, or saving an
-    inactive one, is always allowed. The refusal names the strategy in the way
-    and what the two share, because that is what the owner has to change.
+    inactive one, is always allowed. ``instruments`` and ``asset_classes`` are
+    the binding's scope (:class:`BindingScope`). The refusal names the strategy
+    in the way and what the two share, because that is what the owner has to
+    change.
     """
     if not is_active:
         return
+    scope = BindingScope.of(instruments, asset_classes)
     query = session.query(UserStrategyBinding).filter(
         UserStrategyBinding.broker_account_id == broker_account_id,
         UserStrategyBinding.is_active.is_(True),
@@ -320,16 +409,16 @@ def reject_conflicting_active(
     for candidate in query.order_by(UserStrategyBinding.binding_id).all():
         if candidate.strategy_id == strategy_id:
             continue
-        held = list(candidate.instruments_allowed or []) or None
-        shared = shared_instruments(session, held, instruments)
+        held = BindingScope.of(candidate.instruments_allowed, candidate.asset_classes_allowed)
+        shared = shared_instruments(session, held, scope)
         if shared is not None and not shared:
             continue
-        if shared is not None:
+        if shared:
             overlap = ", ".join(shared)
-        elif held is None:
-            overlap = "every instrument"
         else:
-            overlap = f"{', '.join(map(str, held))}, and this binding covers every instrument"
+            overlap = held.describe()
+            if scope.describe() != overlap:
+                overlap = f"{overlap}, and this binding covers {scope.describe()}"
         msg = (
             f"overlapping instrument scope on broker_account_id={broker_account_id}: "
             f"{candidate.strategy_id} is already switched on for {overlap}. Two active "
@@ -571,9 +660,11 @@ def create_binding(
     broker_account_id: int,
     mode: str,
 ) -> UserStrategyBinding:
-    """Bind a strategy to one of the owner's connected accounts, scoped to its universe.
+    """Bind a strategy to one of the owner's connected accounts, scoped to what it declares.
 
-    Any mode but ``off`` needs a release.
+    The binding takes the strategy's universe as ``instruments_allowed`` and its
+    asset class as ``asset_classes_allowed``. Any mode but ``off`` needs a
+    release.
     """
     if mode not in MODES:
         msg = f"unsupported mode: {mode}"
@@ -597,9 +688,11 @@ def create_binding(
     if existing is not None:
         msg = "this strategy is already bound to that account; change it instead"
         raise BindingControlError(msg, status_code=409)
-    # The scope is the strategy's own declared universe, not "everything": an
-    # unscoped binding overlaps every other strategy, so it would leave room
-    # for exactly one active strategy per account.
+    # The scope is the strategy's own declared universe and asset class, not
+    # "everything": an unbounded binding overlaps every other strategy, so it
+    # would leave room for exactly one active strategy per account. A
+    # membership universe has no list; its asset class still bounds it.
+    asset_classes = declared_asset_classes(session, strategy_id)
     instruments = declared_universe(session, strategy_id)
     reject_conflicting_active(
         session,
@@ -607,6 +700,7 @@ def create_binding(
         strategy_id=strategy_id,
         is_active=flags.is_active,
         instruments=instruments,
+        asset_classes=asset_classes,
         existing_binding_id=None,
     )
     row = UserStrategyBinding(
@@ -614,11 +708,14 @@ def create_binding(
         strategy_id=strategy_id,
         broker_account_id=broker_account_id,
         instruments_allowed=instruments,
+        asset_classes_allowed=asset_classes,
         **flags.as_fields(),
     )
     session.add(row)
     session.flush()
-    fields = ["mode"] if instruments is None else ["instruments_allowed", "mode"]
+    fields = ["asset_classes_allowed", "mode"]
+    if instruments is not None:
+        fields.insert(1, "instruments_allowed")
     append_audit(
         session,
         user_id=owner_id,
@@ -685,6 +782,7 @@ def patch_binding(
             strategy_id=row.strategy_id,
             is_active=True,
             instruments=scope_after,
+            asset_classes=list(row.asset_classes_allowed or []),
             existing_binding_id=int(row.binding_id),
         )
     if flags is not None:
@@ -741,10 +839,12 @@ __all__ = [
     "SCOPE_FIELD",
     "BindingControlError",
     "BindingMode",
+    "BindingScope",
     "TradingState",
     "canonical_instruments",
     "create_binding",
     "deactivate_binding",
+    "declared_asset_classes",
     "declared_universe",
     "held_instruments",
     "load_binding",

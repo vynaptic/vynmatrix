@@ -284,10 +284,12 @@ def test_trading_state_counts_only_the_owners_bindings_and_only_active_ones_as_o
 
 @pytest.fixture
 def universe_session() -> Any:
-    """One owner account, three crypto instruments, and strategies declaring universes.
+    """One owner account, a small catalogue, and strategies declaring universes.
 
     ``btc_v1`` and ``eth_v1`` are disjoint; ``majors_v1`` shares BTCUSDC with
-    ``btc_v1``; ``index_v1`` declares a membership universe, not a list.
+    ``btc_v1``. ``quality_v1`` and ``value_v1`` declare equity membership
+    universes, not lists; ``etf_v1`` declares an ETF one. ``apple_v1`` lists one
+    equity, AAPL. Each strategy's catalogue row carries its declared asset class.
     """
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -309,12 +311,27 @@ def universe_session() -> Any:
         "btc_v1": {"universe": "BTC-USDC", "asset_class": "crypto"},
         "eth_v1": {"universe": ["ETHUSDC"], "asset_class": "crypto"},
         "majors_v1": {"universe": "BTCUSDC, SOLUSDC,BTCUSDC", "asset_class": "crypto"},
-        "index_v1": {
+        "quality_v1": {
             "universe": "SP500",
             "universe_contract": "point_in_time_sp500_membership",
             "asset_class": "equity",
         },
+        "value_v1": {
+            "universe": "SP500",
+            "universe_contract": "point_in_time_sp500_membership",
+            "asset_class": "equity",
+        },
+        "etf_v1": {"universe_contract": "listed_us_etfs", "asset_class": "etf"},
+        "apple_v1": {"universe": "AAPL", "asset_class": "equity"},
         "unknown_v1": {"universe": "DOGEUSDC", "asset_class": "crypto"},
+    }
+    catalogue = {
+        "BTCUSDC": ("crypto", "USDC"),
+        "ETHUSDC": ("crypto", "USDC"),
+        "SOLUSDC": ("crypto", "USDC"),
+        "AAPL": ("equity", "USD"),
+        "MSFT": ("equity", "USD"),
+        "SPY": ("etf", "USD"),
     }
     session.add_all(
         [
@@ -323,15 +340,22 @@ def universe_session() -> Any:
             *(
                 Instrument(
                     instr_id=number,
-                    asset_class="crypto",
+                    asset_class=asset_class,
                     canonical=symbol,
-                    settlement_currency="USDC",
+                    settlement_currency=currency,
                 )
-                for number, symbol in enumerate(("BTCUSDC", "ETHUSDC", "SOLUSDC"), start=1)
+                for number, (symbol, (asset_class, currency)) in enumerate(
+                    catalogue.items(), start=1
+                )
             ),
             *(
-                Strategy(strategy_id=strategy_id, strategy_name=strategy_id, is_active=True)
-                for strategy_id in declared
+                Strategy(
+                    strategy_id=strategy_id,
+                    strategy_name=strategy_id,
+                    asset_class=params["asset_class"],
+                    is_active=True,
+                )
+                for strategy_id, params in declared.items()
             ),
         ]
     )
@@ -393,7 +417,7 @@ def test_a_universe_that_is_not_a_fixed_list_is_every_instrument(universe_sessio
     universe_session.add(Strategy(strategy_id="bare_v1", strategy_name="bare", is_active=True))
     universe_session.commit()
 
-    assert declared_universe(universe_session, "index_v1") is None
+    assert declared_universe(universe_session, "quality_v1") is None
     assert declared_universe(universe_session, "bare_v1") is None  # no version at all
 
 
@@ -424,17 +448,67 @@ def test_an_instrument_the_catalogue_lacks_refuses_the_binding(universe_session:
     assert "DOGEUSDC" in raised.value.detail
 
 
-def test_shared_instruments_names_the_overlap_and_none_means_everything(
+def test_a_binding_takes_its_strategys_declared_asset_class(universe_session: Any) -> None:
+    crypto = _create(universe_session, "btc_v1", mode="off")
+    quality = _create(universe_session, "quality_v1", mode="off")
+    etf = _create(universe_session, "etf_v1", mode="off")
+
+    assert list(crypto.asset_classes_allowed) == ["crypto"]
+    assert (quality.instruments_allowed, list(quality.asset_classes_allowed)) == (None, ["equity"])
+    # An ETF strategy is bounded to ETFs; it is never coerced to equity.
+    assert (etf.instruments_allowed, list(etf.asset_classes_allowed)) == (None, ["etf"])
+
+
+def test_a_strategy_that_declares_no_asset_class_is_refused(universe_session: Any) -> None:
+    """With no instrument list, the asset class is the only bound, so none is guessed."""
+    from lib_application.db.models import Strategy
+
+    universe_session.add(Strategy(strategy_id="bare_v1", strategy_name="bare", is_active=True))
+    universe_session.commit()
+
+    with pytest.raises(BindingControlError) as raised:
+        _create(universe_session, "bare_v1", mode="off")
+
+    assert raised.value.status_code == 422
+    assert "bare_v1 declares no asset class" in raised.value.detail
+
+
+def test_shared_instruments_bounds_a_scope_without_a_list_by_its_asset_classes(
     universe_session: Any,
 ) -> None:
-    from lib_application.services.binding_control import scopes_overlap, shared_instruments
+    from lib_application.services.binding_control import (
+        BindingScope,
+        scopes_overlap,
+        shared_instruments,
+    )
 
-    assert shared_instruments(universe_session, ["BTCUSDC"], ["ETHUSDC"]) == []
-    assert shared_instruments(universe_session, ["SOLUSDC", "BTCUSDC"], ["BTC-USDC"]) == ["BTCUSDC"]
-    assert shared_instruments(universe_session, None, ["ETHUSDC"]) is None
-    assert scopes_overlap(universe_session, ["BTCUSDC"], ["ETHUSDC"]) is False
-    assert scopes_overlap(universe_session, ["BTCUSDC"], ["BTCUSDC"]) is True
-    assert scopes_overlap(universe_session, [], ["ETHUSDC"]) is True
+    def crypto(*symbols: str) -> BindingScope:
+        return BindingScope.of(list(symbols), ["crypto"])
+
+    equities = BindingScope.of(None, ["equity"])
+    session = universe_session
+
+    # Two lists share what both name, after catalogue resolution.
+    assert shared_instruments(session, crypto("BTCUSDC"), crypto("ETHUSDC")) == []
+    assert shared_instruments(session, crypto("SOLUSDC", "BTCUSDC"), crypto("BTC-USDC")) == [
+        "BTCUSDC"
+    ]
+    # A class scope shares a list's instruments of that class, and only those.
+    assert shared_instruments(session, equities, crypto("BTCUSDC", "ETHUSDC")) == []
+    assert shared_instruments(session, equities, crypto("BTCUSDC", "AAPL")) == ["AAPL"]
+    # Two class scopes share an open-ended set when their classes meet.
+    assert shared_instruments(session, equities, BindingScope.of(None, ["etf", "equity"])) is None
+    assert shared_instruments(session, equities, BindingScope.of(None, ["crypto"])) == []
+    assert shared_instruments(session, equities, BindingScope.of(None, ["etf"])) == []
+    # A class list that bounds nothing -- empty, or not canonical -- is every instrument.
+    for unbounded in ([], ["Equity"], ["equity", "stocks"]):
+        scope = BindingScope.of(None, unbounded)
+        assert scope.asset_classes is None
+        assert shared_instruments(session, scope, crypto("ETHUSDC")) == ["ETHUSDC"]
+        assert shared_instruments(session, scope, equities) is None
+    assert scopes_overlap(session, equities, crypto("BTCUSDC")) is False
+    assert scopes_overlap(session, equities, BindingScope.of(None, ["equity"])) is True
+    assert scopes_overlap(session, BindingScope.of([], []), crypto("ETHUSDC")) is True
 
 
 def test_two_strategies_with_disjoint_universes_both_trade_one_account(
@@ -460,16 +534,81 @@ def test_an_overlapping_pair_is_refused_naming_the_strategy_and_the_instrument(
     assert "SOLUSDC" not in raised.value.detail  # only what the two actually share
 
 
-def test_a_membership_universe_still_conflicts_with_any_active_strategy(
+@pytest.mark.parametrize("first", ["btc_v1", "quality_v1"])
+def test_a_membership_universe_equity_strategy_and_a_crypto_strategy_both_trade(
+    universe_session: Any, first: str
+) -> None:
+    """The point of the asset-class rule: quality investing beside crypto, one account."""
+    second = "quality_v1" if first == "btc_v1" else "btc_v1"
+
+    rows = {name: _create(universe_session, name) for name in (first, second)}
+
+    assert all(mode_of(row) == "trading" for row in rows.values())
+    assert rows["quality_v1"].instruments_allowed is None
+
+
+def test_an_etf_strategy_and_an_equity_strategy_both_trade_one_account(
     universe_session: Any,
 ) -> None:
-    _create(universe_session, "btc_v1")
+    quality = _create(universe_session, "quality_v1")
+    etf = _create(universe_session, "etf_v1")
+
+    assert (mode_of(quality), mode_of(etf)) == ("trading", "trading")
+
+
+def test_a_membership_universe_conflicts_with_a_strategy_listing_its_asset_class(
+    universe_session: Any,
+) -> None:
+    _create(universe_session, "quality_v1")
 
     with pytest.raises(BindingControlError) as raised:
-        _create(universe_session, "index_v1")
+        _create(universe_session, "apple_v1")
 
     assert raised.value.status_code == 409
-    assert "BTCUSDC, and this binding covers every instrument" in raised.value.detail
+    assert "quality_v1 is already switched on for AAPL" in raised.value.detail
+
+
+def test_two_membership_universes_of_one_asset_class_still_conflict(
+    universe_session: Any,
+) -> None:
+    _create(universe_session, "quality_v1")
+
+    with pytest.raises(BindingControlError) as raised:
+        _create(universe_session, "value_v1")
+
+    assert raised.value.status_code == 409
+    assert "quality_v1 is already switched on for every equity instrument" in raised.value.detail
+
+
+def test_a_binding_its_asset_classes_do_not_bound_still_conflicts_with_everything(
+    universe_session: Any,
+) -> None:
+    """A stored class list that is empty or not canonical bounds nothing, as in SQL."""
+    from lib_application.db.models import Strategy, UserStrategyBinding
+
+    universe_session.add(
+        Strategy(strategy_id="legacy_v1", strategy_name="legacy", asset_class="crypto")
+    )
+    universe_session.flush()
+    universe_session.add(
+        UserStrategyBinding(
+            user_id="owner",
+            strategy_id="legacy_v1",
+            broker_account_id=1,
+            asset_classes_allowed=["stocks"],
+            **MODES["trading"].as_fields(),
+        )
+    )
+    universe_session.commit()
+
+    with pytest.raises(BindingControlError) as raised:
+        _create(universe_session, "quality_v1")
+
+    assert raised.value.status_code == 409
+    assert (
+        "legacy_v1 is already switched on for every instrument, "
+        "and this binding covers every equity instrument"
+    ) in raised.value.detail
 
 
 def test_switching_a_prepared_binding_on_applies_the_same_overlap_rule(
@@ -496,6 +635,18 @@ def test_switching_a_prepared_binding_on_applies_the_same_overlap_rule(
         universe_session,
         owner_id="owner",
         binding_id=int(eth.binding_id),
+        expected={"mode": "off"},
+        changes={"mode": "trading"},
+    )
+    assert mode_of(switched) == "trading"
+    universe_session.commit()
+
+    # Switching on reads the stored asset classes too: equity beside crypto.
+    quality = _create(universe_session, "quality_v1", mode="off")
+    switched = patch_binding(
+        universe_session,
+        owner_id="owner",
+        binding_id=int(quality.binding_id),
         expected={"mode": "off"},
         changes={"mode": "trading"},
     )
@@ -613,6 +764,25 @@ def test_widening_an_active_binding_into_another_strategys_instrument_is_refused
     assert raised.value.status_code == 409
     assert "btc_v1 is already switched on for BTCUSDC" in raised.value.detail
     assert "narrow one of the two scopes" in raised.value.detail
+
+
+def test_a_scope_patch_into_an_equity_meets_a_list_free_equity_strategy(
+    universe_session: Any,
+) -> None:
+    """Asset classes bound the other binding when a patch widens this one's list."""
+    _create(universe_session, "quality_v1")
+    btc = _create(universe_session, "btc_v1")
+
+    with pytest.raises(BindingControlError) as raised:
+        _scope_patch(
+            universe_session,
+            btc,
+            expected={"instruments_allowed": ["BTCUSDC"]},
+            changes={"instruments_allowed": ["BTCUSDC", "AAPL"]},
+        )
+
+    assert raised.value.status_code == 409
+    assert "quality_v1 is already switched on for AAPL" in raised.value.detail
 
 
 def test_an_inactive_binding_may_take_an_overlapping_scope_it_cannot_switch_on(
