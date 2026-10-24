@@ -18,6 +18,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import Final, NoReturn
 
 from lib_common.hashing import canonical_json_hash
@@ -36,6 +37,8 @@ ALLOWED_DOCUMENT_TYPES: Final = frozenset({"news", "press_release", "regulatory_
 
 _SEVERITY_LEVELS: Final = 4
 _SUM_TOLERANCE: Final = 1e-6
+# Absorbs float rounding so a sum that is exactly on a threshold counts as on it.
+_THRESHOLD_TOLERANCE: Final = 1e-9
 
 ADVERSE_NEWS_QUESTIONS: Final[Mapping[str, Mapping[str, object]]] = {
     "about_company": {
@@ -333,6 +336,100 @@ class AdverseNewsAnswers:
             negative_confirmed=single("negative_confirmed_probability"),
             negative_severity=severity,
         )
+
+
+class ArticleVerdict(StrEnum):
+    """Outcome of the article truth table (spec section 5.1)."""
+
+    NOT_ABOUT_COMPANY = "not_about_company"
+    PRICE_RECAP = "price_recap"
+    NOT_NEW = "not_new"
+    NOT_NEGATIVE = "not_negative"
+    NEGATIVE_UNSETTLED = "negative_unsettled"
+    NEGATIVE_UNCONFIRMED = "negative_unconfirmed"
+    NEGATIVE_CONFIRMATION_UNSETTLED = "negative_confirmation_unsettled"
+    NEGATIVE_IMMATERIAL = "negative_immaterial"
+    NEGATIVE_SEVERITY_UNSETTLED = "negative_severity_unsettled"
+    ADVERSE_CONFIRMED_MATERIAL = "adverse_confirmed_material"
+
+
+class GateReason(StrEnum):
+    """Why an instrument is excluded at the cutoff (spec section 5.2)."""
+
+    NEWS_COVERAGE_UNAVAILABLE = "news_coverage_unavailable"
+    NEWS_EVIDENCE_INVALID = "news_evidence_invalid"
+    MATERIAL_ADVERSE_NEWS = "material_adverse_news"
+
+
+UNSETTLED_VERDICTS: Final = frozenset(
+    {
+        ArticleVerdict.NEGATIVE_UNSETTLED,
+        ArticleVerdict.NEGATIVE_CONFIRMATION_UNSETTLED,
+        ArticleVerdict.NEGATIVE_SEVERITY_UNSETTLED,
+    }
+)
+
+
+class _Tri(StrEnum):
+    YES = "yes"
+    NO = "no"
+    UNSETTLED = "unsettled"
+
+
+def _tri(probability: float) -> _Tri:
+    if probability >= YES_THRESHOLD - _THRESHOLD_TOLERANCE:
+        return _Tri.YES
+    if probability <= NO_THRESHOLD + _THRESHOLD_TOLERANCE:
+        return _Tri.NO
+    return _Tri.UNSETTLED
+
+
+def _classify_confirmed(answers: AdverseNewsAnswers) -> ArticleVerdict:
+    """Rows 6-10: the article reports a settled negative development."""
+    confirmed = _tri(answers.negative_confirmed)
+    if confirmed is _Tri.NO:
+        return ArticleVerdict.NEGATIVE_UNCONFIRMED
+    if confirmed is _Tri.UNSETTLED:
+        return ArticleVerdict.NEGATIVE_CONFIRMATION_UNSETTLED
+    # Severity reads level probabilities, not the expected score.
+    severity = _tri(answers.negative_severity[2] + answers.negative_severity[3])
+    if severity is _Tri.NO:
+        return ArticleVerdict.NEGATIVE_IMMATERIAL
+    if severity is _Tri.UNSETTLED:
+        return ArticleVerdict.NEGATIVE_SEVERITY_UNSETTLED
+    return ArticleVerdict.ADVERSE_CONFIRMED_MATERIAL
+
+
+def classify_article(answers: AdverseNewsAnswers) -> ArticleVerdict:
+    """Apply spec section 5.1 top to bottom; the first matching row wins."""
+    if _tri(answers.about_company) is not _Tri.YES:
+        return ArticleVerdict.NOT_ABOUT_COMPANY
+    if _tri(answers.price_recap) is _Tri.YES:
+        return ArticleVerdict.PRICE_RECAP
+    if _tri(answers.new_development) is _Tri.NO:
+        return ArticleVerdict.NOT_NEW
+    negative = _tri(answers.negative_development)
+    if negative is _Tri.NO:
+        return ArticleVerdict.NOT_NEGATIVE
+    if negative is _Tri.UNSETTLED:
+        return ArticleVerdict.NEGATIVE_UNSETTLED
+    return _classify_confirmed(answers)
+
+
+def gate_reason(
+    *,
+    coverage_complete: bool,
+    evidence_valid: bool,
+    verdicts: Sequence[ArticleVerdict],
+) -> GateReason | None:
+    """Apply spec section 5.2 in order; ``None`` means the gate is clear."""
+    if not coverage_complete:
+        return GateReason.NEWS_COVERAGE_UNAVAILABLE
+    if not evidence_valid:
+        return GateReason.NEWS_EVIDENCE_INVALID
+    if ArticleVerdict.ADVERSE_CONFIRMED_MATERIAL in verdicts:
+        return GateReason.MATERIAL_ADVERSE_NEWS
+    return None
 
 
 def prompt_schema_sha256() -> str:
