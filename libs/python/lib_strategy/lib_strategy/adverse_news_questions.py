@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -25,6 +26,7 @@ from lib_common.hashing import canonical_json_hash
 
 ADVERSE_NEWS_QUESTION_SET_VERSION: Final = "adverse-news-questions-v1"
 ADVERSE_NEWS_MODEL: Final = "jev-1.14.0"
+_MODEL_PATTERN: Final = re.compile(r"^([a-z]+)-(\d+\.\d+\.\d+)$")
 ADVERSE_NEWS_MODEL_RELEASED_ON: Final = date(2026, 10, 14)
 TYPESAFE_ENDPOINT: Final = "https://api.typesafe.ai/v1/systemone"
 
@@ -138,6 +140,17 @@ class AdverseNewsAnswerError(ValueError):
 
 def _reject(message: str) -> NoReturn:
     raise AdverseNewsAnswerError(message)
+
+
+def split_model_id(model: object) -> tuple[str, str]:
+    """Split a ``<name>-<major.minor.patch>`` model ID into its name and version."""
+    match = _MODEL_PATTERN.fullmatch(model) if isinstance(model, str) else None
+    if match is None:
+        _reject("model must look like <name>-<major.minor.patch>")
+    return match.group(1), match.group(2)
+
+
+ADVERSE_NEWS_MODEL_VERSION: Final = split_model_id(ADVERSE_NEWS_MODEL)[1]
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,6 +7,8 @@ from decimal import Decimal
 import pytest
 
 from lib_strategy.adverse_news_questions import (
+    ADVERSE_NEWS_MODEL,
+    ADVERSE_NEWS_MODEL_VERSION,
     ADVERSE_NEWS_QUESTIONS,
     MAX_BODY_CHARACTERS,
     AdverseNewsAnswerError,
@@ -245,3 +247,19 @@ def test_request_body_mutation_does_not_change_digest() -> None:
     body["questions"]["about_company"]["criteria"]["true"] = "changed"  # type: ignore[index]
     body["questions"]["negative_severity"]["criteria"][0] = "changed"  # type: ignore[index]
     assert prompt_schema_sha256() == before
+
+
+def test_schema_digests_are_pinned() -> None:
+    # Changing the questions, answer types, or version must be deliberate: update
+    # these literals in the same change that bumps ADVERSE_NEWS_QUESTION_SET_VERSION.
+    assert prompt_schema_sha256() == (
+        "225fd3645ce334c3e720d66b575a9967592c20499040d2e7ca24d3eeda3bce23"
+    )
+    assert output_schema_sha256() == (
+        "80d56ce0f328a4e86b836b9c351b501aa6c80d8ea3e7165ec86f6b7045d402c2"
+    )
+
+
+def test_model_version_is_derived_from_pinned_model() -> None:
+    assert ADVERSE_NEWS_MODEL_VERSION == "1.14.0"
+    assert f"jev-{ADVERSE_NEWS_MODEL_VERSION}" == ADVERSE_NEWS_MODEL

@@ -86,7 +86,7 @@ def test_severity_uses_upper_mass_not_expected_score() -> None:
 
 
 def test_severity_exact_threshold_sum_is_material() -> None:
-    # 0.35 + 0.35 is 0.6999... in floating point; it counts as on the threshold.
+    # 0.35 + 0.35 sums to exactly 0.70, the yes threshold; on the threshold is material.
     assert (
         classify_article(_confirmed_negative((0.3, 0.0, 0.35, 0.35)))
         is ArticleVerdict.ADVERSE_CONFIRMED_MATERIAL
