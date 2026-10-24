@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -98,7 +100,9 @@ def _lineage() -> ProviderLineage:
     )
 
 
-def _article(article_id: str, *, language: str = "en") -> AdverseNewsArticle:
+def _article(
+    article_id: str, *, language: str = "en", available_at: datetime | None = None
+) -> AdverseNewsArticle:
     return AdverseNewsArticle(
         provider_article_id=article_id,
         headline=f"Headline {article_id}",
@@ -107,7 +111,7 @@ def _article(article_id: str, *, language: str = "en") -> AdverseNewsArticle:
         language=language,
         document_type="news",
         published_at=_PUBLISHED,
-        source_available_at=_PUBLISHED + timedelta(minutes=2),
+        source_available_at=available_at or _PUBLISHED + timedelta(minutes=2),
     )
 
 
@@ -121,6 +125,7 @@ def _batch(instrument_id: int, *articles: AdverseNewsArticle) -> InstrumentNewsB
         lineage=_lineage(),
         query_window_start=_START,
         query_window_end=_END,
+        cutoff=_END,
         provider_query_identity=f"query-{instrument_id}",
         completed_at=_RECEIVED,
     )
@@ -146,13 +151,22 @@ def _response() -> dict[str, object]:
     }
 
 
+_USAGE = itertools.count()
+
+
 class _FakeClient:
     def __init__(
-        self, fail_on: Callable[[int], bool] = lambda _n: False, model: str = ADVERSE_NEWS_MODEL
+        self,
+        fail_on: Callable[[int], bool] = lambda _n: False,
+        model: str = ADVERSE_NEWS_MODEL,
+        *,
+        varying: bool = False,
     ) -> None:
         self._model = model
         self.requests: list[dict[str, object]] = []
         self._fail_on = fail_on
+        # TypeSafe is not deterministic: a varying client never repeats a response.
+        self._varying = varying
 
     def ask(self, request_json: dict[str, object]) -> TypeSafeExchange:
         self.requests.append(request_json)
@@ -161,6 +175,8 @@ class _FakeClient:
         request_bytes = json.dumps(request_json, separators=(",", ":")).encode()
         response = _response()
         response["model"] = self._model
+        if self._varying:
+            response["usage"] = {"input_tokens": next(_USAGE)}
         return TypeSafeExchange(
             request_json=request_json,
             response_json=response,
@@ -279,3 +295,65 @@ def test_coverage_write_failure_marks_instrument_failed(
     assert report.covered_instruments == ()
     assert report.classified == 1
     assert "news_coverage" not in _kinds(factory)
+
+
+def _texts(factory: sessionmaker[Session], field: str) -> list[str]:
+    with factory() as session:
+        coverage_id = session.scalar(
+            sa.select(EquityObservation.observation_id).where(
+                EquityObservation.observation_kind == "news_coverage"
+            )
+        )
+        assert coverage_id is not None
+        return sorted(
+            str(v.text_value)
+            for v in session.scalars(
+                sa.select(EquityObservationValue).where(
+                    EquityObservationValue.observation_id == coverage_id,
+                    EquityObservationValue.field_name == field,
+                )
+            )
+        )
+
+
+def test_identical_text_under_two_article_ids_reuses_the_recorded_exchange() -> None:
+    factory = _factory()
+    first = replace(_article("a1"), headline="Same wire story")
+    second = replace(_article("a2"), headline="Same wire story")
+    client = _FakeClient(varying=True)
+    report = _run(factory, client, _batch(1, first, second))
+    assert len(client.requests) == 1
+    assert report.classified == 2
+    assert report.failed_instruments == ()
+    assert report.covered_instruments == (1,)
+    assert _kinds(factory).count("news_event") == 2
+    assert _texts(factory, "returned_article_identity") == ["a1", "a2"]
+    with factory() as session:
+        assert (
+            session.scalar(sa.select(sa.func.count()).select_from(EquityModelInferenceRecord)) == 1
+        )
+    rerun = _FakeClient(varying=True)
+    assert _run(factory, rerun, _batch(1, first, second)).covered_instruments == (1,)
+    assert rerun.requests == []
+
+
+def test_articles_available_after_cutoff_are_neither_classified_nor_listed() -> None:
+    factory = _factory()
+    client = _FakeClient()
+    late = _article("late", available_at=_END + timedelta(seconds=1))
+    report = _run(factory, client, _batch(1, _article("a"), late))
+    assert len(client.requests) == 1
+    assert report.classified == 1
+    assert report.excluded_after_cutoff == 1
+    assert report.covered_instruments == (1,)
+    assert _texts(factory, "returned_article_identity") == ["a"]
+
+
+def test_batch_window_must_end_at_cutoff() -> None:
+    with pytest.raises(ValueError, match="cutoff"):
+        replace(_batch(1), cutoff=_END - timedelta(hours=1))
+
+
+def test_batch_cutoff_must_be_timezone_aware() -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
+        replace(_batch(1), cutoff=_END.replace(tzinfo=None))

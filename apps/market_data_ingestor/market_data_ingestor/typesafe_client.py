@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from types import TracebackType
+from typing import Self
 
 import httpx
 
@@ -54,6 +56,7 @@ class TypeSafeClient:
             msg = "TypeSafe API key must not be blank"
             raise ValueError(msg)
         self._api_key = api_key
+        self._owns_http = http_client is None
         self._http = http_client if http_client is not None else httpx.Client()
         self._clock = clock
         self._timeout = timeout_seconds
@@ -63,6 +66,22 @@ class TypeSafeClient:
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(endpoint={TYPESAFE_ENDPOINT!r})"
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Close the HTTP client this instance created; a supplied one stays open."""
+        if self._owns_http:
+            self._http.close()
 
     def ask(self, request_json: Mapping[str, object]) -> TypeSafeExchange:
         """POST the request and return the exact exchange; raise on any failure."""

@@ -120,3 +120,18 @@ def test_redirect_raises_without_retry() -> None:
     with pytest.raises(TypeSafeRequestError, match="302"):
         _client(handler).ask(_REQUEST)
     assert len(calls) == 1
+
+
+def test_close_closes_only_an_owned_http_client() -> None:
+    supplied = httpx.Client(transport=httpx.MockTransport(lambda _r: httpx.Response(200)))
+    TypeSafeClient(api_key=_KEY, http_client=supplied).close()
+    assert not supplied.is_closed
+    owned = TypeSafeClient(api_key=_KEY)
+    owned.close()
+    assert owned._http.is_closed
+
+
+def test_context_manager_closes_owned_client() -> None:
+    with TypeSafeClient(api_key=_KEY) as client:
+        assert not client._http.is_closed
+    assert client._http.is_closed
