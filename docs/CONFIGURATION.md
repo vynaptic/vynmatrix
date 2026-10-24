@@ -77,8 +77,9 @@ and EXECUTION_ENGINE_ALLOW_LIVE=false are fixed launch inputs. No global broker
 trading key or caller-selected owner is accepted as execution authority.
 
 TYPESAFE_API_KEY is a secret used only by the market-data ingestor's adverse-news
-classification job. It is never logged and has no default; the job refuses to run
-without it.
+classification job. It is never logged and has no default. The client rejects a
+blank key; the composition root that reads TYPESAFE_API_KEY is not wired yet (the
+adverse-news gate is inert).
 
 ## Snapshots, parsing, and readiness
 

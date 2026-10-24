@@ -6,11 +6,22 @@ import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
+import pytest
 import sqlalchemy as sa
 from sqlalchemy.orm import Session, sessionmaker
 
-from lib_application.db.models import Base, EquityObservation, EquityObservationValue, Instrument
-from lib_application.services.adverse_news_observations import ProviderLineage, TypeSafeExchange
+from lib_application.db.models import (
+    Base,
+    EquityModelInferenceRecord,
+    EquityObservation,
+    EquityObservationValue,
+    Instrument,
+)
+from lib_application.services.adverse_news_observations import (
+    AdverseNewsPersistenceError,
+    ProviderLineage,
+    TypeSafeExchange,
+)
 from lib_strategy.adverse_news_questions import (
     ADVERSE_NEWS_MODEL,
     AdverseNewsArticle,
@@ -20,6 +31,7 @@ from lib_strategy.equity_optional_factors import (
     ADVERSE_NEWS_GATE_CONTRACT,
     OPTIONAL_FACTOR_TIMESTAMP_SCHEMA,
 )
+from market_data_ingestor import adverse_news_classification as classification
 from market_data_ingestor.adverse_news_classification import (
     ClassificationRunReport,
     InstrumentNewsBatch,
@@ -135,7 +147,10 @@ def _response() -> dict[str, object]:
 
 
 class _FakeClient:
-    def __init__(self, fail_on: Callable[[int], bool] = lambda _n: False) -> None:
+    def __init__(
+        self, fail_on: Callable[[int], bool] = lambda _n: False, model: str = ADVERSE_NEWS_MODEL
+    ) -> None:
+        self._model = model
         self.requests: list[dict[str, object]] = []
         self._fail_on = fail_on
 
@@ -145,6 +160,7 @@ class _FakeClient:
             raise TypeSafeRequestError("TypeSafe returned HTTP 500")
         request_bytes = json.dumps(request_json, separators=(",", ":")).encode()
         response = _response()
+        response["model"] = self._model
         return TypeSafeExchange(
             request_json=request_json,
             response_json=response,
@@ -176,11 +192,17 @@ def test_skipped_articles_never_reach_client() -> None:
 
 def test_failed_answer_writes_nothing_for_that_article() -> None:
     factory = _factory()
-    client = _FakeClient(fail_on=lambda n: n == 1)
+    client = _FakeClient(model="jev-1.13.0")
     report = _run(factory, client, _batch(1, _article("a")))
     assert report.classified == 0
     assert report.failed_instruments == (1,)
+    assert report.covered_instruments == ()
+    assert len(client.requests) == 1
     assert _kinds(factory) == []
+    with factory() as session:
+        assert (
+            session.scalar(sa.select(sa.func.count()).select_from(EquityModelInferenceRecord)) == 0
+        )
 
 
 def test_partial_run_writes_no_coverage() -> None:
@@ -231,8 +253,9 @@ def test_already_classified_article_is_not_requested_again() -> None:
     second = _FakeClient()
     report = _run(factory, second, _batch(1, _article("a")))
     assert second.requests == []
-    assert report.classified == 0
+    assert report.classified == 1
     assert report.failed_instruments == ()
+    assert report.covered_instruments == (1,)
 
 
 def test_failure_in_one_instrument_does_not_block_others() -> None:
@@ -241,3 +264,18 @@ def test_failure_in_one_instrument_does_not_block_others() -> None:
     report = _run(factory, client, _batch(1, _article("a")), _batch(2, _article("b")))
     assert report.failed_instruments == (1,)
     assert report.covered_instruments == (2,)
+
+
+def test_coverage_write_failure_marks_instrument_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(*_a: object, **_k: object) -> str:
+        raise AdverseNewsPersistenceError("coverage rejected")
+
+    monkeypatch.setattr(classification, "persist_news_coverage", boom)
+    factory = _factory()
+    report = _run(factory, _FakeClient(), _batch(1, _article("a")))
+    assert report.failed_instruments == (1,)
+    assert report.covered_instruments == ()
+    assert report.classified == 1
+    assert "news_coverage" not in _kinds(factory)

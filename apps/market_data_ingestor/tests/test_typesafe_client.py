@@ -108,3 +108,15 @@ def test_api_key_absent_from_error_messages_and_logs(caplog: pytest.LogCaptureFi
     assert _KEY not in repr(client)
     assert _KEY not in caplog.text
     assert all(_KEY not in str(record.__dict__) for record in caplog.records)
+
+
+def test_redirect_raises_without_retry() -> None:
+    calls = []
+
+    def handler(_r: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(302, headers={"Location": "https://elsewhere.invalid"})
+
+    with pytest.raises(TypeSafeRequestError, match="302"):
+        _client(handler).ask(_REQUEST)
+    assert len(calls) == 1

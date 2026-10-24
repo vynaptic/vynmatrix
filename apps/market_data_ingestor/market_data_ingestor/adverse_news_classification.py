@@ -97,13 +97,13 @@ def _classify_article(
     client: TypeSafeClient,
     batch: InstrumentNewsBatch,
     article: AdverseNewsArticle,
-) -> bool:
-    """Classify one article; return False when it was already classified."""
+) -> None:
+    """Classify one article unless it already has a recorded classification."""
     with session_factory() as session:
         if _already_classified(
             session, article_id=article.provider_article_id, instrument_id=batch.instrument_id
         ):
-            return False
+            return
     state, truncated = build_adverse_news_state(batch.company, article)
     exchange = client.ask(adverse_news_request_body(state))
     with session_factory() as session, session.begin():
@@ -115,7 +115,6 @@ def _classify_article(
             body_truncated=truncated,
             exchange=exchange,
         )
-    return True
 
 
 def classify_adverse_news(
@@ -147,8 +146,8 @@ def classify_adverse_news(
                 )
                 continue
             try:
-                if _classify_article(session_factory, client, batch, article):
-                    classified += 1
+                _classify_article(session_factory, client, batch, article)
+                classified += 1
             except _ARTICLE_ERRORS as exc:
                 batch_failed = True
                 logger.warning(

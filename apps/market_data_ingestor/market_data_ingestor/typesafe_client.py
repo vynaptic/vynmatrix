@@ -15,11 +15,8 @@ import httpx
 
 from lib_application.services.adverse_news_observations import TypeSafeExchange
 from lib_common.http_exceptions import is_retryable_status
-from lib_common.logging import get_logger
 from lib_common.retries import retry_sync
 from lib_strategy.adverse_news_questions import TYPESAFE_ENDPOINT
-
-logger = get_logger(__name__)
 
 _DEFAULT_TIMEOUT_SECONDS = 60.0
 _DEFAULT_RETRIES = 2
@@ -120,7 +117,7 @@ class TypeSafeClient:
             msg = f"TypeSafe transport failure: {type(exc).__name__}"
             raise _RetryableTypeSafeError(msg) from None
         status = response.status_code
-        if status >= httpx.codes.BAD_REQUEST:
+        if not httpx.codes.is_success(status):
             msg = f"TypeSafe returned HTTP {status}"
             if is_retryable_status(status):
                 raise _RetryableTypeSafeError(msg)
