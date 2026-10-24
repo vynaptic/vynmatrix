@@ -367,7 +367,42 @@ class Deployer:
             "owner_id": result.get("owner_id"),
             "deployment_id": deployment_id,
             "snapshot": None if snapshot is None else str(snapshot),
+            "trading": self.trading_state(),
         }
+
+    def trading_state(self) -> dict[str, int] | None:
+        """What is released, bound and switched on, read as the backend reads it.
+
+        Reported after the deployment has already succeeded, so a failed read
+        is ``None`` -- unknown -- rather than a failure or a guess.
+        """
+        from dataclasses import asdict  # noqa: PLC0415
+
+        from sqlalchemy.exc import SQLAlchemyError  # noqa: PLC0415
+
+        from lib_application.db.session import (  # noqa: PLC0415
+            create_engine_for_env,
+            dispose_engine,
+            get_session_factory,
+        )
+        from lib_application.services.account_onboarding import owner_scope  # noqa: PLC0415
+        from lib_application.services.binding_control import trading_state  # noqa: PLC0415
+
+        url = self.host_env.get("BACKEND_DATABASE_URL")
+        if not url:
+            return None
+        try:
+            engine = create_engine_for_env(env="dev", db_url=url)
+        except (SQLAlchemyError, ValueError):
+            return None
+        try:
+            factory = get_session_factory(engine=engine)
+            with factory() as session, session.begin(), owner_scope(session) as owner_id:
+                return asdict(trading_state(session, owner_id))
+        except (SQLAlchemyError, ValueError, RuntimeError):
+            return None
+        finally:
+            dispose_engine(engine)
 
     # -- stages -------------------------------------------------------------------
 

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from lib_application.db.models import (
@@ -142,6 +143,46 @@ def require_release(session: Session, strategy_id: str | None) -> None:
     if released is None:
         msg = "strategy has no active release"
         raise BindingControlError(msg, status_code=409)
+
+
+@dataclass(frozen=True)
+class TradingState:
+    """How far an installation is from trading, in the bind gate's own terms."""
+
+    released: int
+    """Strategies :func:`require_release` would accept."""
+    bound: int
+    """The owner's bindings that name a strategy."""
+    switched_on: int
+    """Those bindings that are active: close only, trading, or a custom active mix."""
+
+
+def trading_state(session: Session, owner_id: str) -> TradingState:
+    """Count what is released, bound and switched on for the deployment owner.
+
+    "Released" is the condition :func:`require_release` applies -- the strategy
+    row is active *and* one of its versions is active -- so a summary never
+    calls a strategy released that the bind gate would refuse.
+    """
+    released = session.scalar(
+        select(func.count(func.distinct(Strategy.strategy_id)))
+        .join(StrategyVersion, StrategyVersion.strategy_id == Strategy.strategy_id)
+        .where(Strategy.is_active.is_(True), StrategyVersion.status == "active")
+    )
+    rows = session.execute(
+        select(UserStrategyBinding.is_active, func.count(UserStrategyBinding.binding_id))
+        .where(
+            UserStrategyBinding.user_id == owner_id,
+            UserStrategyBinding.strategy_id.is_not(None),
+        )
+        .group_by(UserStrategyBinding.is_active)
+    ).all()
+    by_state = {bool(active): int(count) for active, count in rows}
+    return TradingState(
+        released=int(released or 0),
+        bound=sum(by_state.values()),
+        switched_on=by_state.get(True, 0),
+    )
 
 
 def canonical_instruments(session: Session, values: Sequence[Any] | None) -> list[str] | None:
@@ -482,6 +523,7 @@ __all__ = [
     "PATCHABLE",
     "BindingControlError",
     "BindingMode",
+    "TradingState",
     "canonical_instruments",
     "create_binding",
     "deactivate_binding",
@@ -493,5 +535,6 @@ __all__ = [
     "require_broker_allowed",
     "require_release",
     "scopes_overlap",
+    "trading_state",
     "validate_numeric",
 ]

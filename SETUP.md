@@ -60,9 +60,11 @@ migrates it, provisions the six runtime roles, registers the reference
 catalogue, creates you as the owner, creates a local paper account with the
 starting equity you chose, and starts the stack.
 
-It finishes by printing the address of your dashboard. No strategy is released
-or bound, so installing grants no trading authority: the Strategies page shows
-the catalogue as registered and not released, which is the honest state.
+It finishes by printing the address of your dashboard and how many strategies
+are released, bound and switched on, read from the database. On a fresh install
+none is released or bound, so installing grants no trading authority: the
+Strategies page shows the catalogue as registered and not released, which is
+the honest state.
 
 Useful flags:
 

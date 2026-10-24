@@ -124,3 +124,40 @@ def test_init_refuses_a_starting_equity_that_is_not_capital(project: Path) -> No
 
     assert result.exit_code != 0
     assert not (project / configuration.ENV_FILE).exists()
+
+
+# ------------------------------------------------------------- closing message
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (
+            {"released": 0, "bound": 0, "switched_on": 0},
+            "No strategy is released for trading, so nothing can trade yet.",
+        ),
+        (
+            {"released": 1, "bound": 0, "switched_on": 0},
+            "1 strategy is released for trading; none is bound to an account, "
+            "so nothing can trade yet.",
+        ),
+        (
+            {"released": 2, "bound": 1, "switched_on": 0},
+            "2 strategies are released for trading and 1 binding exists; "
+            "none is switched on, so nothing is trading.",
+        ),
+        (
+            {"released": 3, "bound": 2, "switched_on": 2},
+            "3 strategies are released for trading and 2 bindings exist; "
+            "2 are switched on. The Strategies page shows what each one is waiting for.",
+        ),
+        (
+            None,
+            "What is released and bound could not be read; the Strategies page shows it.",
+        ),
+    ],
+)
+def test_deploy_reports_the_trading_state_it_found(
+    state: dict[str, int] | None, expected: str
+) -> None:
+    assert command_module.trading_sentence(state) == expected

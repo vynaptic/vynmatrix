@@ -62,6 +62,11 @@ Git history.
 
 ### Fixed
 
+- `vmdev deploy` reports how many strategies are released, bound and switched on,
+  read from the database after the deployment succeeds, instead of always
+  printing "No strategy is released or bound" — which was false on an upgrade of
+  an installation with a released, bound strategy. If the read fails it says so
+  rather than guessing. `--json` carries the same counts under `trading`.
 - Binding a strategy for trading now requires the release the UI always claimed
   it required. `POST /bindings` never checked it: `_require_strategy_release`
   was reachable only from `PUT /strategy-configs`, so an unreleased strategy

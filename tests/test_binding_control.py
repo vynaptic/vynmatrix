@@ -21,7 +21,9 @@ from lib_application.services.binding_control import (
     NUMERIC_FIELDS,
     PATCHABLE,
     BindingControlError,
+    TradingState,
     mode_of,
+    trading_state,
     validate_numeric,
 )
 
@@ -166,3 +168,106 @@ def test_the_patchable_set_is_the_mode_plus_the_bounded_numbers() -> None:
         "entries_enabled",
     ):
         assert forbidden not in PATCHABLE
+
+
+# ------------------------------------------------------------ trading state
+
+
+@pytest.fixture
+def catalogue_session() -> Any:
+    """An owner, a peer, and three strategies: released, registered-only, and inactive."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from lib_application.db.models import (
+        Base,
+        Broker,
+        LinkedBrokerAccount,
+        Strategy,
+        StrategyVersion,
+        User,
+    )
+
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    session = sessionmaker(engine, expire_on_commit=False)()
+    session.add_all(
+        [
+            User(user_id="owner", email="owner@example.invalid", base_ccy="EUR"),
+            User(user_id="peer", email="peer@example.invalid", base_ccy="INR"),
+            Broker(broker_id=6, code="paper", name="Paper"),
+            Strategy(strategy_id="released_v1", strategy_name="Released", is_active=True),
+            # is_active alone is not a release: no version is active.
+            Strategy(strategy_id="flagged_v1", strategy_name="Flagged", is_active=True),
+            Strategy(strategy_id="registered_v1", strategy_name="Registered"),
+        ]
+    )
+    session.flush()
+    session.add_all(
+        [
+            StrategyVersion(
+                strategy_id="released_v1", semver="1.0.0", param_schema={}, status="active"
+            ),
+            StrategyVersion(
+                strategy_id="flagged_v1", semver="1.0.0", param_schema={}, status="registered"
+            ),
+            LinkedBrokerAccount(
+                account_id=1,
+                display_name="Owner paper",
+                user_id="owner",
+                broker_id=6,
+                environment="paper",
+                base_ccy="EUR",
+                paper_initial_equity=Decimal("1000"),
+                paper_initial_cash=Decimal("1000"),
+            ),
+            LinkedBrokerAccount(
+                account_id=2,
+                display_name="Peer paper",
+                user_id="peer",
+                broker_id=6,
+                environment="paper",
+                base_ccy="INR",
+                paper_initial_equity=Decimal("1000"),
+                paper_initial_cash=Decimal("1000"),
+            ),
+        ]
+    )
+    session.commit()
+    yield session
+    session.close()
+    engine.dispose()
+
+
+def _bind(session: Any, *, user: str, account: int, strategy: str | None, mode: str) -> None:
+    from lib_application.db.models import UserStrategyBinding
+
+    session.add(
+        UserStrategyBinding(
+            user_id=user,
+            broker_account_id=account,
+            strategy_id=strategy,
+            **MODES[mode].as_fields(),
+        )
+    )
+    session.commit()
+
+
+def test_trading_state_of_a_fresh_install_is_released_but_unbound(catalogue_session: Any) -> None:
+    assert trading_state(catalogue_session, "owner") == TradingState(
+        released=1, bound=0, switched_on=0
+    )
+
+
+def test_trading_state_counts_only_the_owners_bindings_and_only_active_ones_as_on(
+    catalogue_session: Any,
+) -> None:
+    _bind(catalogue_session, user="owner", account=1, strategy="released_v1", mode="close_only")
+    _bind(catalogue_session, user="owner", account=1, strategy="registered_v1", mode="off")
+    # Neither a strategy-less binding nor another user's binding is the owner's trading.
+    _bind(catalogue_session, user="owner", account=1, strategy=None, mode="off")
+    _bind(catalogue_session, user="peer", account=2, strategy="released_v1", mode="trading")
+
+    assert trading_state(catalogue_session, "owner") == TradingState(
+        released=1, bound=2, switched_on=1
+    )

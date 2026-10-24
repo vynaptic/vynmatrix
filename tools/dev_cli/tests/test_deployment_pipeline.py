@@ -288,3 +288,24 @@ def test_redeploying_one_commit_still_has_a_target_to_start() -> None:
 def test_a_first_deployment_with_nothing_recorded_refuses_to_guess() -> None:
     with pytest.raises(pipeline.DeploymentError, match="No previous image generation"):
         _target(None, "sha-new", "")
+
+
+# ------------------------------------------------------------- trading state
+
+
+@pytest.mark.parametrize(
+    "host_env",
+    [
+        {},
+        # Nothing listens on port 1, so the read fails like an unreachable database.
+        {"BACKEND_DATABASE_URL": "postgresql://reader:unused@127.0.0.1:1/vm_trading"},
+    ],
+)
+def test_an_unreadable_trading_state_is_unknown_rather_than_nothing(
+    host_env: dict[str, str],
+) -> None:
+    """The deploy already succeeded; a failed read must not claim nothing is bound."""
+    deployer = pipeline.Deployer.__new__(pipeline.Deployer)
+    deployer.host_env = host_env
+
+    assert deployer.trading_state() is None

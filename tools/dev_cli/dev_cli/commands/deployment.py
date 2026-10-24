@@ -12,6 +12,7 @@ import json
 import os
 import stat
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -279,7 +280,37 @@ def deploy(
     click.echo(
         f"\nDeployed {result['image_tag']} at schema {result['revision']}.\n"
         f"Open http://127.0.0.1:{port}/ and paste BACKEND_ADMIN_API_KEY from your .env.\n"
-        "No strategy is released or bound, so nothing can trade yet."
+        + trading_sentence(result.get("trading"))
+    )
+
+
+def _count(value: int, singular: str, plural: str) -> str:
+    return f"{value} {singular if value == 1 else plural}"
+
+
+def trading_sentence(state: Mapping[str, int] | None) -> str:
+    """The deploy's last line: how far the installation is from trading, as recorded."""
+    if state is None:
+        return "What is released and bound could not be read; the Strategies page shows it."
+    released, bound, on = state["released"], state["bound"], state["switched_on"]
+    if released == 0 and bound == 0:
+        return "No strategy is released for trading, so nothing can trade yet."
+    strategies = _count(released, "strategy is", "strategies are")
+    if bound == 0:
+        return (
+            f"{strategies} released for trading; none is bound to an account, "
+            "so nothing can trade yet."
+        )
+    bindings = _count(bound, "binding exists", "bindings exist")
+    if on == 0:
+        return (
+            f"{strategies} released for trading and {bindings}; "
+            "none is switched on, so nothing is trading."
+        )
+    return (
+        f"{strategies} released for trading and {bindings}; "
+        f"{_count(on, 'is', 'are')} switched on. "
+        "The Strategies page shows what each one is waiting for."
     )
 
 
