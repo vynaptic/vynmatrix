@@ -268,6 +268,8 @@ class SecSubmissionDataset:
     current_sic: int | None
     filings: tuple[SecFilingRecord, ...]
     sources: tuple[SecSourceDocument, ...]
+    # Historical pages the root listed but ``since`` excluded from the fetch.
+    skipped_page_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -741,13 +743,17 @@ class SecEdgarClient:
         root_url = f"{_DATA_BASE_URL}/submissions/CIK{normalized_cik}.json"
         root_payload, root_source = self._get_json_document(root_url)
         datasets = [parse_submissions_payload(root_payload, cik=normalized_cik, source=root_source)]
-        for page_name in _submission_page_names(root_payload, since=since):
+        page_names = _submission_page_names(root_payload, since=since)
+        for page_name in page_names:
             page_url = f"{_DATA_BASE_URL}/submissions/{page_name}"
             page_payload, page_source = self._get_json_document(page_url)
             datasets.append(
                 parse_submissions_payload(page_payload, cik=normalized_cik, source=page_source)
             )
-        return _merge_submission_datasets(datasets)
+        skipped = tuple(
+            name for name in _submission_page_names(root_payload) if name not in page_names
+        )
+        return replace(_merge_submission_datasets(datasets), skipped_page_names=skipped)
 
     def fetch_company_facts(self, cik: str | int) -> SecCompanyFactsDataset:
         """Fetch all standardized Company Facts for one CIK."""
