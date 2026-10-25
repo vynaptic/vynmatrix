@@ -14,13 +14,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from lib_application.services.sec_filing_observations import (
-    SEC_FILING_LOOKBACK,
     SecFilingFact,
     SecIssuerFilingFetch,
     SecSubmissionPage,
 )
 from lib_common.logging import get_logger
-from lib_strategy.sec_filing_rules import GATE_RELEVANT_FORMS, SEC_FILING_FETCH_LOOKBACK
+from lib_strategy.sec_filing_rules import (
+    GATE_RELEVANT_FORMS,
+    SEC_FILING_EVIDENCE_SCOPE,
+    SEC_FILING_FETCH_LOOKBACK,
+)
 from market_data_ingestor.sec_edgar import (
     SecEdgarClient,
     SecEdgarError,
@@ -119,7 +122,7 @@ def _issuer_fetch(
     pages: dict[SecSourceDocument, SecSubmissionPage] = {}
     for source in dataset.sources:
         pages.setdefault(source, _page(source))
-    window_start = cutoff - SEC_FILING_LOOKBACK
+    window_start = cutoff - SEC_FILING_EVIDENCE_SCOPE
     filings = tuple(
         SecFilingFact(
             cik=dataset.cik,

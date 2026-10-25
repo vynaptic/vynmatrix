@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Final, NoReturn
 
 from sqlalchemy import select
@@ -31,9 +31,9 @@ from lib_strategy.equity_optional_factors import (
     SEC_FILING_EVENT_GATE_CONTRACT,
     OptionalFactorSourceContract,
 )
+from lib_strategy.sec_filing_rules import SEC_FILING_EVIDENCE_SCOPE
 
 SEC_PUBLIC_ENTITLEMENT: Final = "public-sec-edgar"
-SEC_FILING_LOOKBACK: Final = timedelta(days=730)
 
 _PROVIDER: Final = "sec"
 _PRODUCT: Final = "edgar-submissions"
@@ -170,7 +170,7 @@ def _check_filing(
     accepted = _aware_utc(filing.acceptance_time, "acceptance_time")
     if accepted > cutoff:
         _invalid(f"filing {accession!r} was accepted after the fetch cutoff")
-    if accepted <= cutoff - SEC_FILING_LOOKBACK:
+    if accepted <= cutoff - SEC_FILING_EVIDENCE_SCOPE:
         _invalid(f"filing {accession!r} precedes the lookback window")
     if _aware_utc(filing.page.retrieved_at, "retrieved_at") < accepted:
         _invalid(f"filing {accession!r} was retrieved before its acceptance")
@@ -339,7 +339,7 @@ def _coverage_submission(
         EquityObservationValueInput("listed_accession_count", "integer", len(accessions)),
         _timestamp("source_available_at", available),
         _timestamp("window_end", cutoff),
-        _timestamp("window_start", cutoff - SEC_FILING_LOOKBACK),
+        _timestamp("window_start", cutoff - SEC_FILING_EVIDENCE_SCOPE),
         *(
             _text("submission_page_sha256", page.content_sha256, ordinal)
             for ordinal, page in enumerate(fetch.pages)
@@ -396,7 +396,6 @@ def persist_sec_filing_fetch(
 
 
 __all__ = [
-    "SEC_FILING_LOOKBACK",
     "SEC_PUBLIC_ENTITLEMENT",
     "SecFilingFact",
     "SecFilingPersistenceError",
