@@ -12,6 +12,12 @@ Git history.
 - Adverse-news gate storage and classification for USQualityCompounder (inert;
   migration 0111). The gate is not wired into the panel resolver and changes no
   strategy behaviour.
+- SEC filing gate evidence for USQualityCompounder (inert; migration 0112). The
+  quarter-end producer now records 8-K item codes and NT late-filing notices
+  after the 0.2.0 panel commits; a failure there never fails the panel. The
+  resolver is not wired into the panel and excludes no name. Run the
+  acceptance diagnostic with
+  `python -m market_data_ingestor.sec_filing_event_history --submissions-dir <dir>`.
 - `vmdev db release-strategy` releases one exact registered strategy version for
   paper, so a strategy other than the Swing canary can be bound and shown as
   Released. The evidence is a reviewed commit: the strategy's `config.json` must

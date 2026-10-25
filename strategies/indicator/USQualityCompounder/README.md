@@ -106,6 +106,9 @@ Before paper activation, all of the following remain required:
   reconciliation proof.
 - The adverse-news gate ([spec](../../../docs/superpowers/specs/2026-10-24-typesafe-adverse-news-gate-design.md))
   is inert until 0.3.0 and does not yet exclude any name.
+- The SEC filing gate ([spec](../../../docs/superpowers/specs/2026-10-24-sec-filing-event-gate-design.md))
+  only collects evidence; a later strategy version enables it, and it does not
+  yet exclude any name.
 
 The registered quarter-end job is default-off. When its prerequisites exist, run
 it through scripts.run_platform inside the existing worker or combined
