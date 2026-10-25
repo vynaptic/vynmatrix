@@ -51,6 +51,7 @@ from lib_application.db.models import (
     EquitySourceLineage,
     IndexMembership,
 )
+from lib_application.db.session import bind_utc_instant
 from lib_strategy.sec_filing_rules import (
     GATE_RELEVANT_FORMS,
     SEC_FILING_FETCH_LOOKBACK,
@@ -480,7 +481,7 @@ def read_recorded_closes(
             EquityObservation.observation_kind == "price",
             EquityObservation.disposition == "observed",
             EquityObservation.available_at.is_not(None),
-            EquityObservation.available_at <= _aware_utc(run_at).replace(tzinfo=None),
+            EquityObservation.available_at <= bind_utc_instant(session, run_at),
             EquitySourceLineage.product == _DERIVED_MARKET_PRODUCT,
             EquitySourceLineage.adjustment_policy == QUALITY_COMPOUNDER_MARKET_ADJUSTMENT_POLICY,
         )

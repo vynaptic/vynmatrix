@@ -35,6 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from lib_application.db.models import EquityObservation, EquityObservationValue
+from lib_application.db.session import bind_utc_instant
 from lib_application.services.equity_lineage import EquityObservationAuthorityError
 from lib_application.services.equity_optional_factor_sources import (
     OptionalFactorEvidenceValidationError,
@@ -153,10 +154,10 @@ def _selected_coverage(
                 EquityObservation.observation_kind == _COVERAGE_KIND,
                 EquityObservation.instr_id == ledger.instrument_id,
                 EquityObservation.disposition == _OBSERVED,
-                EquityObservation.available_at <= _stored(session, cutoff),
+                EquityObservation.available_at <= bind_utc_instant(session, cutoff),
                 EquityObservation.event_at
-                >= _stored(session, cutoff - SEC_FILING_COVERAGE_TOLERANCE),
-                EquityObservation.event_at <= _stored(session, cutoff),
+                >= bind_utc_instant(session, cutoff - SEC_FILING_COVERAGE_TOLERANCE),
+                EquityObservation.event_at <= bind_utc_instant(session, cutoff),
             )
         )
     )
@@ -249,8 +250,8 @@ def _admit_filings(
                 EquityObservation.instr_id == ledger.instrument_id,
                 EquityObservation.disposition == _OBSERVED,
                 EquityObservation.event_at
-                > _stored(session, window_end - SEC_FILING_EVIDENCE_SCOPE),
-                EquityObservation.event_at <= _stored(session, window_end),
+                > bind_utc_instant(session, window_end - SEC_FILING_EVIDENCE_SCOPE),
+                EquityObservation.event_at <= bind_utc_instant(session, window_end),
             )
         )
     )
@@ -372,14 +373,6 @@ def _text(row: EquityObservationValue, name: str) -> str:
     if str(row.value_type) != "text" or not isinstance(row.text_value, str):
         _reject(f"{name} rows must be text")
     return str(row.text_value)
-
-
-def _stored(session: Session, value: datetime) -> datetime:
-    """Bind a UTC instant the way the dialect stores ``DateTime(timezone=True)``."""
-    utc_value = value.astimezone(UTC)
-    if session.get_bind().dialect.name == "sqlite":
-        return utc_value.replace(tzinfo=None)
-    return utc_value
 
 
 def _utc(value: datetime) -> datetime:

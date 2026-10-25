@@ -7,6 +7,7 @@ SQLite is only used for unit tests (in-memory).
 import os
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import create_engine, event, text
@@ -251,6 +252,21 @@ def get_session_factory(
         engine if engine is not None else create_engine_for_env(env=env, db_url=db_url, echo=echo)
     )
     return sessionmaker(bound_engine, expire_on_commit=expire_on_commit)
+
+
+def bind_utc_instant(session: Session, value: datetime) -> datetime:
+    """Bind an aware instant the way the dialect stores ``DateTime(timezone=True)``.
+
+    PostgreSQL receives the aware UTC value; the in-memory SQLite used by unit
+    tests stores naive UTC, so it receives the naive UTC wall clock.
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        msg = "bound instant must be timezone-aware"
+        raise ValueError(msg)
+    utc_value = value.astimezone(UTC)
+    if session.get_bind().dialect.name == "sqlite":
+        return utc_value.replace(tzinfo=None)
+    return utc_value
 
 
 def dispose_engine(engine: Engine | None) -> None:
