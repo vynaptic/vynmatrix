@@ -62,6 +62,8 @@ class OptionalFactorSleeve(StrEnum):
     INSIDER_ACTIVITY = "insider_activity"
     MACRO = "macro"
     NEWS_SENTIMENT = "news_sentiment"
+    SEC_FILING_COVERAGE = "sec_filing_coverage"
+    SEC_FILING_EVENTS = "sec_filing_events"
 
 
 class OptionalFactorObservationKind(StrEnum):
@@ -69,6 +71,8 @@ class OptionalFactorObservationKind(StrEnum):
 
     ANALYST_ESTIMATE = "analyst_estimate"
     CALL_TRANSCRIPT = "call_transcript"
+    FILING = "filing"
+    FILING_COVERAGE = "filing_coverage"
     INSIDER_TRANSACTION = "insider_transaction"
     MACRO_RELEASE = "macro_release"
     NEWS_COVERAGE = "news_coverage"
@@ -81,6 +85,7 @@ class OptionalFactorEventTimeSemantic(StrEnum):
 
     ESTIMATE_SNAPSHOT_AS_OF = "estimate_snapshot_as_of"
     CALL_EVENT = "call_event"
+    FILING_ACCEPTANCE = "filing_acceptance"
     MEASUREMENT_AS_OF = "measurement_as_of"
     ORIGINAL_PUBLICATION = "original_publication"
     REFERENCE_PERIOD = "reference_period"
@@ -129,6 +134,7 @@ class OptionalFactorAggregation(StrEnum):
     MACRO_REGIME = "macro_regime"
     NET_INSIDER_PURCHASE_INTENSITY = "net_insider_purchase_intensity"
     REVISION_BREADTH_MAGNITUDE = "revision_breadth_magnitude"
+    SEC_FILING_EVENT_RULES = "sec_filing_event_rules"
 
 
 class OptionalFactorNormalization(StrEnum):
@@ -621,9 +627,67 @@ NEWS_COVERAGE_GATE_CONTRACT = OptionalFactorSourceContract(
     ),
 )
 
+SEC_FILING_EVENT_GATE_CONTRACT = OptionalFactorSourceContract(
+    sleeve=OptionalFactorSleeve.SEC_FILING_EVENTS,
+    observation_kind=OptionalFactorObservationKind.FILING,
+    event_at_semantic=OptionalFactorEventTimeSemantic.FILING_ACCEPTANCE,
+    event_value_field="acceptance_time",
+    requires_instrument=True,
+    required_values=_values(
+        _value("acceptance_time", OptionalFactorValueType.TIMESTAMP),
+        _value("acceptance_time_raw", OptionalFactorValueType.TEXT),
+        _value("cik", OptionalFactorValueType.TEXT),
+        _value("filing_date", OptionalFactorValueType.DATE),
+        _value("source_available_at", OptionalFactorValueType.TIMESTAMP),
+    ),
+    activation=OptionalFactorActivationSemantics(
+        application=OptionalFactorApplication.ELIGIBILITY_GATE,
+        direction=FactorDirection.LOWER_IS_BETTER,
+        aggregation=OptionalFactorAggregation.SEC_FILING_EVENT_RULES,
+        normalization=OptionalFactorNormalization.ABSOLUTE_THRESHOLD,
+        missing_policy=OptionalFactorMissingPolicy.INELIGIBLE,
+        maximum_source_age_days=1,
+        signal_half_life_days=1,
+        expected_holding_sessions=(40, 63),
+        requires_model_transform=False,
+    ),
+)
+
+SEC_FILING_COVERAGE_GATE_CONTRACT = OptionalFactorSourceContract(
+    sleeve=OptionalFactorSleeve.SEC_FILING_COVERAGE,
+    observation_kind=OptionalFactorObservationKind.FILING_COVERAGE,
+    event_at_semantic=OptionalFactorEventTimeSemantic.MEASUREMENT_AS_OF,
+    event_value_field="window_end",
+    requires_instrument=True,
+    required_values=_values(
+        _value("has_older_page", OptionalFactorValueType.BOOLEAN),
+        _value("listed_accession", OptionalFactorValueType.TEXT),
+        _value("source_available_at", OptionalFactorValueType.TIMESTAMP),
+        _value("submission_page_sha256", OptionalFactorValueType.TEXT),
+        _value("window_end", OptionalFactorValueType.TIMESTAMP),
+        _value("window_start", OptionalFactorValueType.TIMESTAMP),
+    ),
+    activation=OptionalFactorActivationSemantics(
+        application=OptionalFactorApplication.ELIGIBILITY_GATE,
+        direction=FactorDirection.HIGHER_IS_BETTER,
+        aggregation=OptionalFactorAggregation.COVERAGE_ATTESTATION,
+        normalization=OptionalFactorNormalization.ABSOLUTE_THRESHOLD,
+        missing_policy=OptionalFactorMissingPolicy.INELIGIBLE,
+        maximum_source_age_days=1,
+        signal_half_life_days=1,
+        expected_holding_sessions=(40, 63),
+        requires_model_transform=False,
+    ),
+)
+
 OPTIONAL_GATE_SOURCE_CONTRACTS = tuple(
     sorted(
-        (ADVERSE_NEWS_GATE_CONTRACT, NEWS_COVERAGE_GATE_CONTRACT),
+        (
+            ADVERSE_NEWS_GATE_CONTRACT,
+            NEWS_COVERAGE_GATE_CONTRACT,
+            SEC_FILING_COVERAGE_GATE_CONTRACT,
+            SEC_FILING_EVENT_GATE_CONTRACT,
+        ),
         key=lambda contract: contract.sleeve.value,
     )
 )
@@ -715,6 +779,8 @@ __all__ = [
     "OPTIONAL_FACTOR_TRANSFORM_SCHEMA",
     "OPTIONAL_GATE_REGISTRY_VERSION",
     "OPTIONAL_GATE_SOURCE_CONTRACTS",
+    "SEC_FILING_COVERAGE_GATE_CONTRACT",
+    "SEC_FILING_EVENT_GATE_CONTRACT",
     "SP500_V1_DISABLED_OPTIONAL_SLEEVES",
     "OptionalFactorActivationSemantics",
     "OptionalFactorAggregation",
