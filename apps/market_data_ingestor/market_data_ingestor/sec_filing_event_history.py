@@ -5,8 +5,13 @@ replayed with EDGAR ``acceptance_time <= T`` standing in for local
 ``available_at <= T``. The proxy is a diagnostic only: it never enters a panel,
 and every report carries ``label = "acceptance-time diagnostic"``.
 
-Coverage is synthesised as complete (the recorded submissions are the whole
-history), so ``sec_filing_coverage_unavailable`` never appears. Membership
+Coverage is synthesised as complete for an issuer with recorded submissions
+(they are its whole history), so ``sec_filing_coverage_unavailable`` never
+appears. A member whose CIK has no recorded submissions fails closed: it is
+reported per quarter as ``missing_submissions`` and left out of the removal-rate
+denominator and of the unflagged comparison set, never counted as clean. The
+JSON report carries an ``input_manifest`` of every submissions file read, with
+its SHA-256. Membership
 without a recorded point-in-time checkpoint falls back to the latest recorded
 checkpoint and marks the report survivorship-biased; such a report can argue
 only for dropping a rule. Forward 63-session total returns come from the
@@ -92,6 +97,8 @@ class SecFilingDiagnosticQuarter:
     removed_by_reason: Mapping[str, int]
     removed_by_sector: Mapping[str, int]
     invalid_items: int
+    missing_submissions: int = 0
+    missing_submission_ciks: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -164,7 +171,9 @@ def replay_sec_filing_rules(
 
     ``members_by_cutoff`` maps each cutoff to ``instrument_id -> CIK``;
     ``returns_63`` holds the next 63-session total return per
-    ``(cutoff, instrument_id)`` where recorded.
+    ``(cutoff, instrument_id)`` where recorded. A member whose CIK is absent
+    from ``filings_by_cik`` is reported as missing, not evaluated; its return
+    still enters the sector median, which benchmarks the sector, not the gate.
     """
     if not cutoffs:
         msg = "at least one cutoff is required"
@@ -196,8 +205,13 @@ def replay_sec_filing_rules(
         by_reason: Counter[str] = Counter()
         by_sector: Counter[str] = Counter()
         invalid = 0
+        missing: dict[int, str] = {}
         for instrument_id, cik in sorted(members.items()):
-            events = _events_at(filings_by_cik.get(cik, ()), cutoff)
+            records = filings_by_cik.get(cik)
+            if records is None:
+                missing[instrument_id] = cik
+                continue
+            events = _events_at(records, cutoff)
             result = sec_filing_gate_reason(
                 events=events, coverage=_complete_coverage(events, cutoff), cutoff=cutoff
             )
@@ -224,8 +238,9 @@ def replay_sec_filing_rules(
                 unflagged_returns.append(total)
 
         removed = sum(by_reason.values())
-        if members:
-            rates.append(removed / len(members))
+        evaluated = len(members) - len(missing)
+        if evaluated:
+            rates.append(removed / evaluated)
         quarters.append(
             SecFilingDiagnosticQuarter(
                 cutoff=cutoff,
@@ -233,6 +248,8 @@ def replay_sec_filing_rules(
                 removed_by_reason=dict(sorted(by_reason.items())),
                 removed_by_sector=dict(sorted(by_sector.items())),
                 invalid_items=invalid,
+                missing_submissions=len(missing),
+                missing_submission_ciks=tuple(sorted(set(missing.values()))),
             )
         )
 
@@ -283,12 +300,25 @@ def _recorded_dataset(path: Path, *, cik: str) -> tuple[dict[str, Any], SecSubmi
     return payload, parse_submissions_payload(payload, cik=cik, source=source)
 
 
-def load_recorded_submissions(directory: Path) -> dict[str, tuple[SecFilingRecord, ...]]:
+@dataclass(frozen=True)
+class RecordedSubmissions:
+    """Parsed recorded submissions keyed by CIK, with the files they came from.
+
+    ``manifest`` maps each file name read (roots and declared history pages)
+    to the SHA-256 of its bytes, so a report is traceable to its inputs.
+    """
+
+    filings: Mapping[str, tuple[SecFilingRecord, ...]]
+    manifest: Mapping[str, str]
+
+
+def load_recorded_submissions(directory: Path) -> RecordedSubmissions:
     """Parse every recorded root and its declared history pages, keyed by CIK.
 
     A history page the root declares but the directory lacks fails closed.
     """
     filings: dict[str, tuple[SecFilingRecord, ...]] = {}
+    manifest: dict[str, str] = {}
     for root_path in sorted(directory.iterdir()):
         match = _ROOT_FILE.fullmatch(root_path.name)
         if match is None:
@@ -302,8 +332,11 @@ def load_recorded_submissions(directory: Path) -> dict[str, tuple[SecFilingRecor
                 msg = f"recorded submissions page {page_name} is missing"
                 raise FileNotFoundError(msg)
             datasets.append(_recorded_dataset(page_path, cik=cik)[1])
+        for dataset in datasets:
+            for source in dataset.sources:
+                manifest[source.endpoint.rsplit("/", 1)[1]] = source.content_sha256
         filings[cik] = _merge_submission_datasets(datasets).filings
-    return filings
+    return RecordedSubmissions(filings=filings, manifest=dict(sorted(manifest.items())))
 
 
 def _effective_on(effective_from: date, effective_to: date | None, day: date) -> bool:
@@ -470,10 +503,13 @@ def _aware_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-def report_json(report: SecFilingDiagnosticReport) -> dict[str, Any]:
-    """JSON-ready form of the report with ISO-8601 cutoffs."""
+def report_json(
+    report: SecFilingDiagnosticReport, *, input_manifest: Mapping[str, str]
+) -> dict[str, Any]:
+    """JSON-ready form of the report with ISO-8601 cutoffs and its input manifest."""
     return {
         "label": report.label,
+        "input_manifest": dict(input_manifest),
         "survivorship_biased": report.survivorship_biased,
         "return_basis": report.return_basis,
         "mean_removal_rate": report.mean_removal_rate,
@@ -490,6 +526,8 @@ def report_json(report: SecFilingDiagnosticReport) -> dict[str, Any]:
                 "removed_by_reason": dict(quarter.removed_by_reason),
                 "removed_by_sector": dict(quarter.removed_by_sector),
                 "invalid_items": quarter.invalid_items,
+                "missing_submissions": quarter.missing_submissions,
+                "missing_submission_ciks": list(quarter.missing_submission_ciks),
             }
             for quarter in report.quarters
         ],
@@ -532,14 +570,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not cutoffs:
         parser.error("no quarter end falls between --start and --end")
 
-    filings = load_recorded_submissions(args.submissions_dir)
+    recorded = load_recorded_submissions(args.submissions_dir)
     with _session_factory()() as session:
         members_by_cutoff, sectors, point_in_time = read_membership_inputs(session, cutoffs=cutoffs)
         instrument_ids = sorted({iid for members in members_by_cutoff.values() for iid in members})
         closes = read_recorded_closes(session, instrument_ids=instrument_ids, run_at=run_at)
         session.rollback()
     report = replay_sec_filing_rules(
-        filings_by_cik=filings,
+        filings_by_cik=recorded.filings,
         members_by_cutoff=members_by_cutoff,
         sector_by_instrument=sectors,
         returns_63=forward_returns(closes, cutoffs=cutoffs),
@@ -547,7 +585,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         point_in_time_membership=point_in_time,
         return_basis=RETURN_BASIS,
     )
-    json.dump(report_json(report), sys.stdout, indent=2, sort_keys=True)
+    json.dump(
+        report_json(report, input_manifest=recorded.manifest), sys.stdout, indent=2, sort_keys=True
+    )
     sys.stdout.write("\n")
     return 0
 

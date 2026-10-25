@@ -121,7 +121,7 @@ _FILINGS = {
     "0000000003": _records("0000000003", _ISSUER_3),
     "0000000004": _records("0000000004", _ISSUER_4),
 }
-# Instruments 10/11 are two share classes of CIK 1; 50 has no recorded filings.
+# Instruments 10/11 are two share classes of CIK 1; 50 has no recorded submissions.
 _MEMBERS = {
     10: "0000000001",
     11: "0000000001",
@@ -158,11 +158,14 @@ def test_removal_counts_per_reason_and_sector() -> None:
     assert dict(first.removed_by_reason) == {_NON_RELIANCE: 2, _IMPAIRMENT: 1, _INVALID: 1}
     assert dict(first.removed_by_sector) == {"Tech": 3, "Energy": 1}
     assert first.invalid_items == 1
+    assert first.missing_submissions == 1
+    assert first.missing_submission_ciks == ("0000000005",)
     assert second.cutoff == _T2
     # The 2.06 window (120 days) has closed and the NT notice is now available.
     assert dict(second.removed_by_reason) == {_NON_RELIANCE: 2, _LATE: 1, _INVALID: 1}
     assert dict(second.removed_by_sector) == {"Tech": 3, "Energy": 1}
-    assert report.mean_removal_rate == pytest.approx(4 / 6)
+    # Instrument 50 has no recorded submissions and leaves the denominator.
+    assert report.mean_removal_rate == pytest.approx(4 / 5)
     assert dict(report.per_rule_flags) == {
         _BANKRUPTCY: 0,
         _NON_RELIANCE: 4,
@@ -224,9 +227,51 @@ def test_excess_return_against_sector_median_and_left_tail() -> None:
     assert report.per_rule_left_tail_share[_IMPAIRMENT] == 0.0
     assert report.per_rule_excess_return_63[_LATE] is None
     assert report.per_rule_left_tail_share[_LATE] is None
-    # Unflagged: T1 40, 50 (Energy median of 0.00, 0.10, -0.25 is 0.00); T2 40 (median 0.02).
-    assert report.unflagged_excess_return_63 == pytest.approx((0.10 - 0.25 + 0.0) / 3)
-    assert report.unflagged_left_tail_share == pytest.approx(1 / 3)
+    # Unflagged: T1 40 (Energy median of 0.00, 0.10, -0.25 is 0.00); T2 40 (median 0.02).
+    # Instrument 50 has no recorded submissions, so it is not an unflagged member.
+    assert report.unflagged_excess_return_63 == pytest.approx((0.10 + 0.0) / 2)
+    assert report.unflagged_left_tail_share == 0.0
+
+
+def test_member_without_recorded_submissions_is_not_clean() -> None:
+    report = replay_sec_filing_rules(
+        filings_by_cik=_FILINGS,
+        members_by_cutoff={_T1: {40: "0000000004", 50: "0000000005", 51: "0000000005"}},
+        sector_by_instrument={40: "Energy", 50: "Energy", 51: "Energy"},
+        returns_63={(_T1, 40): 0.10, (_T1, 50): -0.50, (_T1, 51): -0.40},
+        cutoffs=(_T1,),
+        point_in_time_membership=True,
+        return_basis="total_return_close",
+    )
+
+    (quarter,) = report.quarters
+    assert quarter.members == 3
+    assert quarter.missing_submissions == 2
+    assert quarter.missing_submission_ciks == ("0000000005",)
+    assert dict(quarter.removed_by_reason) == {}
+    assert report.mean_removal_rate == 0.0
+    # Energy median of (0.10, -0.50, -0.40) is -0.40; only instrument 40 is unflagged.
+    assert report.unflagged_excess_return_63 == pytest.approx(0.50)
+    assert report.unflagged_left_tail_share == 0.0
+    payload = history.report_json(report, input_manifest={})
+    assert payload["quarters"][0]["missing_submissions"] == 2
+    assert payload["quarters"][0]["missing_submission_ciks"] == ["0000000005"]
+
+
+def test_quarter_with_only_missing_submissions_has_no_removal_rate() -> None:
+    report = replay_sec_filing_rules(
+        filings_by_cik=_FILINGS,
+        members_by_cutoff={_T1: {50: "0000000005"}, _T2: {10: "0000000001"}},
+        sector_by_instrument={10: "Tech", 50: "Energy"},
+        returns_63={},
+        cutoffs=(_T1, _T2),
+        point_in_time_membership=True,
+        return_basis="total_return_close",
+    )
+
+    assert [quarter.missing_submissions for quarter in report.quarters] == [1, 0]
+    # T1 has no evaluable member and contributes no rate; T2 removes its only member.
+    assert report.mean_removal_rate == 1.0
 
 
 def test_missing_returns_report_none() -> None:
@@ -295,11 +340,15 @@ def test_load_recorded_submissions_merges_declared_pages(tmp_path: Path) -> None
 
     loaded = load_recorded_submissions(tmp_path)
 
-    assert set(loaded) == {"0000000002"}
-    assert [record.accession for record in loaded["0000000002"]] == [
+    assert set(loaded.filings) == {"0000000002"}
+    assert [record.accession for record in loaded.filings["0000000002"]] == [
         "0000000002-24-000001",
         "0000000002-24-000002",
     ]
+    assert loaded.manifest == {
+        name: hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+        for name in ("CIK0000000002.json", page)
+    }
 
 
 def test_load_recorded_submissions_requires_every_declared_page(tmp_path: Path) -> None:
@@ -447,6 +496,12 @@ def test_main_prints_report_from_recorded_submissions_and_database(
     assert report["per_rule_excess_return_63"][_NON_RELIANCE] is None
     assert report["per_rule_safety_rule"][_NON_RELIANCE] is True
     assert report["return_basis"] == "total_return_close"
+    assert report["input_manifest"] == {
+        "CIK0000000001.json": hashlib.sha256(
+            (tmp_path / "CIK0000000001.json").read_bytes()
+        ).hexdigest()
+    }
+    assert quarters["2024-03-31T23:59:59.999999+00:00"]["missing_submissions"] == 0
 
 
 def test_main_reports_point_in_time_when_every_cutoff_has_a_checkpoint(
@@ -468,6 +523,10 @@ def test_main_reports_point_in_time_when_every_cutoff_has_a_checkpoint(
     report = json.loads(capsys.readouterr().out)
     assert report["survivorship_biased"] is False
     assert report["quarters"][0]["members"] == 1
+    # No submissions were recorded, so the only member is missing rather than clean.
+    assert report["quarters"][0]["missing_submissions"] == 1
+    assert report["quarters"][0]["missing_submission_ciks"] == ["0000000001"]
+    assert report["input_manifest"] == {}
 
 
 _CUT = datetime(2024, 3, 31, 23, 59, 59, tzinfo=UTC)
