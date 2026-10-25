@@ -118,7 +118,7 @@ def test_sec_coverage_contract_values() -> None:
     assert contract.activation.direction.value == "higher_is_better"
     assert {i.field_name: i.value_type.value for i in contract.required_values} == {
         "has_older_page": "boolean",
-        "listed_accession": "text",
+        "listed_accession_count": "integer",
         "source_available_at": "timestamp",
         "submission_page_sha256": "text",
         "window_end": "timestamp",

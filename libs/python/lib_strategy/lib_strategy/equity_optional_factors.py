@@ -661,7 +661,7 @@ SEC_FILING_COVERAGE_GATE_CONTRACT = OptionalFactorSourceContract(
     requires_instrument=True,
     required_values=_values(
         _value("has_older_page", OptionalFactorValueType.BOOLEAN),
-        _value("listed_accession", OptionalFactorValueType.TEXT),
+        _value("listed_accession_count", OptionalFactorValueType.INTEGER),
         _value("source_available_at", OptionalFactorValueType.TIMESTAMP),
         _value("submission_page_sha256", OptionalFactorValueType.TEXT),
         _value("window_end", OptionalFactorValueType.TIMESTAMP),

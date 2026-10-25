@@ -320,6 +320,7 @@ def test_coverage_lists_every_accession() -> None:
             item for item in _observations(session, "filing_coverage") if item.instr_id == 12
         )
         listed = _values(session, row.observation_id, "listed_accession")
+        count = _values(session, row.observation_id, "listed_accession_count")
         pages = _values(session, row.observation_id, "submission_page_sha256")
         start = _values(session, row.observation_id, "window_start")
         end = _values(session, row.observation_id, "window_end")
@@ -332,6 +333,7 @@ def test_coverage_lists_every_accession() -> None:
         "0000320193-25-000010",
         "0000320193-25-000011",
     ]
+    assert [(row.ordinal, row.integer_value) for row in count] == [(0, 3)]
     assert [item.text_value for item in pages] == ["a" * 64, "b" * 64]
     assert _utc(start[0].timestamp_value) == _CUTOFF - timedelta(days=730)
     assert _utc(end[0].timestamp_value) == _CUTOFF
@@ -381,3 +383,25 @@ def test_rows_pass_optional_gate_evidence_validation() -> None:
         coverage.observation_id,
     ]
     assert {result.entitlement_scope for result in results} == {SEC_PUBLIC_ENTITLEMENT}
+
+
+def test_coverage_with_zero_filings_passes_gate_evidence_validation() -> None:
+    with _session() as session:
+        _persist(session, _fetch(filings=(), instrument_ids=(11,)))
+        session.commit()
+        assert _observations(session, "filing") == []
+        coverage = _observations(session, "filing_coverage")[0]
+        listed = _values(session, coverage.observation_id, "listed_accession")
+        count = _values(session, coverage.observation_id, "listed_accession_count")
+        result = validate_optional_factor_evidence(
+            session,
+            contract=SEC_FILING_COVERAGE_GATE_CONTRACT,
+            factor_version="sec-filing-rules-v1",
+            observation_id=str(coverage.observation_id),
+            cutoff=_OLDER_PAGE.retrieved_at + timedelta(minutes=1),
+            provider_authority_policy=_authority(),
+            expected_instrument_id=11,
+        )
+    assert listed == []
+    assert [(row.ordinal, row.integer_value) for row in count] == [(0, 0)]
+    assert result.observation_id == coverage.observation_id

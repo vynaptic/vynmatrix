@@ -333,8 +333,10 @@ def _coverage_submission(
 ) -> EquityObservationSubmission:
     latest = max(fetch.pages, key=lambda page: _aware_utc(page.retrieved_at, "retrieved_at"))
     available = _aware_utc(latest.retrieved_at, "submission page retrieved_at")
+    accessions = sorted(filing.accession for filing in fetch.filings)
     values = [
         EquityObservationValueInput("has_older_page", "boolean", fetch.has_older_page),
+        EquityObservationValueInput("listed_accession_count", "integer", len(accessions)),
         _timestamp("source_available_at", available),
         _timestamp("window_end", cutoff),
         _timestamp("window_start", cutoff - SEC_FILING_LOOKBACK),
@@ -348,9 +350,7 @@ def _coverage_submission(
         ),
         *(
             _text("listed_accession", accession, ordinal)
-            for ordinal, accession in enumerate(
-                sorted(filing.accession for filing in fetch.filings)
-            )
+            for ordinal, accession in enumerate(accessions)
         ),
     ]
     if fetch.oldest_listed_filing_date is not None:
