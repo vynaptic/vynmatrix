@@ -14,10 +14,14 @@ Git history.
   strategy behaviour.
 - SEC filing gate evidence for USQualityCompounder (inert; migration 0112). The
   quarter-end producer now records 8-K item codes and NT late-filing notices
-  after the 0.2.0 panel commits; a failure there never fails the panel. The
-  resolver is not wired into the panel and excludes no name. Run the
-  acceptance diagnostic with
-  `python -m market_data_ingestor.sec_filing_event_history --submissions-dir <dir>`.
+  after the 0.2.0 panel commits; a failure there never fails the panel, and the
+  collection stops issuing EDGAR requests 6 hours after its cutoff or 15
+  minutes before the execution open, whichever is earlier. The resolver is not
+  wired into the panel and excludes no name. Run the acceptance diagnostic with
+  `python -m market_data_ingestor.sec_filing_event_history --submissions-dir <dir>`;
+  a repeatable `--cutoff <ISO-8601 aware>` replays exact cutoffs instead of
+  quarter ends. Members without recorded submissions are reported as missing,
+  not clean, and the report lists every input file with its SHA-256.
 - `vmdev db release-strategy` releases one exact registered strategy version for
   paper, so a strategy other than the Swing canary can be bound and shown as
   Released. The evidence is a reviewed commit: the strategy's `config.json` must
