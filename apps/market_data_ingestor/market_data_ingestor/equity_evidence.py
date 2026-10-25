@@ -15,13 +15,13 @@ from lib_application.services.equity_observation_writer import (
     EquityObservationValueInput,
     persist_equity_observation,
 )
+from lib_application.services.sec_filing_observations import SEC_PUBLIC_ENTITLEMENT
 from lib_common.hashing import canonical_json_hash
 from lib_infrastructure.market_data.eodhd_client import EODHDJsonEvidence
 
 from .sec_edgar import SecAcceptedFact
 
 EODHD_PAPER_ENTITLEMENT = "eodhd-personal-use-paper-only"
-SEC_PUBLIC_ENTITLEMENT = "public-sec-edgar"
 _WRITER_VERSION = "vynmatrix-quality-compounder-evidence-v1"
 
 
