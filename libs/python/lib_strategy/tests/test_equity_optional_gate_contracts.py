@@ -6,6 +6,7 @@ from lib_strategy.equity_optional_factors import (
     ADVERSE_NEWS_GATE_CONTRACT,
     NEWS_COVERAGE_GATE_CONTRACT,
     OPTIONAL_FACTOR_SLEEVES,
+    OPTIONAL_GATE_REGISTRY_VERSION,
     OPTIONAL_GATE_SOURCE_CONTRACTS,
     SEC_FILING_COVERAGE_GATE_CONTRACT,
     SEC_FILING_EVENT_GATE_CONTRACT,
@@ -18,6 +19,8 @@ from lib_strategy.equity_optional_factors import (
 
 # Factor registry digest captured on main before the gate contracts were added.
 _REGISTRY_SHA256_BEFORE_GATES = "9eb5899f62939d2e1ac9cca52602afcc35fbbf0c16d59a561758cbebec88fa4d"
+
+_GATE_REGISTRY_SHA256_V2 = "17d8eb9a81b74649227df28175cd87f252a9dba84da6ef9308055acab08fa2c1"
 
 
 def test_factor_registry_digest_is_unchanged() -> None:
@@ -40,6 +43,13 @@ def test_gate_registry_holds_exactly_four_contracts() -> None:
     assert NEWS_COVERAGE_GATE_CONTRACT.activation.requires_model_transform is False
     assert NEWS_COVERAGE_GATE_CONTRACT.activation.maximum_source_age_days == 3
     assert len(optional_gate_source_registry_sha256()) == 64
+
+
+def test_gate_registry_version_follows_its_contents() -> None:
+    # v1 held only the two adverse-news contracts; the SEC filing contracts made v2.
+    # A change to this digest must bump OPTIONAL_GATE_REGISTRY_VERSION.
+    assert OPTIONAL_GATE_REGISTRY_VERSION == "sp500-optional-gate-registry-v2"
+    assert optional_gate_source_registry_sha256() == _GATE_REGISTRY_SHA256_V2
 
 
 def test_adverse_news_contract_matches_spec_required_values() -> None:

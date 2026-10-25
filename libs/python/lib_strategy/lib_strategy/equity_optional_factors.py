@@ -20,7 +20,7 @@ OPTIONAL_FACTOR_REGISTRY_VERSION = "sp500-optional-factor-registry-v1"
 OPTIONAL_FACTOR_SOURCE_SCHEMA = "equity-optional-factor-source-contract-v2"
 OPTIONAL_FACTOR_TIMESTAMP_SCHEMA = "equity-optional-factor-timestamp-semantics-v1"
 OPTIONAL_FACTOR_TRANSFORM_SCHEMA = "equity-optional-factor-model-transform-v1"
-OPTIONAL_GATE_REGISTRY_VERSION = "sp500-optional-gate-registry-v1"
+OPTIONAL_GATE_REGISTRY_VERSION = "sp500-optional-gate-registry-v2"
 
 _FIELD_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _HOLDING_RANGE_LENGTH = 2
