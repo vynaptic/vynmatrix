@@ -9,7 +9,7 @@ Persistence is ``persist_sec_filing_fetch``'s responsibility.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -31,6 +31,9 @@ from market_data_ingestor.sec_edgar import (
 
 logger = get_logger(__name__)
 
+# Error name recorded for issuers left unfetched once the caller's stop time passed.
+SEC_FILING_GATE_TIME_BUDGET_EXCEEDED = "SecFilingGateTimeBudgetExceeded"
+
 
 @dataclass(frozen=True, slots=True)
 class SecFilingAcquisitionFailure:
@@ -45,15 +48,23 @@ def acquire_sec_filing_events(
     *,
     issuers: Mapping[str, tuple[int, ...]],
     fetch_cutoff: datetime,
+    stop_at: datetime | None = None,
+    clock: Callable[[], datetime] = lambda: datetime.now(tz=UTC),
 ) -> tuple[tuple[SecIssuerFilingFetch, ...], tuple[SecFilingAcquisitionFailure, ...]]:
     """Fetch every issuer's gate-relevant filings at ``fetch_cutoff``.
 
     ``issuers`` maps CIK to its listed instrument IDs. An SEC failure for one
     issuer is recorded as a failure and the remaining issuers continue; any
-    other error propagates.
+    other error propagates. When ``stop_at`` is given, ``clock`` is read before
+    each issuer; once it reaches ``stop_at`` no further request is issued and
+    every remaining issuer is recorded as a time-budget failure. A request
+    already in flight is bounded only by the client's own timeouts.
     """
     if fetch_cutoff.tzinfo is None or fetch_cutoff.utcoffset() is None:
         msg = "fetch_cutoff must be timezone-aware"
+        raise ValueError(msg)
+    if stop_at is not None and (stop_at.tzinfo is None or stop_at.utcoffset() is None):
+        msg = "stop_at must be timezone-aware"
         raise ValueError(msg)
     cutoff = fetch_cutoff.astimezone(UTC)
     normalized: dict[str, tuple[int, ...]] = {}
@@ -67,7 +78,16 @@ def acquire_sec_filing_events(
     since = (cutoff - SEC_FILING_FETCH_LOOKBACK).date()
     fetches: list[SecIssuerFilingFetch] = []
     failures: list[SecFilingAcquisitionFailure] = []
+    budget_error: str | None = None
     for cik, instrument_ids in normalized.items():
+        if budget_error is None and stop_at is not None and clock() >= stop_at:
+            budget_error = (
+                f"{SEC_FILING_GATE_TIME_BUDGET_EXCEEDED}: stop time "
+                f"{stop_at.astimezone(UTC).isoformat()} reached before this issuer"
+            )
+        if budget_error is not None:
+            failures.append(SecFilingAcquisitionFailure(cik=cik, error=budget_error))
+            continue
         try:
             dataset = client.fetch_submissions(cik, since=since)
         except SecEdgarError as exc:

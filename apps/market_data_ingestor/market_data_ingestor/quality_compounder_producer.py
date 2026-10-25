@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import NoReturn
 
 from sqlalchemy import select
@@ -21,6 +21,7 @@ from lib_infrastructure.market_data.eodhd_client import EODHDClient
 from lib_strategy.equity_market_factors import EquityMarketFactorPolicy
 from lib_strategy.equity_quality_compounder import QUALITY_COMPOUNDER_STRATEGY_VERSION
 from lib_strategy.equity_transaction_costs import DailyBarCostModelPolicy
+from lib_strategy.sec_filing_rules import SEC_FILING_COVERAGE_TOLERANCE
 
 from .quality_compounder_eodhd import (
     AcquiredQualityCompounderUniverse,
@@ -63,6 +64,11 @@ _STRATEGY_VERSION = QUALITY_COMPOUNDER_STRATEGY_VERSION
 _BENCHMARK_SYMBOL = "SPY"
 # Failures of the inert SEC filing gate that are logged instead of failing the panel.
 _FILING_GATE_ERRORS = (SecEdgarError, SecFilingPersistenceError, SQLAlchemyError, ValueError)
+# Time the inert filing gate must leave before the execution open so the panel
+# cutoff, persistence and registration that follow it still complete. The gate
+# also stops at ``filing_cutoff + SEC_FILING_COVERAGE_TOLERANCE``: coverage whose
+# window ends further before the panel cutoff is unusable anyway.
+SEC_FILING_GATE_DEADLINE_MARGIN = timedelta(minutes=15)
 
 
 class QualityCompounderProducerError(RuntimeError):
@@ -185,6 +191,10 @@ class QualityCompounderPanelProducer:
             sec_graphs=sec_graphs,
             instrument_ids=instrument_ids,
             filing_cutoff=filing_cutoff,
+            stop_at=min(
+                filing_cutoff + SEC_FILING_COVERAGE_TOLERANCE,
+                deadline - SEC_FILING_GATE_DEADLINE_MARGIN,
+            ),
         )
         cutoff = self._now_before(deadline, field_name="panel cutoff")
         self._require_acquisition_cutoff(
@@ -210,8 +220,13 @@ class QualityCompounderPanelProducer:
         sec_graphs: Sequence[QualityCompounderIssuerSecGraph],
         instrument_ids: Mapping[str, int],
         filing_cutoff: datetime,
+        stop_at: datetime,
     ) -> tuple[SecIssuerFilingFetch, ...]:
-        """Collect inert SEC filing gate evidence; a failure never blocks the panel."""
+        """Collect inert SEC filing gate evidence; a failure never blocks the panel.
+
+        No issuer request starts once the producer clock reaches ``stop_at``;
+        the issuers left are logged as time-budget failures.
+        """
 
         try:
             issuers = {
@@ -222,12 +237,14 @@ class QualityCompounderPanelProducer:
                 self._sec,
                 issuers=issuers,
                 fetch_cutoff=filing_cutoff,
+                stop_at=stop_at,
+                clock=self._clock,
             )
         except _FILING_GATE_ERRORS as exc:
             logger.warning(
-                "sec_filing_gate_issuer_failed",
-                cik=None,
+                "sec_filing_gate_acquisition_failed",
                 filing_cutoff=filing_cutoff.isoformat(),
+                stop_at=stop_at.isoformat(),
                 error=type(exc).__name__,
             )
             return ()
@@ -445,6 +462,7 @@ def _utc(value: datetime, *, field_name: str) -> datetime:
 
 
 __all__ = [
+    "SEC_FILING_GATE_DEADLINE_MARGIN",
     "QualityCompounderPanelProducer",
     "QualityCompounderProducerError",
 ]

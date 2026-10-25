@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
-from lib_application.services.sec_filing_observations import SecFilingPersistenceError
+from lib_application.services.sec_filing_observations import (
+    SecFilingPersistenceError,
+    SecIssuerFilingFetch,
+)
 from lib_strategy.equity_market_factors import EquityMarketFactorPolicy
 from lib_strategy.equity_transaction_costs import DailyBarCostModelPolicy
+from lib_strategy.sec_filing_rules import SEC_FILING_COVERAGE_TOLERANCE
 from market_data_ingestor import quality_compounder_producer as producer_mod
+from market_data_ingestor import sec_filing_events as filing_events_mod
 from market_data_ingestor.quality_compounder_market import (
     QUALITY_COMPOUNDER_MARKET_ADJUSTMENT_POLICY,
 )
@@ -23,7 +28,7 @@ from market_data_ingestor.quality_compounder_producer import (
 from market_data_ingestor.quality_compounder_quarterly import (
     QualityCompounderQuarterlyWindow,
 )
-from market_data_ingestor.sec_edgar import SecEdgarError
+from market_data_ingestor.sec_edgar import SecEdgarError, SecSubmissionDataset
 from market_data_ingestor.sec_filing_events import SecFilingAcquisitionFailure
 
 _CLOSE = datetime(2026, 6, 30, 20, 0, tzinfo=UTC)
@@ -302,6 +307,7 @@ def _gate_producer(
     *,
     acquire: object,
     seen: dict[str, object] | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> QualityCompounderPanelProducer:
     """Drive ``produce`` with every panel stage faked and the gate stages observed."""
 
@@ -352,6 +358,7 @@ def _gate_producer(
         if seen is not None:
             seen["filing_cutoff"] = kwargs["fetch_cutoff"]
             seen["issuers"] = kwargs["issuers"]
+            seen["stop_at"] = kwargs["stop_at"]
         assert callable(acquire)
         return acquire()
 
@@ -396,7 +403,7 @@ def _gate_producer(
         entitlement_owner_user_id="owner-1",
         market_policy=market,
         cost_policy=cost,
-        clock=lambda: next(ticks),
+        clock=clock or (lambda: next(ticks)),
     )
 
 
@@ -514,3 +521,125 @@ def test_gate_persist_failure_does_not_fail_panel(monkeypatch: pytest.MonkeyPatc
         "gate_persist:0001652044",
         "gate_commit",
     ]
+
+
+class _LogRecorder:
+    """Stand-in for the producer logger recording ``(level, event, fields)``."""
+
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str, dict[str, object]]] = []
+
+    def info(self, event: str, **fields: object) -> None:
+        self.records.append(("info", event, fields))
+
+    def warning(self, event: str, **fields: object) -> None:
+        self.records.append(("warning", event, fields))
+
+
+def test_gate_stop_time_is_coverage_tolerance_after_filing_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    seen: dict[str, object] = {}
+    producer = _gate_producer(monkeypatch, events, acquire=lambda: ((), ()), seen=seen)
+
+    _produce(producer)
+
+    filing_cutoff = seen["filing_cutoff"]
+    assert isinstance(filing_cutoff, datetime)
+    assert seen["stop_at"] == filing_cutoff + SEC_FILING_COVERAGE_TOLERANCE
+
+
+def test_gate_stop_time_leaves_margin_before_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+    seen: dict[str, object] = {}
+    ticks = _clock(_OPEN - timedelta(hours=1))
+    producer = _gate_producer(
+        monkeypatch,
+        events,
+        acquire=lambda: ((), ()),
+        seen=seen,
+        clock=lambda: next(ticks),
+    )
+
+    _produce(producer)
+
+    assert seen["stop_at"] == _OPEN - producer_mod.SEC_FILING_GATE_DEADLINE_MARGIN
+    assert events.count("panel") == 1
+
+
+def test_gate_time_budget_exhausted_part_way_still_commits_panel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    now = [datetime(2026, 6, 30, 21, 0, tzinfo=UTC)]
+
+    def _tick() -> datetime:
+        now[0] += timedelta(minutes=1)
+        return now[0]
+
+    producer = _gate_producer(monkeypatch, events, acquire=lambda: ((), ()), clock=_tick)
+    requested: list[str] = []
+
+    class _SlowSec:
+        def fetch_submissions(self, cik: str, **_kwargs: object) -> SecSubmissionDataset:
+            requested.append(cik)
+            now[0] += SEC_FILING_COVERAGE_TOLERANCE
+            return SecSubmissionDataset(
+                cik=cik, entity_name=None, current_sic=None, filings=(), sources=()
+            )
+
+    producer._sec = _SlowSec()  # type: ignore[assignment]
+    results: list[
+        tuple[tuple[SecIssuerFilingFetch, ...], tuple[SecFilingAcquisitionFailure, ...]]
+    ] = []
+
+    def _real_acquire(client: object, **kwargs: object) -> object:
+        events.append("gate_acquire")
+        result = filing_events_mod.acquire_sec_filing_events(client, **kwargs)  # type: ignore[arg-type]
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(producer_mod, "acquire_sec_filing_events", _real_acquire)
+    log = _LogRecorder()
+    monkeypatch.setattr(producer_mod, "logger", log)
+
+    _produce(producer)
+
+    fetches, failures = results[0]
+    assert requested == ["0000789019"]
+    assert [fetch.cik for fetch in fetches] == ["0000789019"]
+    assert [failure.cik for failure in failures] == ["0001652044"]
+    assert events.count("panel") == 1
+    assert events[events.index("panel") + 1 :] == [
+        "gate_begin",
+        "gate_persist:0000789019",
+        "gate_commit",
+    ]
+    assert (
+        "warning",
+        "sec_filing_gate_issuer_failed",
+        {
+            "cik": "0001652044",
+            "filing_cutoff": "2026-06-30T21:02:00+00:00",
+            "error": "SecFilingGateTimeBudgetExceeded",
+        },
+    ) in log.records
+
+
+def test_whole_gate_acquisition_failure_logs_distinct_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    producer = _gate_producer(monkeypatch, events, acquire=_raise(ValueError("duplicate CIK")))
+    log = _LogRecorder()
+    monkeypatch.setattr(producer_mod, "logger", log)
+
+    _produce(producer)
+
+    failed = [record for record in log.records if record[0] == "warning"]
+    assert [(event, fields["error"]) for _level, event, fields in failed] == [
+        ("sec_filing_gate_acquisition_failed", "ValueError")
+    ]
+    assert all("cik" not in fields for _level, _event, fields in failed)
+    assert events.count("panel") == 1

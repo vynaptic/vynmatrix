@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -248,3 +248,49 @@ def test_rejects_naive_cutoff() -> None:
 def test_rejects_duplicate_normalized_cik() -> None:
     with pytest.raises(ValueError, match="more than once"):
         _acquire(issuers={_CIK: (11,), "1": (12,)})
+
+
+def test_stop_time_records_remaining_issuers_as_budget_failures() -> None:
+    requested: list[str] = []
+    stop_at = datetime(2026, 9, 30, 22, 0, tzinfo=UTC)
+    ticks = iter((stop_at - timedelta(seconds=1), stop_at))
+
+    fetches, failures = acquire_sec_filing_events(
+        _client(_responses(), requested),
+        issuers={_CIK: (11,), _OTHER_CIK: (12,)},
+        fetch_cutoff=_CUTOFF,
+        stop_at=stop_at,
+        clock=lambda: next(ticks),
+    )
+
+    assert [fetch.cik for fetch in fetches] == [_CIK]
+    assert [failure.cik for failure in failures] == [_OTHER_CIK]
+    assert failures[0].error.partition(":")[0] == "SecFilingGateTimeBudgetExceeded"
+    assert f"/submissions/CIK{_OTHER_CIK}.json" not in requested
+
+
+def test_stop_time_already_passed_fetches_nothing() -> None:
+    requested: list[str] = []
+    stop_at = datetime(2026, 9, 30, 22, 0, tzinfo=UTC)
+
+    fetches, failures = acquire_sec_filing_events(
+        _client(_responses(), requested),
+        issuers={_CIK: (11,), _OTHER_CIK: (12,)},
+        fetch_cutoff=_CUTOFF,
+        stop_at=stop_at,
+        clock=lambda: stop_at,
+    )
+
+    assert fetches == ()
+    assert [failure.cik for failure in failures] == [_CIK, _OTHER_CIK]
+    assert requested == []
+
+
+def test_rejects_naive_stop_time() -> None:
+    with pytest.raises(ValueError, match="stop_at must be timezone-aware"):
+        acquire_sec_filing_events(
+            _client(_responses(), []),
+            issuers={_CIK: (11,)},
+            fetch_cutoff=_CUTOFF,
+            stop_at=_CUTOFF.replace(tzinfo=None),
+        )
