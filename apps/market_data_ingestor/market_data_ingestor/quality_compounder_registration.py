@@ -139,7 +139,7 @@ def persist_quality_compounder_panel_revision(
         cutoff=cutoff_at,
     )
     require_quality_compounder_factor_coverage(
-        sector_by_instrument=_member_sectors(session, identities=identities),
+        sector_by_instrument=member_sectors(session, identities=identities),
         snapshots=snapshots,
     )
     observations, exclusions, complete_snapshot_ids = _panel_dispositions(
@@ -450,11 +450,12 @@ def _factor_snapshots(
     return snapshots
 
 
-def _member_sectors(
+def member_sectors(
     session: Session,
     *,
     identities: Mapping[int, EquitySecurityIdentity],
 ) -> dict[int, str]:
+    """Read the one exact ``sector`` text of each identity's observation; fails closed."""
     observation_ids = tuple(str(item.observation_id) for item in identities.values())
     rows = tuple(
         session.scalars(

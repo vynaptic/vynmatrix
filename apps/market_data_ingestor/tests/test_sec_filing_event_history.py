@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -21,9 +21,18 @@ from lib_application.db.models import (
     MarketCalendar,
     User,
 )
+from lib_application.services.equity_observation_writer import (
+    EquityObservationSubmission,
+    EquityObservationValueInput,
+    persist_equity_observation,
+)
 from lib_infrastructure.market_data.eodhd_client import EODHDJsonEvidence
 from lib_strategy.sec_filing_rules import SecFilingGateReason
 from market_data_ingestor import sec_filing_event_history as history
+from market_data_ingestor.equity_evidence import EODHD_PAPER_ENTITLEMENT
+from market_data_ingestor.quality_compounder_market import (
+    QUALITY_COMPOUNDER_MARKET_ADJUSTMENT_POLICY,
+)
 from market_data_ingestor.quality_compounder_universe import (
     QualityCompounderIdentityEvidence,
     QualityCompounderSecurityIdentity,
@@ -37,8 +46,10 @@ from market_data_ingestor.sec_edgar import (
 )
 from market_data_ingestor.sec_filing_event_history import (
     SecFilingDiagnosticReport,
+    forward_returns,
     load_recorded_submissions,
     quarter_end_cutoffs,
+    read_recorded_closes,
     replay_sec_filing_rules,
 )
 
@@ -134,6 +145,7 @@ def _replay(
         returns_63=returns_63 or {},
         cutoffs=(_T1, _T2),
         point_in_time_membership=point_in_time_membership,
+        return_basis="total_return_close",
     )
 
 
@@ -235,6 +247,7 @@ def test_replay_fails_closed_on_missing_inputs() -> None:
             returns_63={},
             cutoffs=(_T1, _T2),
             point_in_time_membership=True,
+            return_basis="total_return_close",
         )
     with pytest.raises(ValueError, match="sector"):
         replay_sec_filing_rules(
@@ -244,6 +257,7 @@ def test_replay_fails_closed_on_missing_inputs() -> None:
             returns_63={},
             cutoffs=(_T1,),
             point_in_time_membership=True,
+            return_basis="total_return_close",
         )
     with pytest.raises(ValueError, match="cutoff"):
         replay_sec_filing_rules(
@@ -253,6 +267,7 @@ def test_replay_fails_closed_on_missing_inputs() -> None:
             returns_63={},
             cutoffs=(),
             point_in_time_membership=True,
+            return_basis="total_return_close",
         )
 
 
@@ -431,6 +446,7 @@ def test_main_prints_report_from_recorded_submissions_and_database(
     assert report["per_rule_flags"][_NON_RELIANCE] == 4
     assert report["per_rule_excess_return_63"][_NON_RELIANCE] is None
     assert report["per_rule_safety_rule"][_NON_RELIANCE] is True
+    assert report["return_basis"] == "total_return_close"
 
 
 def test_main_reports_point_in_time_when_every_cutoff_has_a_checkpoint(
@@ -452,3 +468,122 @@ def test_main_reports_point_in_time_when_every_cutoff_has_a_checkpoint(
     report = json.loads(capsys.readouterr().out)
     assert report["survivorship_biased"] is False
     assert report["quarters"][0]["members"] == 1
+
+
+_CUT = datetime(2024, 3, 31, 23, 59, 59, tzinfo=UTC)
+
+
+def _series(count: int, *, start_close: float = 100.0) -> list[tuple[datetime, float]]:
+    """``count`` daily closes, the first two at or before ``_CUT`` and the rest after it."""
+    first = datetime(2024, 3, 30, 20, 0, tzinfo=UTC)
+    return [(first + timedelta(days=index), start_close + index) for index in range(count)]
+
+
+def test_forward_return_uses_last_close_before_and_63rd_session_after() -> None:
+    series = _series(2 + 63)
+
+    returns = forward_returns({7: series}, cutoffs=(_CUT,))
+
+    # Base is the second close (101); target is the 63rd close after the cutoff (164).
+    assert returns == {(_CUT, 7): pytest.approx(164.0 / 101.0 - 1.0)}
+
+
+def test_forward_return_omits_insufficient_history() -> None:
+    assert forward_returns({7: _series(2 + 62)}, cutoffs=(_CUT,)) == {}
+    after_only = [(at, close) for at, close in _series(70) if at > _CUT]
+    assert forward_returns({7: after_only}, cutoffs=(_CUT,)) == {}
+
+
+def _price_submission(
+    instrument_id: int,
+    at: datetime,
+    *,
+    close: Decimal | None,
+    revision: int = 1,
+    supersedes: str | None = None,
+) -> EquityObservationSubmission:
+    values = (
+        ()
+        if close is None
+        else (
+            EquityObservationValueInput(
+                field_name="total_return_close", value_type="decimal", value=close, unit="USD"
+            ),
+        )
+    )
+    identity = f"AAA.US:{at.date().isoformat()}:derived-market"
+    digest = hashlib.sha256(f"{identity}:{close}:{revision}".encode()).hexdigest()
+    return EquityObservationSubmission(
+        provider="eodhd",
+        product="derived-daily-market-with-corporate-actions",
+        endpoint="/api/eod/AAA.US",
+        dataset_version="prospective-derived-market-v1",
+        tool_version="test",
+        source_identity="eodhd:derived-market:AAA.US",
+        source_revision=digest,
+        retrieved_at=at,
+        timestamp_semantics={"event_at": "official exchange regular-session close"},
+        adjustment_policy=QUALITY_COMPOUNDER_MARKET_ADJUSTMENT_POLICY,
+        entitlement_scope=EODHD_PAPER_ENTITLEMENT,
+        entitlement_owner_user_id="owner-1",
+        missing_data_policy="test",
+        artifact_content_sha256=digest,
+        instrument_id=instrument_id,
+        observation_kind="price",
+        source_record_identity=identity,
+        event_at=at,
+        available_at=at,
+        disposition="observed",
+        normalized_content_sha256=digest,
+        values=values,
+        revision=revision,
+        supersedes_observation_id=supersedes,
+    )
+
+
+def test_recorded_closes_feed_the_forward_return() -> None:
+    engine = sa.create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, future=True)
+    _seed_checkpoint(factory)
+    series = _series(2 + 63)
+    with factory() as session, session.begin():
+        first = None
+        for index, (at, close) in enumerate(series):
+            observation = persist_equity_observation(
+                session, _price_submission(1, at, close=Decimal(str(close)))
+            )
+            if index == 1:
+                first = observation
+        assert first is not None
+        # A later revision of the base close supersedes the original.
+        persist_equity_observation(
+            session,
+            _price_submission(
+                1,
+                series[1][0],
+                close=Decimal("82"),
+                revision=2,
+                supersedes=str(first.observation_id),
+            ),
+        )
+
+    with factory() as session:
+        closes = read_recorded_closes(session, instrument_ids=(1,))
+
+    assert len(closes[1]) == 65
+    assert closes[1][1] == (series[1][0], 82.0)
+    returns = forward_returns(closes, cutoffs=(_CUT,))
+    assert returns == {(_CUT, 1): pytest.approx(164.0 / 82.0 - 1.0)}
+
+
+def test_recorded_close_without_value_fails_closed() -> None:
+    engine = sa.create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, future=True)
+    _seed_checkpoint(factory)
+    with factory() as session, session.begin():
+        persist_equity_observation(session, _price_submission(1, _CUT, close=None))
+
+    with factory() as session, pytest.raises(ValueError, match="total_return_close"):
+        read_recorded_closes(session, instrument_ids=(1,))

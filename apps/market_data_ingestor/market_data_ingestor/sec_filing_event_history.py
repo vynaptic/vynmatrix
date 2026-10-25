@@ -9,12 +9,15 @@ Coverage is synthesised as complete (the recorded submissions are the whole
 history), so ``sec_filing_coverage_unavailable`` never appears. Membership
 without a recorded point-in-time checkpoint falls back to the latest recorded
 checkpoint and marks the report survivorship-biased; such a report can argue
-only for dropping a rule. The repository has no reader of forward 63-session
-returns, so the command reports ``None`` for every return statistic.
+only for dropping a rule. Forward 63-session total returns come from the
+recorded quality-compounder derived market series (``total_return_close``,
+split- and dividend-adjusted); a (cutoff, instrument) without 63 recorded later
+sessions is left out, so its statistics can be ``None``.
 
 ``python -m market_data_ingestor.sec_filing_event_history --submissions-dir DIR``
 reads recorded EDGAR submissions JSON (roots ``CIK##########.json`` plus every
-history page each root declares) and read-only membership/sector rows, then
+history page each root declares) and read-only membership, sector and recorded
+price rows, then
 prints the report as JSON. It never writes to the database and never calls EDGAR.
 """
 
@@ -37,8 +40,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from lib_application.db.models import (
+    EquityObservation,
     EquityObservationValue,
     EquitySecurityIdentity,
+    EquitySourceLineage,
     IndexMembership,
 )
 from lib_strategy.sec_filing_rules import (
@@ -50,6 +55,10 @@ from lib_strategy.sec_filing_rules import (
     SecFilingGateReason,
     sec_filing_gate_reason,
 )
+from market_data_ingestor.quality_compounder_market import (
+    QUALITY_COMPOUNDER_MARKET_ADJUSTMENT_POLICY,
+)
+from market_data_ingestor.quality_compounder_registration import member_sectors
 from market_data_ingestor.sec_edgar import (
     SecFilingRecord,
     SecSourceDocument,
@@ -69,6 +78,9 @@ _UNIVERSE: Final = "SP500"
 _CIK_PREFIX: Final = "cik:"
 _CIK_WIDTH: Final = 10
 _DEFAULT_START: Final = date(2010, 1, 1)
+FORWARD_SESSIONS: Final = 63
+RETURN_BASIS: Final = "total_return_close"
+_DERIVED_MARKET_PRODUCT: Final = "derived-daily-market-with-corporate-actions"
 
 
 @dataclass(frozen=True)
@@ -99,6 +111,7 @@ class SecFilingDiagnosticReport:
     unflagged_excess_return_63: float | None
     unflagged_left_tail_share: float | None
     survivorship_biased: bool
+    return_basis: str
     label: Literal["acceptance-time diagnostic"] = DIAGNOSTIC_LABEL
 
 
@@ -145,6 +158,7 @@ def replay_sec_filing_rules(
     returns_63: Mapping[tuple[datetime, int], float],
     cutoffs: Sequence[datetime],
     point_in_time_membership: bool,
+    return_basis: str,
 ) -> SecFilingDiagnosticReport:
     """Replay the code-only rules at each cutoff; pure, no I/O.
 
@@ -238,6 +252,7 @@ def replay_sec_filing_rules(
         unflagged_excess_return_63=_mean(unflagged_excess),
         unflagged_left_tail_share=_tail_share(unflagged_returns),
         survivorship_biased=not point_in_time_membership,
+        return_basis=return_basis,
     )
 
 
@@ -369,29 +384,82 @@ def _latest_sectors(
         current = latest.get(int(item.instr_id))
         if current is None or item.effective_from > current.effective_from:
             latest[int(item.instr_id)] = item
-    rows = tuple(
-        session.scalars(
-            select(EquityObservationValue).where(
-                EquityObservationValue.observation_id.in_(
-                    {str(item.observation_id) for item in latest.values()}
-                ),
-                EquityObservationValue.field_name == "sector",
-                EquityObservationValue.ordinal == 0,
+    return member_sectors(session, identities=latest)
+
+
+def forward_returns(
+    closes_by_instrument: Mapping[int, Sequence[tuple[datetime, float]]],
+    *,
+    cutoffs: Sequence[datetime],
+    sessions: int = FORWARD_SESSIONS,
+) -> dict[tuple[datetime, int], float]:
+    """Return from the last close at or before each cutoff to the ``sessions``-th later close.
+
+    Pure. A pair without a close at or before the cutoff, or without ``sessions``
+    recorded closes after it, is omitted.
+    """
+    returns: dict[tuple[datetime, int], float] = {}
+    for instrument_id, series in closes_by_instrument.items():
+        ordered = sorted(series)
+        for cutoff in cutoffs:
+            first_after = next(
+                (index for index, (at, _close) in enumerate(ordered) if at > cutoff),
+                len(ordered),
             )
+            target = first_after + sessions - 1
+            if first_after == 0 or target >= len(ordered):
+                continue
+            base = ordered[first_after - 1][1]
+            if base <= 0:
+                msg = f"recorded close for instrument {instrument_id} is not positive"
+                raise ValueError(msg)
+            returns[(cutoff, instrument_id)] = ordered[target][1] / base - 1.0
+    return returns
+
+
+def read_recorded_closes(
+    session: Session,
+    *,
+    instrument_ids: Sequence[int],
+) -> dict[int, list[tuple[datetime, float]]]:
+    """Read recorded ``total_return_close`` per official close; read-only.
+
+    Reads the quality-compounder derived market series, keeping the latest
+    revision per instrument and close. A row without a decimal close fails closed.
+    """
+    rows = session.execute(
+        select(EquityObservation.instr_id, EquityObservation.event_at, EquityObservationValue)
+        .join(EquitySourceLineage, EquityObservation.lineage_id == EquitySourceLineage.lineage_id)
+        .join(
+            EquityObservationValue,
+            (EquityObservationValue.observation_id == EquityObservation.observation_id)
+            & (EquityObservationValue.field_name == RETURN_BASIS)
+            & (EquityObservationValue.ordinal == 0),
+            isouter=True,
         )
-    )
-    by_observation: dict[str, str] = {}
-    for row in rows:
-        sector = str(row.text_value or "").strip()
-        if not sector or str(row.observation_id) in by_observation:
-            msg = "recorded member sector evidence is missing or ambiguous"
+        .where(
+            EquityObservation.instr_id.in_(tuple(instrument_ids)),
+            EquityObservation.observation_kind == "price",
+            EquityObservation.disposition == "observed",
+            EquitySourceLineage.product == _DERIVED_MARKET_PRODUCT,
+            EquitySourceLineage.adjustment_policy == QUALITY_COMPOUNDER_MARKET_ADJUSTMENT_POLICY,
+        )
+        .order_by(EquityObservation.revision)
+    ).all()
+    latest: dict[tuple[int, datetime], float] = {}
+    for instrument_id, event_at, value in rows:
+        if value is None or value.value_type != "decimal" or value.decimal_value is None:
+            msg = f"recorded price for instrument {instrument_id} lacks a decimal {RETURN_BASIS}"
             raise ValueError(msg)
-        by_observation[str(row.observation_id)] = sector
-    return {
-        instrument_id: by_observation[str(item.observation_id)]
-        for instrument_id, item in sorted(latest.items())
-        if str(item.observation_id) in by_observation
-    }
+        latest[(int(instrument_id), _aware_utc(event_at))] = float(value.decimal_value)
+    closes: dict[int, list[tuple[datetime, float]]] = defaultdict(list)
+    for (instrument_id, event_at), close in sorted(latest.items()):
+        closes[instrument_id].append((event_at, close))
+    return dict(closes)
+
+
+def _aware_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def report_json(report: SecFilingDiagnosticReport) -> dict[str, Any]:
@@ -399,6 +467,7 @@ def report_json(report: SecFilingDiagnosticReport) -> dict[str, Any]:
     return {
         "label": report.label,
         "survivorship_biased": report.survivorship_biased,
+        "return_basis": report.return_basis,
         "mean_removal_rate": report.mean_removal_rate,
         "per_rule_flags": dict(report.per_rule_flags),
         "per_rule_safety_rule": dict(report.per_rule_safety_rule),
@@ -457,14 +526,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     filings = load_recorded_submissions(args.submissions_dir)
     with _session_factory()() as session:
         members_by_cutoff, sectors, point_in_time = read_membership_inputs(session, cutoffs=cutoffs)
+        instrument_ids = sorted({iid for members in members_by_cutoff.values() for iid in members})
+        closes = read_recorded_closes(session, instrument_ids=instrument_ids)
         session.rollback()
     report = replay_sec_filing_rules(
         filings_by_cik=filings,
         members_by_cutoff=members_by_cutoff,
         sector_by_instrument=sectors,
-        returns_63={},
+        returns_63=forward_returns(closes, cutoffs=cutoffs),
         cutoffs=cutoffs,
         point_in_time_membership=point_in_time,
+        return_basis=RETURN_BASIS,
     )
     json.dump(report_json(report), sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
