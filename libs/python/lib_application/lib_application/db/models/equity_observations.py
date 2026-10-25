@@ -137,7 +137,7 @@ class EquityObservation(Base):
             "'earnings_event', 'market_cap', 'security_identity', "
             "'analyst_estimate', 'news_event', 'call_transcript', "
             "'insider_transaction', 'positioning', 'macro_release', "
-            "'factor_risk_exposure', 'news_coverage')",
+            "'factor_risk_exposure', 'news_coverage', 'filing_coverage')",
             name="ck_equity_observation_kind",
         ),
         CheckConstraint(

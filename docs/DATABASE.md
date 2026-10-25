@@ -194,6 +194,10 @@ and response bodies of each model inference, keyed by input digest and tied to
 its source lineage and entitlement scope. Migration 0111 refuses to downgrade
 once either kind of evidence exists.
 
+Equity observations also accept the filing_coverage kind, which records SEC
+filing-event screening coverage per instrument. Migration 0112 adds no table
+and refuses to downgrade once any filing_coverage row exists.
+
 Signal storage uses long, short, flat, and hold. SignalAction CLOSE maps to flat;
 use normalize_scoring_action rather than a manual lowercase conversion.
 
