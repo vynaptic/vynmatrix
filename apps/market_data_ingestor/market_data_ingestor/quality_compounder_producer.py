@@ -7,9 +7,16 @@ from datetime import UTC, datetime
 from typing import NoReturn
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from lib_application.db.models import Instrument, MarketCalendar, MarketSession, StrategyVersion
+from lib_application.services.sec_filing_observations import (
+    SecFilingPersistenceError,
+    SecIssuerFilingFetch,
+    persist_sec_filing_fetch,
+)
+from lib_common.logging import get_logger
 from lib_infrastructure.market_data.eodhd_client import EODHDClient
 from lib_strategy.equity_market_factors import EquityMarketFactorPolicy
 from lib_strategy.equity_quality_compounder import QUALITY_COMPOUNDER_STRATEGY_VERSION
@@ -46,11 +53,16 @@ from .quality_compounder_universe import (
     persist_quality_compounder_universe,
     require_quality_compounder_catalogue,
 )
-from .sec_edgar import SecEdgarClient
+from .sec_edgar import SecEdgarClient, SecEdgarError
+from .sec_filing_events import acquire_sec_filing_events
+
+logger = get_logger(__name__)
 
 _STRATEGY_ID = "us_quality_compounder_v1"
 _STRATEGY_VERSION = QUALITY_COMPOUNDER_STRATEGY_VERSION
 _BENCHMARK_SYMBOL = "SPY"
+# Failures of the inert SEC filing gate that are logged instead of failing the panel.
+_FILING_GATE_ERRORS = (SecEdgarError, SecFilingPersistenceError, SQLAlchemyError, ValueError)
 
 
 class QualityCompounderProducerError(RuntimeError):
@@ -168,6 +180,12 @@ class QualityCompounderPanelProducer:
             identities=tuple(universe.identities.values()),
             cutoff=sec_cutoff,
         )
+        filing_cutoff = self._now_before(deadline, field_name="SEC filing gate cutoff")
+        gate_fetches = self._acquire_filing_gate(
+            sec_graphs=sec_graphs,
+            instrument_ids=instrument_ids,
+            filing_cutoff=filing_cutoff,
+        )
         cutoff = self._now_before(deadline, field_name="panel cutoff")
         self._require_acquisition_cutoff(
             cutoff=cutoff,
@@ -184,6 +202,64 @@ class QualityCompounderPanelProducer:
             market_series=(*market_series, benchmark_series),
             sec_graphs=sec_graphs,
         )
+        self._persist_filing_gate(gate_fetches)
+
+    def _acquire_filing_gate(
+        self,
+        *,
+        sec_graphs: Sequence[QualityCompounderIssuerSecGraph],
+        instrument_ids: Mapping[str, int],
+        filing_cutoff: datetime,
+    ) -> tuple[SecIssuerFilingFetch, ...]:
+        """Collect inert SEC filing gate evidence; a failure never blocks the panel."""
+
+        try:
+            issuers = {
+                graph.cik: tuple(instrument_ids[identity.symbol] for identity in graph.identities)
+                for graph in sec_graphs
+            }
+            fetches, failures = acquire_sec_filing_events(
+                self._sec,
+                issuers=issuers,
+                fetch_cutoff=filing_cutoff,
+            )
+        except _FILING_GATE_ERRORS as exc:
+            logger.warning(
+                "sec_filing_gate_issuer_failed",
+                cik=None,
+                filing_cutoff=filing_cutoff.isoformat(),
+                error=type(exc).__name__,
+            )
+            return ()
+        for failure in failures:
+            logger.warning(
+                "sec_filing_gate_issuer_failed",
+                cik=failure.cik,
+                filing_cutoff=filing_cutoff.isoformat(),
+                error=failure.error.partition(":")[0],
+            )
+        logger.info(
+            "sec_filing_gate_acquired",
+            filing_cutoff=filing_cutoff.isoformat(),
+            issuers=len(fetches),
+            failed_issuers=len(failures),
+            filings=sum(len(fetch.filings) for fetch in fetches),
+        )
+        return fetches
+
+    def _persist_filing_gate(self, fetches: Sequence[SecIssuerFilingFetch]) -> None:
+        """Write each issuer fetch in its own transaction after the panel commits."""
+
+        for fetch in fetches:
+            try:
+                with self._session_factory() as session, session.begin():
+                    persist_sec_filing_fetch(session, fetch, entitlement_owner_user_id=None)
+            except _FILING_GATE_ERRORS as exc:
+                logger.warning(
+                    "sec_filing_gate_persist_failed",
+                    cik=fetch.cik,
+                    error=type(exc).__name__,
+                )
 
     def _official_sessions(
         self,
