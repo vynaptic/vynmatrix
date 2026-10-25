@@ -529,6 +529,68 @@ def test_main_reports_point_in_time_when_every_cutoff_has_a_checkpoint(
     assert report["input_manifest"] == {}
 
 
+def test_main_uses_exactly_the_given_cutoffs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    engine = sa.create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, future=True)
+    _seed_checkpoint(factory)
+    monkeypatch.setattr(history, "_session_factory", lambda: factory)
+    _write(tmp_path, "CIK0000000001.json", _root("0000000001", _ISSUER_1))
+
+    exit_code = history.main(
+        [
+            "--submissions-dir",
+            str(tmp_path),
+            "--cutoff",
+            "2026-06-30T17:00:00-04:00",
+            "--cutoff",
+            "2024-03-31T21:00:00+00:00",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert [item["cutoff"] for item in report["quarters"]] == [
+        "2024-03-31T21:00:00+00:00",
+        "2026-06-30T21:00:00+00:00",
+    ]
+    assert report["quarters"][0]["removed_by_reason"] == {_NON_RELIANCE: 1}
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--cutoff", "2026-06-30T21:00:00"], "must carry a UTC offset"),
+        (["--cutoff", "not-a-time"], "not an ISO-8601 instant"),
+        (
+            ["--cutoff", "2026-06-30T21:00:00+00:00", "--start", "2026-01-01"],
+            "cannot be combined",
+        ),
+        (["--cutoff", "2026-06-30T21:00:00+00:00", "--end", "2026-06-30"], "cannot be combined"),
+        (
+            ["--cutoff", "2026-06-30T21:00:00+00:00", "--cutoff", "2026-06-30T17:00:00-04:00"],
+            "more than once",
+        ),
+        (["--cutoff", "2999-12-31T21:00:00+00:00"], "after the run time"),
+    ],
+    ids=["naive", "malformed", "with-start", "with-end", "duplicate", "after-run"],
+)
+def test_main_rejects_invalid_cutoffs(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    extra: list[str],
+    message: str,
+) -> None:
+    with pytest.raises(SystemExit):
+        history.main(["--submissions-dir", str(tmp_path), *extra])
+
+    assert message in capsys.readouterr().err
+
+
 _CUT = datetime(2024, 3, 31, 23, 59, 59, tzinfo=UTC)
 _RUN_AT = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
 

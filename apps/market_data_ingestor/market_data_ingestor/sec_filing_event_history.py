@@ -24,6 +24,10 @@ reads recorded EDGAR submissions JSON (roots ``CIK##########.json`` plus every
 history page each root declares) and read-only membership, sector and recorded
 price rows, then
 prints the report as JSON. It never writes to the database and never calls EDGAR.
+By default the cutoffs are the quarter ends in ``[--start, --end]`` at the end
+of the UTC day. A repeatable ``--cutoff <ISO-8601 aware>`` replaces them with
+exactly the given instants, so a replay can be compared with the inert gate at
+a live panel cutoff ``T`` (spec section 8, bar 3).
 """
 
 from __future__ import annotations
@@ -551,6 +555,38 @@ def _latest_complete_quarter_end(today: date) -> date:
     return date(today.year, first_month, 1) - timedelta(days=1)
 
 
+def _aware_cutoff(text: str) -> datetime:
+    try:
+        value = datetime.fromisoformat(text)
+    except ValueError as exc:
+        msg = f"not an ISO-8601 instant: {text!r}"
+        raise argparse.ArgumentTypeError(msg) from exc
+    if value.tzinfo is None or value.utcoffset() is None:
+        msg = f"cutoff must carry a UTC offset: {text!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return value.astimezone(UTC)
+
+
+def _cutoffs(
+    parser: argparse.ArgumentParser, args: argparse.Namespace, *, run_at: datetime
+) -> tuple[datetime, ...]:
+    explicit: list[datetime] | None = args.cutoff
+    if explicit is None:
+        start = args.start or _DEFAULT_START
+        end = args.end or _latest_complete_quarter_end(run_at.date())
+        cutoffs = quarter_end_cutoffs(start=start, end=end)
+        if not cutoffs:
+            parser.error("no quarter end falls between --start and --end")
+        return cutoffs
+    if args.start is not None or args.end is not None:
+        parser.error("--cutoff cannot be combined with --start or --end")
+    if len(set(explicit)) != len(explicit):
+        parser.error("--cutoff lists the same instant more than once")
+    if any(cutoff > run_at for cutoff in explicit):
+        parser.error("--cutoff must not be after the run time")
+    return tuple(sorted(explicit))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Print the acceptance-time diagnostic report as JSON to stdout."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -560,16 +596,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="Directory of recorded EDGAR submissions roots and history pages.",
     )
-    parser.add_argument("--start", type=date.fromisoformat, default=_DEFAULT_START)
-    parser.add_argument("--end", type=date.fromisoformat, default=None)
+    parser.add_argument(
+        "--start",
+        type=date.fromisoformat,
+        default=None,
+        help=f"First quarter end considered (default {_DEFAULT_START.isoformat()}).",
+    )
+    parser.add_argument(
+        "--end",
+        type=date.fromisoformat,
+        default=None,
+        help="Last quarter end considered (default: the latest complete quarter).",
+    )
+    parser.add_argument(
+        "--cutoff",
+        type=_aware_cutoff,
+        action="append",
+        default=None,
+        help="Exact timezone-aware ISO-8601 cutoff; repeatable. Replaces --start/--end.",
+    )
     args = parser.parse_args(argv)
     run_at = datetime.now(UTC)
     if not args.submissions_dir.is_dir():
         parser.error(f"--submissions-dir is not a directory: {args.submissions_dir}")
-    end = args.end or _latest_complete_quarter_end(run_at.date())
-    cutoffs = quarter_end_cutoffs(start=args.start, end=end)
-    if not cutoffs:
-        parser.error("no quarter end falls between --start and --end")
+    cutoffs = _cutoffs(parser, args, run_at=run_at)
 
     recorded = load_recorded_submissions(args.submissions_dir)
     with _session_factory()() as session:
