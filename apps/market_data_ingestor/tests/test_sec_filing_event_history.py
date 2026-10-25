@@ -471,6 +471,7 @@ def test_main_reports_point_in_time_when_every_cutoff_has_a_checkpoint(
 
 
 _CUT = datetime(2024, 3, 31, 23, 59, 59, tzinfo=UTC)
+_RUN_AT = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
 
 
 def _series(count: int, *, start_close: float = 100.0) -> list[tuple[datetime, float]]:
@@ -501,6 +502,7 @@ def _price_submission(
     close: Decimal | None,
     revision: int = 1,
     supersedes: str | None = None,
+    available_at: datetime | None = None,
 ) -> EquityObservationSubmission:
     values = (
         ()
@@ -532,7 +534,7 @@ def _price_submission(
         observation_kind="price",
         source_record_identity=identity,
         event_at=at,
-        available_at=at,
+        available_at=available_at or at,
         disposition="observed",
         normalized_content_sha256=digest,
         values=values,
@@ -569,7 +571,7 @@ def test_recorded_closes_feed_the_forward_return() -> None:
         )
 
     with factory() as session:
-        closes = read_recorded_closes(session, instrument_ids=(1,))
+        closes = read_recorded_closes(session, instrument_ids=(1,), run_at=_RUN_AT)
 
     assert len(closes[1]) == 65
     assert closes[1][1] == (series[1][0], 82.0)
@@ -586,4 +588,27 @@ def test_recorded_close_without_value_fails_closed() -> None:
         persist_equity_observation(session, _price_submission(1, _CUT, close=None))
 
     with factory() as session, pytest.raises(ValueError, match="total_return_close"):
-        read_recorded_closes(session, instrument_ids=(1,))
+        read_recorded_closes(session, instrument_ids=(1,), run_at=_RUN_AT)
+
+
+def test_recorded_close_available_after_run_time_is_ignored() -> None:
+    engine = sa.create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, future=True)
+    _seed_checkpoint(factory)
+    early, late = _series(2)
+    with factory() as session, session.begin():
+        persist_equity_observation(session, _price_submission(1, early[0], close=Decimal("100")))
+        persist_equity_observation(
+            session,
+            _price_submission(
+                1, late[0], close=Decimal("101"), available_at=_RUN_AT + timedelta(seconds=1)
+            ),
+        )
+
+    with factory() as session:
+        closes = read_recorded_closes(session, instrument_ids=(1,), run_at=_RUN_AT)
+        with pytest.raises(ValueError, match="timezone-aware"):
+            read_recorded_closes(session, instrument_ids=(1,), run_at=_RUN_AT.replace(tzinfo=None))
+
+    assert closes == {1: [(early[0], 100.0)]}

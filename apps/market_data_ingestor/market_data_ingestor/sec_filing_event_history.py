@@ -421,12 +421,17 @@ def read_recorded_closes(
     session: Session,
     *,
     instrument_ids: Sequence[int],
+    run_at: datetime,
 ) -> dict[int, list[tuple[datetime, float]]]:
     """Read recorded ``total_return_close`` per official close; read-only.
 
-    Reads the quality-compounder derived market series, keeping the latest
-    revision per instrument and close. A row without a decimal close fails closed.
+    Reads the quality-compounder derived market series available by ``run_at``,
+    keeping the latest revision per instrument and close. A row without a
+    decimal close fails closed.
     """
+    if run_at.tzinfo is None or run_at.utcoffset() is None:
+        msg = "run_at must be timezone-aware"
+        raise ValueError(msg)
     rows = session.execute(
         select(EquityObservation.instr_id, EquityObservation.event_at, EquityObservationValue)
         .join(EquitySourceLineage, EquityObservation.lineage_id == EquitySourceLineage.lineage_id)
@@ -441,6 +446,8 @@ def read_recorded_closes(
             EquityObservation.instr_id.in_(tuple(instrument_ids)),
             EquityObservation.observation_kind == "price",
             EquityObservation.disposition == "observed",
+            EquityObservation.available_at.is_not(None),
+            EquityObservation.available_at <= _aware_utc(run_at).replace(tzinfo=None),
             EquitySourceLineage.product == _DERIVED_MARKET_PRODUCT,
             EquitySourceLineage.adjustment_policy == QUALITY_COMPOUNDER_MARKET_ADJUSTMENT_POLICY,
         )
@@ -459,6 +466,7 @@ def read_recorded_closes(
 
 
 def _aware_utc(value: datetime) -> datetime:
+    """Normalise to aware UTC; naive values are stored UTC."""
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
@@ -516,9 +524,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--start", type=date.fromisoformat, default=_DEFAULT_START)
     parser.add_argument("--end", type=date.fromisoformat, default=None)
     args = parser.parse_args(argv)
+    run_at = datetime.now(UTC)
     if not args.submissions_dir.is_dir():
         parser.error(f"--submissions-dir is not a directory: {args.submissions_dir}")
-    end = args.end or _latest_complete_quarter_end(datetime.now(UTC).date())
+    end = args.end or _latest_complete_quarter_end(run_at.date())
     cutoffs = quarter_end_cutoffs(start=args.start, end=end)
     if not cutoffs:
         parser.error("no quarter end falls between --start and --end")
@@ -527,7 +536,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     with _session_factory()() as session:
         members_by_cutoff, sectors, point_in_time = read_membership_inputs(session, cutoffs=cutoffs)
         instrument_ids = sorted({iid for members in members_by_cutoff.values() for iid in members})
-        closes = read_recorded_closes(session, instrument_ids=instrument_ids)
+        closes = read_recorded_closes(session, instrument_ids=instrument_ids, run_at=run_at)
         session.rollback()
     report = replay_sec_filing_rules(
         filings_by_cik=filings,
