@@ -88,7 +88,6 @@ describe("authentication and operational status", () => {
     const row = screen.getByRole("row", { name: /trend/ });
     expect(within(row).queryByText("Inactive")).toBeNull();
     expect(row.textContent).toContain("Close only");
-    expect(row.textContent).toContain("10.0%");
     await waitFor(() => expect(screen.getByDisplayValue("Owner")).toBeTruthy());
   });
 

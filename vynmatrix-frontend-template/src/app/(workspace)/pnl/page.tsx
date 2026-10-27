@@ -11,41 +11,30 @@ export default function PnLPage() {
   const [data, setData] = useState<PnLData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [days, setDays] = useState(90);
+  const [request, setRequest] = useState({ days: 90 });
+  const { days } = request;
 
   useEffect(() => {
+    let active = true;
     async function loadData() {
       try {
-        const pnl = await api.pnl(days);
-        setData(pnl);
+        const pnl = await api.pnl(request.days);
+        if (active) setData(pnl);
       } catch (err) {
-        if (err instanceof ApiError) {
-          setError(err.message);
-        } else {
-          setError("Failed to load P&L data");
-        }
+        if (active) setError(err instanceof ApiError ? err.message : "Failed to load P&L data");
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     }
     loadData();
-  }, [days]);
+    return () => { active = false; };
+  }, [request]);
 
-  if (loading) {
-    return <div className="loading-state">Loading P&L data...</div>;
-  }
-
-  if (error) {
-    return (
-      <div className="error-state">
-        <p>{error}</p>
-        <button onClick={() => window.location.reload()}>Retry</button>
-      </div>
-    );
-  }
-
-  if (!data) {
-    return <div className="empty-state">No P&L data available</div>;
+  function selectPeriod(nextDays: number) {
+    setData(null);
+    setError(null);
+    setLoading(true);
+    setRequest({ days: nextDays });
   }
 
   return (
@@ -53,36 +42,49 @@ export default function PnLPage() {
       <PageHeader
         eyebrow="PERFORMANCE ANALYTICS"
         title="Profit & Loss"
-        description="Equity curves, realized P&L, and open positions across your accounts."
+        description="Daily equity history, cumulative realized P&L, and current positions across your accounts."
         actions={
           <div className="header-actions">
             <button
               className={`button ${days === 30 ? "button-primary" : "button-secondary"}`}
-              onClick={() => setDays(30)}
+              aria-pressed={days === 30}
+              onClick={() => selectPeriod(30)}
             >
               30 days
             </button>
             <button
               className={`button ${days === 90 ? "button-primary" : "button-secondary"}`}
-              onClick={() => setDays(90)}
+              aria-pressed={days === 90}
+              onClick={() => selectPeriod(90)}
             >
               90 days
             </button>
             <button
               className={`button ${days === 180 ? "button-primary" : "button-secondary"}`}
-              onClick={() => setDays(180)}
+              aria-pressed={days === 180}
+              onClick={() => selectPeriod(180)}
             >
               180 days
             </button>
           </div>
         }
       />
-      <div className="dashboard-grid">
+      {loading && <div className="loading-state" role="status">Loading P&L data...</div>}
+      {error && (
+        <div className="error-state" role="alert">
+          <p>{error}</p>
+          <button className="button button-secondary" onClick={() => selectPeriod(days)}>Retry</button>
+        </div>
+      )}
+      {!loading && !error && (!data || data.accounts.length === 0) && (
+        <div className="empty-state">No P&L data available</div>
+      )}
+      {data && <div className="dashboard-grid">
         {data.accounts.map((account) => (
           <Panel
             key={account.account_id}
             title={account.name}
-            subtitle={`${account.currency} · Last ${days} days`}
+            subtitle={`${account.currency} · Recorded account snapshot`}
             className="performance-panel"
           >
             <div className="performance-summary">
@@ -90,16 +92,47 @@ export default function PnLPage() {
                 <strong>
                   {formatMoney(account.realized_total, account.currency, true)}
                 </strong>
-                <span>Realized P&L</span>
+                <span>Cumulative realized P&L</span>
               </div>
-              <span>
-                {formatMoney(account.equity?.value, account.currency)}
-              </span>
+              <div>
+                <strong>{formatMoney(account.equity?.value, account.currency)}</strong>
+                <span>Latest recorded equity</span>
+                {account.equity?.as_of && <span className="recorded-at">Recorded at <time dateTime={account.equity.as_of}>{account.equity.as_of}</time></span>}
+              </div>
             </div>
 
-            {account.positions && account.positions.length > 0 && (
-              <div style={{ marginTop: "20px" }}>
-                <h3 style={{ fontSize: "12px", color: "var(--muted)", marginBottom: "12px" }}>Open Positions</h3>
+            <div style={{ marginTop: "20px" }}>
+              <h3 style={{ fontSize: "12px", color: "var(--muted)", marginBottom: "12px" }}>Daily equity · Last {days} days</h3>
+              {account.equity_daily === null ? (
+                <p>Daily equity history unavailable</p>
+              ) : account.equity_daily.length === 0 ? (
+                <p>No daily equity history in the last {days} days</p>
+              ) : (
+                <div className="table-scroll">
+                  <table className="data-table" aria-label={`${account.name} daily equity · Last ${days} days`}>
+                    <thead>
+                      <tr><th scope="col">DATE</th><th scope="col">EQUITY</th></tr>
+                    </thead>
+                    <tbody>
+                      {account.equity_daily.map((point) => (
+                        <tr key={point.date}>
+                          <td>{point.date}</td>
+                          <td>{formatMoney(point.value, account.currency)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div style={{ marginTop: "20px" }}>
+              <h3 style={{ fontSize: "12px", color: "var(--muted)", marginBottom: "12px" }}>Current open positions</h3>
+              {account.positions === null ? (
+                <p>Positions unavailable</p>
+              ) : account.positions.length === 0 ? (
+                <p>No open positions</p>
+              ) : (
                 <div className="table-scroll">
                   <table className="data-table">
                     <thead>
@@ -124,12 +157,12 @@ export default function PnLPage() {
                     </tbody>
                   </table>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
             {account.realized && account.realized.length > 0 && (
               <div style={{ marginTop: "20px" }}>
-                <h3 style={{ fontSize: "12px", color: "var(--muted)", marginBottom: "12px" }}>Realized P&L by Strategy</h3>
+                <h3 style={{ fontSize: "12px", color: "var(--muted)", marginBottom: "12px" }}>Cumulative realized P&L by strategy</h3>
                 <div className="strategy-health-list">
                   {account.realized.map((item, idx) => (
                     <div className="strategy-health-item" key={idx}>
@@ -150,7 +183,7 @@ export default function PnLPage() {
             )}
           </Panel>
         ))}
-      </div>
+      </div>}
     </>
   );
 }

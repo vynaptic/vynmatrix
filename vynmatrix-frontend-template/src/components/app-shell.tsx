@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
-  Activity, Bell, Blocks, ChevronDown, CircleHelp, Command, LayoutDashboard, Menu, Moon,
+  Activity, Blocks, ChevronDown, Command, LayoutDashboard, Menu,
   Search, Settings2, ShieldCheck, TrendingUp, X,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -26,8 +26,32 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchTrigger = useRef<HTMLButtonElement>(null);
   const [overview, setOverview] = useState<OverviewData | null>(null);
   const [backendConnected, setBackendConnected] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setSearchQuery("");
+        setSearchOpen((open) => !open);
+        searchTrigger.current?.focus();
+      } else if (event.key === "Escape") {
+        setSearchOpen(false);
+        setMobileOpen(false);
+        searchTrigger.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const query = searchQuery.trim().toLowerCase();
+  const searchResults = [...primaryNavigation, ...platformNavigation].filter((item) =>
+    `${item.label} ${item.href}`.toLowerCase().includes(query),
+  );
 
   useEffect(() => {
     async function checkBackend() {
@@ -79,25 +103,29 @@ export function AppShell({ children }: { children: ReactNode }) {
           <p>Worker health is not checked. Status is from the last API request.</p>
           <div className="health-bars"><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /></div>
         </div>
-        <div className="sidebar-footer"><div className="avatar">DY</div><div className="user-copy"><strong>Workspace owner</strong><span>Administrator</span></div><button className="icon-button" aria-label="Help"><CircleHelp size={17} /></button></div>
+        <div className="sidebar-footer"><div className="avatar">VM</div><div className="user-copy"><strong>Workspace owner</strong><span>Administrator</span></div></div>
       </aside>
       <div className="main-column">
         <header className="topbar">
           <button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu size={20} /></button>
           <div className="breadcrumb"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{getCurrentLabel(pathname)}</strong></div>
           <div className="topbar-actions">
-            <button className="search-trigger" onClick={() => setSearchOpen(!searchOpen)}><Search size={15} /><span>Search anything...</span><kbd><Command size={11} /> K</kbd></button>
+            <button ref={searchTrigger} className="search-trigger" aria-label="Search pages" aria-expanded={searchOpen} onClick={() => { setSearchQuery(""); setSearchOpen(!searchOpen); }}><Search size={15} /><span>Search pages...</span><kbd><Command size={11} /> K</kbd></button>
             <span className="topbar-divider" />
             <span className="mode-pill">
               <span className={overview?.safety.execution_mode === "paper" && !overview.safety.allow_live ? "paper-dot" : ""} />
               {overview?.safety.execution_mode === "paper" && !overview.safety.allow_live ? "PAPER MODE" : overview?.safety.execution_mode.toUpperCase() || "UNKNOWN"}
             </span>
-            <button className="icon-button" aria-label="Notifications"><Bell size={17} /><i className="notification-dot" /></button>
             <LockButton />
-            <button className="icon-button theme-button" aria-label="Theme"><Moon size={17} /></button>
           </div>
         </header>
-        {searchOpen && <div className="search-popover"><Search size={16} /><input autoFocus placeholder="Search strategies, backtests, events..." onKeyDown={(e) => { if (e.key === "Escape") setSearchOpen(false); }} /><kbd>ESC</kbd></div>}
+        {searchOpen && <div className="search-popover page-search">
+          <div className="page-search-input"><Search size={16} /><input type="search" aria-label="Search pages" autoFocus placeholder="Search pages..." value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} /><kbd>ESC</kbd></div>
+          <nav aria-label="Page search results" className="page-search-results">
+            {searchResults.map((item) => <Link key={item.href} href={item.href} onClick={() => { setSearchOpen(false); setMobileOpen(false); }}>{item.label}</Link>)}
+          </nav>
+          {searchResults.length === 0 && <p role="status">No pages match your search.</p>}
+        </div>}
         <main className="main-content">{children}</main>
         <footer className="app-footer"><span>Vynmatrix <span className="footer-muted">· Self-hosted quantitative research</span></span><span>Owner API · Recorded data</span></footer>
       </div>
@@ -110,5 +138,8 @@ function getCurrentLabel(pathname: string) {
   if (pathname.startsWith("/pnl")) return "Profit & Loss";
   if (pathname.startsWith("/activity")) return "Audit & Feedback";
   if (pathname.startsWith("/settings")) return "Settings";
+  if (pathname.startsWith("/ml-lab")) return "ML Intelligence";
+  if (pathname.startsWith("/paper-trading")) return "Paper Trading";
+  if (pathname.startsWith("/market-data")) return "Market Data";
   return "Overview";
 }

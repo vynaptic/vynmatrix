@@ -64,3 +64,10 @@ export function formatMoneyTotals(entries: readonly MoneyEntry[] | null, signed 
     ? formatMoney(decimalString(amount), currency, signed)
     : `${currency} Unavailable`).join(" · ");
 }
+
+export function formatPercent(value: string | null | undefined): string {
+  const amount = decimal(value);
+  if (!amount) return "Unavailable";
+  const formatted = formatAmount(decimalString({ ...amount, units: amount.units * BigInt(100) }));
+  return `${formatted}${formatted.includes(".") ? "" : ".0"}%`;
+}

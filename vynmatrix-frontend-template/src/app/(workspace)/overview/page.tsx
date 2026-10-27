@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Activity, ArrowRight, Blocks, ShieldCheck, TrendingUp } from "lucide-react";
 import { MetricCard, PageHeader, Panel, StatusBadge } from "@/components/ui";
 import { api, ApiError } from "@/lib/api-client";
+import { keyedActivity } from "@/lib/activity";
 import { formatMoney, formatMoneyTotals } from "@/lib/money";
 import type { OverviewData } from "@/lib/types";
 
@@ -85,7 +86,7 @@ export default function OverviewPage() {
           icon={<TrendingUp size={18} />}
         />
         <MetricCard
-          label="Active strategies"
+          label="Active bindings"
           value={data.strategies?.active.toString() ?? "Unavailable"}
           change={data.strategies ? `${data.strategies.bound} bound to accounts` : "Bindings unavailable"}
           tone="green"
@@ -121,8 +122,9 @@ export default function OverviewPage() {
                   <span>{account.environment} · {account.currency}</span>
                 </div>
                 <div className="strategy-health-status">
-                  <StatusBadge tone={account.status === "active" ? "success" : "warning"}>{account.status}</StatusBadge>
+                  <StatusBadge tone={account.status === "connected" ? "success" : "warning"}>{account.status}</StatusBadge>
                   <span>{formatMoney(account.equity?.value, account.currency)}</span>
+                  {account.equity?.as_of && <span className="recorded-at">Recorded at <time dateTime={account.equity.as_of}>{account.equity.as_of}</time></span>}
                 </div>
               </div>
             ))}
@@ -134,8 +136,8 @@ export default function OverviewPage() {
           actions={<Link href="/activity" className="text-button">View audit log <ArrowRight size={14} /></Link>}
         >
           <div className="activity-list">
-            {data.activity.slice(0, 5).map((event) => (
-              <div className="activity-item" key={`${event.kind}-${event.at}`}>
+            {keyedActivity(data.activity).slice(0, 5).map(({ key, event }) => (
+              <div className="activity-item" key={key}>
                 <div className={`activity-rail-icon ${event.kind === "signal" ? "info" : "success"}`}>
                   <Activity size={14} />
                 </div>
@@ -144,7 +146,7 @@ export default function OverviewPage() {
                   <p>
                     {event.kind === "signal"
                       ? `${event.strategy_id} · ${event.action} · ${event.symbol}`
-                      : `${event.account_id} · ${event.side} ${event.quantity} ${event.symbol} @ ${event.price}`}
+                      : `${event.account_id} · ${event.side} ${event.quantity} ${event.symbol} @ ${formatMoney(event.price, event.currency)}`}
                   </p>
                 </div>
                 <time>{new Date(event.at).toLocaleTimeString()}</time>

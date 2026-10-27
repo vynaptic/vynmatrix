@@ -52,4 +52,19 @@ describe("admin-key API boundary", () => {
     expect(request.mock.calls[0][0]).toBe("/api/ui/version");
     expect(request.mock.calls[0][1].headers.get("X-Admin-Key")).toBe("entered-key");
   });
+
+  it("shows the backend error detail without exposing raw JSON", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "invalid or missing admin key" }), { status: 401 })));
+    await expect(api.version("invalid-test-key")).rejects.toMatchObject({
+      status: 401, message: "invalid or missing admin key",
+    });
+  });
+
+  it.each([
+    ["History service unavailable", "History service unavailable"],
+    ["<html>Proxy failure</html>", "Request failed (503)"],
+  ])("handles a non-JSON error body safely", async (body, message) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 503 })));
+    await expect(api.pnl()).rejects.toMatchObject({ status: 503, message });
+  });
 });

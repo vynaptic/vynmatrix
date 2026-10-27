@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowRight, Blocks, MoreHorizontal, Search, TrendingUp } from "lucide-react";
+import { ArrowRight, Blocks, Search, TrendingUp } from "lucide-react";
 import { PageHeader, Panel, StatusBadge } from "@/components/ui";
 import { api, ApiError } from "@/lib/api-client";
 import { formatMoneyTotals } from "@/lib/money";
@@ -11,6 +11,7 @@ export default function StrategiesPage() {
   const [data, setData] = useState<StrategiesData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     async function loadData() {
@@ -53,6 +54,9 @@ export default function StrategiesPage() {
   const realizedPnl = data.strategies.some((strategy) => strategy.realized_pnl === null)
     ? null
     : data.strategies.flatMap((strategy) => strategy.realized_pnl ?? []);
+  const query = search.trim().toLowerCase();
+  const visibleStrategies = data.strategies.filter((strategy) =>
+    [strategy.name, strategy.strategy_id, strategy.asset_class].some((value) => value.toLowerCase().includes(query)));
 
   return (
     <>
@@ -90,7 +94,7 @@ export default function StrategiesPage() {
         subtitle={`As of ${new Date(data.as_of).toLocaleString()}`}
       >
         <div className="table-tools">
-          <label className="table-search"><Search size={15} /><input placeholder="Search strategies..." /></label>
+          <label className="table-search"><Search size={15} /><input aria-label="Search strategies" placeholder="Search strategies..." value={search} onChange={(event) => setSearch(event.target.value)} /></label>
           <div className="filter-chip">All strategies <span>{data.strategies.length}</span></div>
         </div>
         <div className="table-scroll">
@@ -103,11 +107,10 @@ export default function StrategiesPage() {
                 <th>STATUS</th>
                 <th>BINDINGS</th>
                 <th>REALIZED P&L</th>
-                <th />
               </tr>
             </thead>
             <tbody>
-              {data.strategies.map((s) => (
+              {visibleStrategies.map((s) => (
                 <tr key={s.strategy_id}>
                   <td>
                     <div className="table-primary">
@@ -131,13 +134,11 @@ export default function StrategiesPage() {
                   <td>
                     <span>{formatMoneyTotals(s.realized_pnl, true)}</span>
                   </td>
-                  <td>
-                    <button className="icon-button" aria-label={`More actions for ${s.name}`}>
-                      <MoreHorizontal size={17} />
-                    </button>
-                  </td>
                 </tr>
               ))}
+              {visibleStrategies.length === 0 && (
+                <tr><td colSpan={6} className="empty-state">{query ? "No strategies match your search." : "No strategies available."}</td></tr>
+              )}
             </tbody>
           </table>
         </div>

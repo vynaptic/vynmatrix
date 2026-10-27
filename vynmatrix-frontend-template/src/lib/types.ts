@@ -49,6 +49,7 @@ export interface OverviewData {
     last_fill_at: string | null;
   };
   activity: Array<{
+    id?: number;
     kind: "signal" | "fill";
     at: string;
     strategy_id?: string;

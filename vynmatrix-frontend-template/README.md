@@ -35,8 +35,12 @@ is not installed or served by the backend's current deployment workflow.
 - Off, Close only, Trading, and Custom remain distinct binding modes.
 - The connectivity indicator reports the last API request. It does not certify
   database or worker health. Execution context comes from backend safety facts.
-- Unlinked prototype routes (ML Lab, Paper Trading, Market Data, and Strategy
-  New) contain sample content and have no supported backend integration.
+- ML Lab, Paper Trading, Market Data, and Strategy New show an unavailable
+  notice until their backend integration exists.
+- Strategy search filters the recorded catalogue. Page search supports Ctrl/Cmd+K;
+  Settings section links expose read-only account, binding, and risk data.
+- P&L period controls select the daily equity history window. Equity shows its
+  recorded observation time; realized P&L is labeled cumulative separately.
 
 ## Validation
 

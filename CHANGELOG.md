@@ -121,6 +121,10 @@ Git history.
 
 ### Fixed
 
+- The standalone owner UI filters strategies, preserves simultaneous activity
+  events, shows recorded P&L history, and navigates Settings sections. Account,
+  credential, and risk labels now reflect backend state; unsupported feature
+  routes show an unavailable notice instead of sample trading data or no-op controls.
 - A fresh install works on Windows. The constrained tooling install skips
   `uvloop`, which has no Windows build; the Linux image still installs it, and
   `vmdev audit` accepts only that host marker on a runtime pin. `vmdev init`

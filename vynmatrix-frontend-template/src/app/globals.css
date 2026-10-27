@@ -175,3 +175,15 @@
 
 .health-dot.health-error{background:var(--red)}
 .health-dot.health-unknown{background:var(--muted)}
+
+/* Keyboard and section navigation. */
+.search-popover.page-search{display:block}
+.page-search-input{display:flex;align-items:center;gap:8px}
+.page-search-results{display:flex;flex-direction:column;margin-top:8px}
+.page-search-results a{padding:9px;border-radius:6px}
+.page-search-results a:hover{background:var(--panel-2)}
+.settings-content .panel[id]{scroll-margin-top:76px}
+.settings-nav-item:hover,.settings-nav-item:focus-visible{background:var(--panel-2);color:var(--text)}
+@media(max-width:980px){.sidebar:not(.mobile-open){visibility:hidden}}
+
+.recorded-at{display:block;font-size:10px;color:var(--muted);overflow-wrap:anywhere}

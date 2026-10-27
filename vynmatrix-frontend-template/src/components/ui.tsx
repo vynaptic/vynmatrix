@@ -13,9 +13,9 @@ export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?:
   );
 }
 
-export function Panel({ title, subtitle, actions, children, className = "" }: { title: string; subtitle?: string; actions?: ReactNode; children: ReactNode; className?: string }) {
+export function Panel({ id, title, subtitle, actions, children, className = "" }: { id?: string; title: string; subtitle?: string; actions?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <section className={`panel ${className}`}>
+    <section id={id} className={`panel ${className}`}>
       <div className="panel-header">
         <div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>
         {actions && <div className="panel-actions">{actions}</div>}

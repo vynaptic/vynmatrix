@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { Activity, Clock } from "lucide-react";
 import { PageHeader, Panel } from "@/components/ui";
 import { api, ApiError } from "@/lib/api-client";
+import { keyedActivity } from "@/lib/activity";
+import { formatMoney } from "@/lib/money";
 import type { OverviewData } from "@/lib/types";
 
 export default function ActivityPage() {
@@ -58,17 +60,17 @@ export default function ActivityPage() {
       />
       <div className="metrics-grid compact-metrics">
         <div className="metric-card">
-          <div className="metric-top"><span>Total events</span><Activity size={17} /></div>
+          <div className="metric-top"><span>Recent events</span><Activity size={17} /></div>
           <div className="metric-value">{data.activity.length.toString()}</div>
           <div className="metric-change">Signals and fills</div>
         </div>
         <div className="metric-card">
-          <div className="metric-top"><span>Signals</span><Clock size={17} /></div>
+          <div className="metric-top"><span>Recent signals</span><Clock size={17} /></div>
           <div className="metric-value">{signalCount.toString()}</div>
           <div className="metric-change">Strategy decisions</div>
         </div>
         <div className="metric-card">
-          <div className="metric-top"><span>Fills</span><Activity size={17} /></div>
+          <div className="metric-top"><span>Recent fills</span><Activity size={17} /></div>
           <div className="metric-value">{fillCount.toString()}</div>
           <div className="metric-change">Executed orders</div>
         </div>
@@ -78,8 +80,8 @@ export default function ActivityPage() {
         subtitle={`As of ${new Date(data.as_of).toLocaleString()}`}
       >
         <div className="activity-list">
-          {data.activity.map((event) => (
-            <div className="activity-item" key={`${event.kind}-${event.at}`}>
+          {keyedActivity(data.activity).map(({ key, event }) => (
+            <div className="activity-item" key={key}>
               <div className={`activity-rail-icon ${event.kind === "signal" ? "info" : "success"}`}>
                 <Activity size={14} />
               </div>
@@ -90,7 +92,7 @@ export default function ActivityPage() {
                 <p>
                   {event.kind === "signal"
                     ? `${event.strategy_id} · ${event.action} · ${event.symbol}${event.confidence ? ` · confidence: ${event.confidence}` : ""}`
-                    : `${event.account_id} · ${event.side} ${event.quantity} ${event.symbol} @ ${event.price}${event.fee ? ` · fee: ${event.fee} ${event.fee_currency}` : ""}`}
+                    : `${event.account_id} · ${event.side} ${event.quantity} ${event.symbol} @ ${formatMoney(event.price, event.currency)}${event.fee ? ` · fee: ${formatMoney(event.fee, event.fee_currency)}` : ""}`}
                 </p>
               </div>
               <time>{new Date(event.at).toLocaleString()}</time>

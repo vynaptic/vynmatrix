@@ -5,6 +5,22 @@ import { Database, TrendingUp } from "lucide-react";
 import { PageHeader, Panel } from "@/components/ui";
 import { api, ApiError } from "@/lib/api-client";
 import type { ControlData } from "@/lib/types";
+import { formatAmount, formatPercent } from "@/lib/money";
+
+function CredentialStatus({ account, asOf }: { account: NonNullable<ControlData["accounts"]>[number]; asOf: string }) {
+  if (account.broker_code === "paper") return <span className="muted-number">Local simulator — no credential needed</span>;
+  const credential = account.credential;
+  if (!credential.present) return <span className="negative-number">Missing</span>;
+  const expiry = credential.expires_at ? Date.parse(credential.expires_at) : null;
+  const observedAt = Date.parse(asOf);
+  const expiryUnknown = expiry !== null && (!Number.isFinite(expiry) || !Number.isFinite(observedAt));
+  const expired = expiry !== null && !expiryUnknown && expiry <= observedAt;
+  const active = credential.status === "active" && !expired && !expiryUnknown;
+  return <span className={active ? "positive-number" : "negative-number"}>
+    {expired ? "Expired" : expiryUnknown ? "Expiry unknown" : credential.status || "Status unknown"}
+    {credential.expires_at && !expiryUnknown && <span className="table-subline">Expires {new Date(credential.expires_at).toLocaleString()}</span>}
+  </span>;
+}
 
 export default function SettingsPage() {
   const [data, setData] = useState<ControlData | null>(null);
@@ -51,17 +67,17 @@ export default function SettingsPage() {
       <PageHeader
         eyebrow="WORKSPACE CONFIGURATION"
         title="Settings"
-        description="Manage your owner profile, broker accounts, and risk parameters."
+        description="Read your owner profile, broker accounts, binding modes, and recorded risk limits."
       />
       <div className="settings-layout">
-        <nav className="settings-nav">
-          <button className="settings-nav-item active">Owner Profile</button>
-          <button className="settings-nav-item">Broker Accounts</button>
-          <button className="settings-nav-item">Strategy Bindings</button>
-          <button className="settings-nav-item">Risk Limits</button>
+        <nav className="settings-nav" aria-label="Settings sections">
+          <a className="settings-nav-item" href="#owner-profile">Owner Profile</a>
+          <a className="settings-nav-item" href="#broker-accounts">Broker Accounts</a>
+          <a className="settings-nav-item" href="#strategy-bindings">Strategy Bindings</a>
+          <a className="settings-nav-item" href="#risk-limits">Risk Limits</a>
         </nav>
         <div className="settings-content">
-          <Panel title="Owner profile" subtitle="Account owner information">
+          <Panel id="owner-profile" title="Owner profile" subtitle="Account owner information">
             {data.owner === null && <p role="status">Owner profile unavailable</p>}
             <div className="form-grid">
               <div className="form-field">
@@ -82,7 +98,7 @@ export default function SettingsPage() {
             </div>
           </Panel>
 
-          <Panel title="Broker accounts" subtitle="Connected broker accounts and credentials">
+          <Panel id="broker-accounts" title="Broker accounts" subtitle={`Account and credential snapshot · ${new Date(data.as_of).toLocaleString()}`}>
             {data.accounts === null && <p role="status">Broker accounts unavailable</p>}
             <div className="table-scroll">
               <table className="data-table">
@@ -112,16 +128,12 @@ export default function SettingsPage() {
                       <td><span className="version-code">{account.environment}</span></td>
                       <td>{account.base_ccy}</td>
                       <td>
-                        <span className={account.status === "active" ? "positive-number" : "negative-number"}>
+                        <span className={account.status === "connected" ? "positive-number" : "negative-number"}>
                           {account.status}
                         </span>
                       </td>
                       <td>
-                        {account.credential.present ? (
-                          <span className="positive-number">✓ Present</span>
-                        ) : (
-                          <span className="negative-number">✗ Missing</span>
-                        )}
+                        <CredentialStatus account={account} asOf={data.as_of} />
                       </td>
                     </tr>
                   ))}
@@ -130,7 +142,7 @@ export default function SettingsPage() {
             </div>
           </Panel>
 
-          <Panel title="Strategy bindings" subtitle="Recorded strategy-to-account execution modes">
+          <Panel id="strategy-bindings" title="Strategy bindings" subtitle="Recorded strategy-to-account execution modes">
             {data.bindings === null && <p role="status">Strategy bindings unavailable</p>}
             <div className="table-scroll">
               <table className="data-table">
@@ -140,7 +152,6 @@ export default function SettingsPage() {
                     <th>STRATEGY</th>
                     <th>ACCOUNT</th>
                     <th>MODE</th>
-                    <th>MAX POSITION</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -150,10 +161,27 @@ export default function SettingsPage() {
                       <td>{binding.strategy_id}</td>
                       <td>Account #{binding.account_id}</td>
                       <td><span className="version-code">{({ off: "Off", close_only: "Close only", trading: "Trading", custom: "Custom" } as Record<string, string>)[binding.mode] ?? binding.mode}</span></td>
-                      <td>{(parseFloat(binding.max_position_pct) * 100).toFixed(1)}%</td>
                     </tr>
                   ))}
                 </tbody>
+              </table>
+            </div>
+          </Panel>
+
+          <Panel id="risk-limits" title="Risk limits" subtitle="Recorded limits for each strategy binding; read only">
+            {data.bindings === null && <p role="status">Risk limits unavailable</p>}
+            {data.bindings?.length === 0 && <p>No strategy bindings recorded.</p>}
+            <div className="table-scroll">
+              <table className="data-table">
+                <thead><tr><th>BINDING</th><th>SCORE THRESHOLD</th><th>MAX POSITION</th><th>MAX EXPOSURE</th><th>MAX DAILY LOSS</th><th>MAX OPEN POSITIONS</th></tr></thead>
+                <tbody>{data.bindings?.map((binding) => <tr key={binding.binding_id}>
+                  <td>#{binding.binding_id}</td>
+                  <td>{formatAmount(binding.asset_score_threshold)}</td>
+                  <td>{formatPercent(binding.max_position_pct)}</td>
+                  <td>{formatPercent(binding.max_total_exposure_pct)}</td>
+                  <td>{formatPercent(binding.max_daily_loss_pct)}</td>
+                  <td>{binding.max_open_positions}</td>
+                </tr>)}</tbody>
               </table>
             </div>
           </Panel>
