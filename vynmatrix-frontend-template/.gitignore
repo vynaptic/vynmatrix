@@ -1,0 +1,9 @@
+node_modules/
+.next/
+out/
+build/
+.env*
+!.env.example
+.DS_Store
+*.log
+!src/lib/

@@ -9,6 +9,9 @@ Git history.
 
 ### Added
 
+- A standalone frontend for the owner UI, with currency-preserving monetary
+  displays, explicit unavailable data, authenticated access, and frontend
+  tests, lint, and build checks enforced by the required CI gate.
 - Adverse-news gate storage and classification for USQualityCompounder (inert;
   migration 0111). The gate is not wired into the panel resolver and changes no
   strategy behaviour.

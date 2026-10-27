@@ -36,12 +36,16 @@ jobs:
       python: ${{ steps.filter.outputs.python }}
       postgres_integration: ${{ steps.filter.outputs.postgres_integration }}
       schema_drift: ${{ steps.filter.outputs.schema_drift }}
+      frontend: ${{ steps.filter.outputs.frontend }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
         id: filter
         with:
           filters: |
+            frontend:
+              - 'vynmatrix-frontend-template/**'
+              - '.github/workflows/ci.yml'
             python:
               - 'apps/**'
               - 'strategies/**'
@@ -76,6 +80,28 @@ jobs:
               - 'scripts/db/alembic.ini'
               - 'scripts/db/check_schema_drift.py'
               - '.github/workflows/ci.yml'
+
+  frontend:
+    name: frontend (tests + lint + build)
+    needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vynmatrix-frontend-template
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: vynmatrix-frontend-template/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+      - run: npm run lint
+      - run: npm run build
 
   pre-commit-security:
     name: security + syntax (pre-commit)
@@ -300,6 +326,7 @@ jobs:
       - python-ci
       - postgres-integration
       - schema-drift
+      - frontend
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -310,9 +337,11 @@ jobs:
           py='${{ needs.python-ci.result }}'
           integration='${{ needs.postgres-integration.result }}'
           drift='${{ needs.schema-drift.result }}'
+          frontend='${{ needs.frontend.result }}'
           py_required='${{ needs.changes.outputs.python }}'
           integration_required='${{ needs.changes.outputs.postgres_integration }}'
           drift_required='${{ needs.changes.outputs.schema_drift }}'
+          frontend_required='${{ needs.changes.outputs.frontend }}'
           echo "changes=$changes  security=$security  python-ci=$py"
           echo "postgres-integration=$integration  schema-drift=$drift"
           for r in "$changes" "$security"; do
@@ -337,4 +366,5 @@ jobs:
           require_path_job "python-ci" "$py" "$py_required"
           require_path_job "postgres-integration" "$integration" "$integration_required"
           require_path_job "schema-drift" "$drift" "$drift_required"
+          require_path_job "frontend" "$frontend" "$frontend_required"
           echo "All required jobs passed (or were correctly skipped)."

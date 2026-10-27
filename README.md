@@ -52,6 +52,7 @@ This is the canonical documentation index.
 | macOS/Linux or Windows prerequisites | [SETUP_MAC_LINUX.md](SETUP_MAC_LINUX.md) / [SETUP_WINDOWS.md](SETUP_WINDOWS.md) |
 | Contribution terms, branches, checks, and commits | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Commands and file locations | [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) |
+| Standalone frontend development and checks | [Frontend README](vynmatrix-frontend-template/README.md) |
 | Runtime architecture and source navigation | [docs/USER_MANUAL.md](docs/USER_MANUAL.md) |
 | Environment precedence and fail-closed settings | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) |
 | PostgreSQL bootstrap, migration, schema, and backup | [docs/DATABASE.md](docs/DATABASE.md) |
