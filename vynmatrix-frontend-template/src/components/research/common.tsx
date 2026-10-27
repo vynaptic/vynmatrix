@@ -20,8 +20,8 @@ export function Field({ label, children }: { label: string; children: ReactNode 
 export function Feedback({ error, message }: { error?: string | null; message?: string | null }) {
   return <>{error && <div className="research-feedback error" role="alert">{error}</div>}{message && <p className="research-feedback" role="status">{message}</p>}</>;
 }
-export function downloadJson(name: string, value: unknown) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
+export function downloadBlob(name: string, value: Blob) {
+  const url = URL.createObjectURL(value);
   const anchor = document.createElement("a"); anchor.href = url; anchor.download = name; anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
@@ -76,7 +76,7 @@ export function useWorkspace() {
   return { ...resource, data, error: resource.error || pageError, loadMore, paging };
 }
 export function WorkspaceMore({ workspace, directory }: { workspace: ReturnType<typeof useWorkspace>; directory: ResearchDirectory }) {
-  return workspace.data?.next_after?.[directory] ? <button type="button" className="button secondary small" disabled={workspace.paging} onClick={() => workspace.loadMore(directory)}>Load more {directory}</button> : null;
+  return workspace.data?.next_after?.[directory] ? <button type="button" className="button button-secondary button-small" disabled={workspace.paging} onClick={() => workspace.loadMore(directory)}>Load more {directory}</button> : null;
 }
 export function Supervisor({ workspace }: { workspace: ResearchWorkspace }) {
   const supervisor = workspace.supervisor;
@@ -127,19 +127,29 @@ export function useResearchJob() {
 }
 export function JobDetails({ controller }: { controller: ReturnType<typeof useResearchJob> }) {
   const { job, error, busy } = controller;
+  const [exportError, setExportError] = useState<{ jobId: string; message: string } | null>(null);
+  const [exporting, setExporting] = useState(false);
+  async function exportJob() {
+    if (!job) return;
+    const id = job.job_id;
+    setExporting(true); setExportError(null);
+    try { downloadBlob(`research-${id}.json`, await researchApi.exportJob(id)); }
+    catch (failure) { setExportError({ jobId: id, message: errorMessage(failure) }); }
+    finally { setExporting(false); }
+  }
   if (!job) return <Feedback error={error} />;
   return <Panel title="Research job" subtitle="Inputs and attempts remain recorded across retries and restarts.">
-    <Feedback error={error} />
+    <Feedback error={error || (exportError?.jobId === job.job_id ? exportError.message : null)} />
     <div className="research-toolbar"><strong>{job.job_id}</strong><StatusBadge tone={job.status === "completed" ? "success" : job.status === "failed" ? "danger" : "neutral"}>{job.status}</StatusBadge><span>{job.kind}</span>
-      <button className="button secondary small" disabled={busy} onClick={() => controller.open(job.job_id)}>Refresh job</button>
-      {["queued", "running"].includes(job.status) && <button className="button secondary small" disabled={busy} onClick={() => controller.cancel()}>Cancel job</button>}
-      {["failed", "cancelled", "interrupted"].includes(job.status) && <button className="button secondary small" disabled={busy} onClick={() => controller.retry()}>Retry job</button>}
+      <button className="button button-secondary button-small" disabled={busy} onClick={() => controller.open(job.job_id)}>Refresh job</button>
+      {["queued", "running"].includes(job.status) && <button className="button button-secondary button-small" disabled={busy} onClick={() => controller.cancel()}>Cancel job</button>}
+      {["failed", "cancelled", "interrupted"].includes(job.status) && <button className="button button-secondary button-small" disabled={busy} onClick={() => controller.retry()}>Retry job</button>}
     </div>
     <p>Created <RecordedTime value={job.created_at} /> · Started <RecordedTime value={job.started_at} /> · Finished <RecordedTime value={job.finished_at} /></p>
     {job.error && <div role="alert">{typeof job.error === "string" ? job.error : <JsonView value={job.error} />}</div>}
     <details><summary>Frozen job inputs</summary><JsonView value={job.inputs} /></details>
     <details open={job.status === "interrupted"}><summary>Attempts ({job.attempts.length})</summary><JsonView value={job.attempts} /></details>
-    {job.result && <><h3>Recorded result</h3><JobResults kind={job.kind} result={job.result} /><button className="button secondary small" onClick={() => downloadJson(`research-${job.job_id}.json`, job)}>Export job result</button></>}
+    {job.result && <><h3>Recorded result</h3><JobResults kind={job.kind} result={job.result} /><button className="button button-secondary button-small" disabled={exporting} onClick={exportJob}>Export job result</button></>}
   </Panel>;
 }
 export function JobList({ workspace, controller, kinds, pagination }: { workspace: ResearchWorkspace; controller: ReturnType<typeof useResearchJob>; kinds: JobKind[]; pagination?: ReturnType<typeof useWorkspace> }) {

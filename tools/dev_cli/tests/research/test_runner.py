@@ -19,6 +19,13 @@ JOB = "a85a9daa-990d-4d4c-91c7-b650b8580117"
 GENERATION = "7df58e14-23fa-426d-b3b5-30f270d569d3"
 IMAGE = "sha256:" + "a" * 64
 SPEC = SandboxSpec(JOB, GENERATION, IMAGE, "b" * 64)
+RUNNING_STATE = {
+    "Status": "running",
+    "Running": True,
+    "Paused": False,
+    "Restarting": False,
+    "Dead": False,
+}
 
 
 def module(name):
@@ -169,6 +176,7 @@ def inspection():
         "Id": "d" * 64,
         "Name": "/" + SPEC.container_name,
         "Image": IMAGE,
+        "State": dict(RUNNING_STATE),
         "Config": {
             "User": "10001",
             "Cmd": SANDBOX_PROGRAM,
@@ -234,6 +242,140 @@ class Docker:
 
     def sandboxes(self):
         return [self.actual]
+
+
+class StartingDocker(Docker):
+    def __init__(self, states):
+        super().__init__()
+        self.states = iter(states)
+        self.observed = []
+
+    def inspect(self, target):
+        actual = super().inspect(target)
+        actual["State"] = next(self.states, actual.get("State"))
+        self.observed.append(actual["State"])
+        return actual
+
+
+def test_sandbox_waits_for_verified_created_container_to_run_before_capacity_admission(monkeypatch):
+    process = module("process")
+    created = {**RUNNING_STATE, "Status": "created", "Running": False}
+    docker = StartingDocker([created, dict(RUNNING_STATE)])
+    admitted = []
+    monkeypatch.setattr(process.time, "sleep", lambda _seconds: None)
+
+    def admit(container_id):
+        if docker.actual["State"] != RUNNING_STATE:
+            raise ValueError("Verified research sandbox is absent from actual running capacity")
+        admitted.append(container_id)
+
+    with process.SandboxProcess(Path("/repo"), SPEC, docker=docker, admit=admit):
+        assert docker.observed[:2] == [created, RUNNING_STATE]
+        assert admitted == ["d" * 64]
+        assert docker.child.stdin.getvalue() == b""
+    assert docker.removed == ["d" * 64]
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        None,
+        {},
+        {"Status": "running", "Running": True},
+        {**RUNNING_STATE, "Status": "exited", "Running": False},
+        {**RUNNING_STATE, "Status": "dead", "Running": False, "Dead": True},
+        {**RUNNING_STATE, "Status": "restarting", "Restarting": True},
+        {**RUNNING_STATE, "Status": "paused", "Paused": True},
+        {**RUNNING_STATE, "Paused": True},
+        {**RUNNING_STATE, "Status": "unknown"},
+        {**RUNNING_STATE, "Running": "true"},
+        {**RUNNING_STATE, "Status": "created"},
+    ],
+)
+def test_sandbox_refuses_missing_or_nonrunning_startup_state_before_admission(state):
+    docker = StartingDocker([state])
+    admitted = []
+    with (
+        pytest.raises(ValueError, match="startup state"),
+        module("process").SandboxProcess(Path("/repo"), SPEC, docker=docker, admit=admitted.append),
+    ):
+        pytest.fail("Unusable container state must refuse startup")
+    assert admitted == []
+    assert docker.child.stdin.getvalue() == b""
+    assert docker.removed == ["d" * 64]
+
+
+def test_cancellation_while_created_removes_exact_sandbox_before_source():
+    created = {**RUNNING_STATE, "Status": "created", "Running": False}
+    docker = StartingDocker([created])
+
+    def cancel_after_created():
+        if docker.observed:
+            raise RuntimeError("cancelled while created")
+
+    with (
+        pytest.raises(RuntimeError, match="cancelled while created"),
+        module("process").SandboxProcess(
+            Path("/repo"), SPEC, docker=docker, poll=cancel_after_created
+        ),
+    ):
+        pytest.fail("Cancelled startup must not deliver source")
+    assert docker.child.stdin.getvalue() == b""
+    assert docker.removed == ["d" * 64]
+
+
+def test_created_sandbox_wait_obeys_original_wall_deadline(monkeypatch):
+    process = module("process")
+    created = {**RUNNING_STATE, "Status": "created", "Running": False}
+    docker = StartingDocker([created])
+    now = [0.0]
+    monkeypatch.setattr(process.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(process.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    with (
+        pytest.raises(TimeoutError, match="wall timeout"),
+        process.SandboxProcess(Path("/repo"), SPEC, docker=docker, wall_seconds=0.01),
+    ):
+        pytest.fail("Created sandbox cannot wait beyond the attempt deadline")
+    assert docker.child.stdin.getvalue() == b""
+    assert docker.removed == ["d" * 64]
+
+
+def test_created_sandbox_refuses_failed_launcher_and_cleans_exact_container(monkeypatch):
+    created = {**RUNNING_STATE, "Status": "created", "Running": False}
+    docker = StartingDocker([created])
+    monkeypatch.setattr(docker.child, "poll", lambda: 1)
+    with (
+        pytest.raises(ValueError, match="failed to start"),
+        module("process").SandboxProcess(Path("/repo"), SPEC, docker=docker),
+    ):
+        pytest.fail("Exited launcher must not admit a created container")
+    assert docker.child.stdin.getvalue() == b""
+    assert docker.removed == ["d" * 64]
+
+
+def test_startup_refuses_replacement_of_the_first_verified_container(monkeypatch):
+    process = module("process")
+    created = {**RUNNING_STATE, "Status": "created", "Running": False}
+    docker = StartingDocker([created, dict(RUNNING_STATE)])
+    inspect = docker.inspect
+    monkeypatch.setattr(process.time, "sleep", lambda _seconds: None)
+
+    def replaced(target):
+        if target == "d" * 64 and len(docker.observed) >= 2:
+            return None  # The original container has disappeared.
+        actual = inspect(target)
+        if len(docker.observed) >= 2:
+            actual["Id"] = "e" * 64
+        return actual
+
+    monkeypatch.setattr(docker, "inspect", replaced)
+    with (
+        pytest.raises(ValueError, match="changed identity during startup"),
+        process.SandboxProcess(Path("/repo"), SPEC, docker=docker),
+    ):
+        pytest.fail("Replacement identity must not receive source")
+    assert docker.child.stdin.getvalue() == b""
+    assert docker.removed == []  # Never remove a different, unadopted container.
 
 
 def test_source_never_delivered_until_actual_containment_verified():

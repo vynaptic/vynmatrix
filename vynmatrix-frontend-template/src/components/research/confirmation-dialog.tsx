@@ -22,6 +22,6 @@ export function ConfirmationDialog({ description, lines, consequence, busy, disa
   }
   return <div className="research-modal-backdrop"><section ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="research-confirm-title" className="research-modal" onKeyDown={keyDown}>
     <h2 id="research-confirm-title">{title}</h2><p>{description}</p><ul>{lines.map((line) => <li key={line}>{line}</li>)}</ul><p>{consequence}</p>
-    <div className="research-toolbar"><button className="button secondary" disabled={busy} onClick={onCancel}>Cancel</button><button className="button primary" disabled={disabled} onClick={onConfirm}>{confirmLabel}</button></div>
+    <div className="research-toolbar"><button className="button button-secondary" disabled={busy} onClick={onCancel}>Cancel</button><button className="button button-primary" disabled={disabled} onClick={onConfirm}>{confirmLabel}</button></div>
   </section></div>;
 }

@@ -13,7 +13,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from .sandbox import (
     LABEL_GENERATION,
@@ -34,7 +34,7 @@ _COMPOSE_PROJECT = "vynmatrix"
 _PROJECT_FILTER = f"label={_COMPOSE_PROJECT_LABEL}={_COMPOSE_PROJECT}"
 
 
-def _refuse(message: str) -> None:
+def _refuse(message: str) -> NoReturn:
     raise ValueError(message)
 
 
@@ -187,6 +187,24 @@ def exact_identity(actual: dict[str, Any], spec: SandboxSpec) -> str:
     return str(container_id)
 
 
+def _running_startup_state(actual: dict[str, Any]) -> bool:
+    """Wait only for a verified created container; every other state fails closed."""
+    state = actual.get("State")
+    if (
+        not isinstance(state, dict)
+        or not isinstance(state.get("Status"), str)
+        or state["Status"] not in {"created", "running"}
+        or any(
+            type(state.get(flag)) is not bool
+            for flag in ("Running", "Paused", "Restarting", "Dead")
+        )
+        or state["Running"] is not (state["Status"] == "running")
+        or any(state[flag] for flag in ("Paused", "Restarting", "Dead"))
+    ):
+        _refuse("Research sandbox startup state is missing or unusable")
+    return bool(state["Running"])
+
+
 class SandboxProcess:
     """Own one verified container and kill its entire PID namespace on any exit.
 
@@ -300,19 +318,23 @@ class SandboxProcess:
         admitted = False
         try:
             while True:
-                if time.monotonic() >= self.deadline:
-                    self._check()
+                self._check()
                 actual = self.docker.inspect(self.spec.container_name)
                 if actual is not None:
                     # Capture its exact identity before checking all containment fields,
                     # so a weakened but correctly labelled sandbox is still removed.
-                    self.container_id = exact_identity(actual, self.spec)
+                    container_id = exact_identity(actual, self.spec)
+                    if self.container_id is not None and self.container_id != container_id:
+                        _refuse("Research sandbox changed identity during startup")
+                    self.container_id = container_id
                     verify_container(actual, self.spec)
-                    self.admit(self.container_id)
-                    break
+                    if _running_startup_state(actual):
+                        self._check()
+                        self.admit(self.container_id)
+                        break
                 if self.child.poll() is not None:
                     _refuse("Declared research sandbox failed to start")
-                self.poll()
+                self._check()
                 time.sleep(0.05)
             for target in (self._read_stdout, self._read_stderr, self._write_stdin):
                 thread = threading.Thread(target=target, daemon=True)

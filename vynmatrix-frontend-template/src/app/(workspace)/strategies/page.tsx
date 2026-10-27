@@ -65,7 +65,7 @@ export default function StrategiesPage() {
         eyebrow="STRATEGY MANAGEMENT"
         title="Strategy Lab"
         description="View and manage your quantitative strategies and their bindings."
-        actions={<Link className="button primary" href="/strategies/new">Create a strategy</Link>}
+        actions={<Link className="button button-primary" href="/strategies/new">Create a strategy</Link>}
       />
       <div className="metrics-grid compact-metrics">
         <div className="metric-card">

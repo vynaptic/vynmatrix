@@ -6,7 +6,7 @@ import { researchApi } from "@/lib/research-api";
 import { DatasetEligibility, datasetEligible } from "@/components/research/eligibility";
 import { ConfirmationDialog } from "@/components/research/confirmation-dialog";
 import type { JsonObject, ResearchDraft, ResearchTemplate } from "@/lib/research-types";
-import { downloadJson, errorMessage, Feedback, Field, isConflict, JobDetails, JobList, requestId, Supervisor, useResearchJob, useWorkspace, WorkspaceMore, useResource } from "@/components/research/common";
+import { downloadBlob, errorMessage, Feedback, Field, isConflict, JobDetails, JobList, requestId, Supervisor, useResearchJob, useWorkspace, WorkspaceMore, useResource } from "@/components/research/common";
 
 const emptyConfig = JSON.stringify({ class_name: "UserStrategy", strategy_id: "", parameters: {} }, null, 2);
 const emptyAssumptions = { initial_capital: "", currency: "", size_pct: "", fee_bps: "", slippage_bps: "", annualization_factor: "" };
@@ -68,7 +68,7 @@ export default function StrategyNewPage() {
   }
   async function exportDraft() {
     if (!saved) return;
-    try { downloadJson(`strategy-${saved.draft_id}-revision-${saved.revision}.json`, await researchApi.exportDraft(saved.draft_id, saved.revision_id)); }
+    try { downloadBlob(`strategy-${saved.draft_id}-revision-${saved.revision}.json`, await researchApi.exportDraft(saved.draft_id, saved.revision_id)); }
     catch (failure) { setError(errorMessage(failure)); }
   }
   function applyTemplate(template: ResearchTemplate) {
@@ -83,7 +83,7 @@ export default function StrategyNewPage() {
     setName(saved?.name ?? ""); setSource(saved?.source ?? ""); setConfig(saved ? JSON.stringify(saved.config, null, 2) : emptyConfig); setRequiresModel(templates.data?.templates.find((template) => template.source === saved?.source)?.requires_model ?? false); setMessage(null);
   }
   return <>
-    <PageHeader eyebrow="HISTORICAL PYTHON RESEARCH" title="Create a strategy" description="Save immutable source revisions, validate in isolation and backtest against frozen recorded data." actions={<button className="button secondary" onClick={workspace.refresh}>Refresh workspace</button>} />
+    <PageHeader eyebrow="HISTORICAL PYTHON RESEARCH" title="Create a strategy" description="Save immutable source revisions, validate in isolation and backtest against frozen recorded data." actions={<button className="button button-secondary" onClick={workspace.refresh}>Refresh workspace</button>} />
     <Feedback error={workspace.error || error} message={message} />
     {workspace.loading && <p role="status">Loading research workspace…</p>}
     {workspace.data && <>
@@ -91,12 +91,12 @@ export default function StrategyNewPage() {
       <div className="research-notice">A draft, model or backtest does not package, release, bind or authorize a strategy for paper execution.</div>
       <Panel title="Python strategy revision" subtitle="Implement PureSignalStrategy.initialize() and on_data(state); emit canonical signals with timestamp=state.timestamp.">
         <Feedback error={templates.error} />
-        <div className="research-toolbar"><Field label="Strategy template"><select value={templateId} disabled={busy || templates.loading} onChange={(event) => setTemplateId(event.target.value)}><option value="">Choose a canonical starting point</option>{templates.data?.templates.map((template) => <option value={template.template_id} key={template.template_id}>{template.name}</option>)}</select></Field><button className="button secondary" type="button" disabled={busy || templates.loading || !templateId} onClick={loadTemplate}>Load template</button><button className="button secondary small" type="button" disabled={templates.loading} onClick={templates.refresh}>Refresh templates</button></div>
+        <div className="research-toolbar"><Field label="Strategy template"><select value={templateId} disabled={busy || templates.loading} onChange={(event) => setTemplateId(event.target.value)}><option value="">Choose a canonical starting point</option>{templates.data?.templates.map((template) => <option value={template.template_id} key={template.template_id}>{template.name}</option>)}</select></Field><button className="button button-secondary" type="button" disabled={busy || templates.loading || !templateId} onClick={loadTemplate}>Load template</button><button className="button button-secondary button-small" type="button" disabled={templates.loading} onClick={templates.refresh}>Refresh templates</button></div>
         {modelRequired && <p className="research-notice">This template requires a registered model. Choose its immutable version under Backtest model; the trusted runner supplies the artifact.</p>}
         <div className="research-toolbar"><Field label="Open draft"><select disabled={busy || dirty} value={saved?.draft_id ?? ""} onChange={(event) => { if (event.target.value) void loadDraft(event.target.value); else { setSaved(null); setName(""); setSource(""); setConfig(emptyConfig); setRequiresModel(false); setConflict(false); } }}><option value="">New draft</option>{workspace.data.drafts.map((draft) => <option value={draft.draft_id} key={draft.draft_id}>{draft.name} · revision {draft.revision}</option>)}</select></Field>
           <WorkspaceMore workspace={workspace} directory="drafts" />
-          {dirty && <button className="button secondary small" disabled={busy} onClick={discardEdits}>Discard unsaved edits</button>}
-          {conflict && saved && <button className="button secondary small" disabled={busy} onClick={() => loadDraft(saved.draft_id)}>Reload saved revision</button>}
+          {dirty && <button className="button button-secondary button-small" disabled={busy} onClick={discardEdits}>Discard unsaved edits</button>}
+          {conflict && saved && <button className="button button-secondary button-small" disabled={busy} onClick={() => loadDraft(saved.draft_id)}>Reload saved revision</button>}
         </div>
         <form onSubmit={save}><fieldset disabled={busy} className="research-fieldset">
           <Field label="Draft name"><input required value={name} maxLength={255} onChange={(event) => setName(event.target.value)} /></Field>
@@ -104,9 +104,9 @@ export default function StrategyNewPage() {
           <Field label="Strategy config JSON"><textarea required className="research-config" spellCheck={false} value={config} onChange={(event) => setConfig(event.target.value)} /></Field>
           <p>Config requires <code>class_name</code>, your research <code>strategy_id</code> and <code>parameters</code>. Imports and validation execute only in the isolated sandbox. Selecting a frozen model supplies the reserved <code>parameters.research_model</code> value to the run; your source must consume it. Do not set that reserved key in draft config.</p>
         </fieldset><div className="research-toolbar">
-          <button className="button primary" disabled={busy || conflict || !name.trim() || !source.trim()}>Save revision</button>
-          <button className="button secondary" type="button" disabled={!saved || dirty || busy || !available || controller.busy} onClick={() => { if (saved) void controller.enqueue("validate_strategy", { revision_id: saved.revision_id }); }}>Validate in isolation</button>
-          <button className="button secondary" type="button" disabled={!saved} onClick={exportDraft}>Export saved revision</button>
+          <button className="button button-primary" disabled={busy || conflict || !name.trim() || !source.trim()}>Save revision</button>
+          <button className="button button-secondary" type="button" disabled={!saved || dirty || busy || !available || controller.busy} onClick={() => { if (saved) void controller.enqueue("validate_strategy", { revision_id: saved.revision_id }); }}>Validate in isolation</button>
+          <button className="button button-secondary" type="button" disabled={!saved} onClick={exportDraft}>Export saved revision</button>
         </div></form>
         {saved && <p>Saved revision {saved.revision}: <code>{saved.revision_id}</code> · <code>{saved.source_hash}</code>{dirty && " · Unsaved edits; save before running."}</p>}
       </Panel>
@@ -119,7 +119,7 @@ export default function StrategyNewPage() {
         </div>
           {datasetId && <DatasetEligibility dataset={workspace.data.datasets.find((dataset) => dataset.dataset_id === datasetId)} purpose="backtest" />}
           <p>These are research cost assumptions. Supported execution is fully funded long-only crypto spot, cash equities and cash ETFs in the recorded quote currency. Missing product, session or FX evidence is refused.</p>
-          <WorkspaceMore workspace={workspace} directory="datasets" /><WorkspaceMore workspace={workspace} directory="models" /><button className="button primary" disabled={!saved || dirty || !available || controller.busy || (modelRequired && !modelId) || !datasetEligible(workspace.data.datasets.find((dataset) => dataset.dataset_id === datasetId), "backtest") || Object.values(assumptions).some((value) => !value.trim())}>Run historical backtest</button>
+          <WorkspaceMore workspace={workspace} directory="datasets" /><WorkspaceMore workspace={workspace} directory="models" /><button className="button button-primary" disabled={!saved || dirty || !available || controller.busy || (modelRequired && !modelId) || !datasetEligible(workspace.data.datasets.find((dataset) => dataset.dataset_id === datasetId), "backtest") || Object.values(assumptions).some((value) => !value.trim())}>Run historical backtest</button>
         </form>
       </Panel>
       <JobDetails controller={controller} />

@@ -29,7 +29,7 @@ export function PaperBinding({ binding, disabled, modes, onReview, readiness, re
       {Object.entries(riskLabels).map(([key, label]) => <Field key={key} label={`Binding ${binding.binding_id} ${label.toLowerCase()}`}><input disabled={disabled} value={risk[key]} inputMode="decimal" onChange={(event) => setRisk((old) => ({ ...old, [key]: event.target.value }))} /></Field>)}
     </div>
     <p>Instrument scope: {binding.instruments_allowed?.join(", ") ?? "All eligible instruments"} · Asset classes: {binding.asset_classes_allowed.join(", ")}</p>
-    <button className="button secondary" disabled={disabled || !changed || Object.values(risk).some((value) => !value.trim())} onClick={review}>Review binding {binding.binding_id}</button>
+    <button className="button button-secondary" disabled={disabled || !changed || Object.values(risk).some((value) => !value.trim())} onClick={review}>Review binding {binding.binding_id}</button>
   </article>;
 }
 export const modeConsequence: Record<string, string> = {
