@@ -10,7 +10,9 @@ FROM ${VM_SVC_BASE_REF} AS wheel-builder
 
 ENV PYTHONPATH=/opt/service/lib/python3.11/site-packages:/opt/runtime/lib/python3.11/site-packages:/opt/strategies/indicator
 
-RUN /usr/local/bin/python -m venv /opt/service
+RUN /usr/local/bin/python -m venv /opt/service \
+    && printf '/opt/runtime/lib/python3.11/site-packages\n' \
+        > /opt/service/lib/python3.11/site-packages/vynmatrix-runtime.pth
 COPY docker/requirements-platform.txt /tmp/requirements-platform.txt
 COPY docker/constraints.txt /tmp/constraints.txt
 RUN --mount=type=cache,id=vm-platform-pip,target=/root/.cache/pip,sharing=locked \
@@ -31,6 +33,9 @@ RUN /opt/service/bin/python -m pip install --no-compile --no-deps /tmp/wheels/*.
         --no-compile --no-deps --target /opt/strategies/indicator \
         /tmp/strategy-wheel/vynmatrix_indicator-*.whl \
     && /opt/service/bin/python -m pip check \
+    # Isolated research ignores PYTHONPATH; the immutable site path must suffice.
+    && /opt/service/bin/python -I -B -c \
+        'from lib_strategy.signals.pure_strategy import PureSignalStrategy; from lib_strategy.research import train_return_model, predict_return_model; import pydantic' \
     && rm -rf /opt/service/lib/python3.11/site-packages/alembic/testing \
     && find /opt/service/lib/python3.11/site-packages \
         -type d \( -name test -o -name tests \) -prune -exec rm -rf '{}' + \

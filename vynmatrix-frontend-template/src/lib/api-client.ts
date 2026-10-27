@@ -68,10 +68,10 @@ export function subscribeAuthentication(onChange: () => void): () => void {
 /**
  * Fetch wrapper with admin key authentication
  */
-async function apiRequest<T>(
+async function apiResponse(
   endpoint: string,
   options: RequestInit = {}
-): Promise<T> {
+): Promise<Response> {
   const url = `${BACKEND_URL}${endpoint}`;
 
   const headers = new Headers(options.headers);
@@ -104,7 +104,16 @@ async function apiRequest<T>(
     throw new ApiError(response.status, error);
   }
 
-  return response.json() as Promise<T>;
+  return response;
+}
+
+export async function apiRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  return (await apiResponse(endpoint, options)).json() as Promise<T>;
+}
+
+/** Preserve successful response bytes for content-addressed research exports. */
+export async function apiDownload(endpoint: string, options: RequestInit = {}): Promise<Blob> {
+  return (await apiResponse(endpoint, options)).blob();
 }
 
 /**

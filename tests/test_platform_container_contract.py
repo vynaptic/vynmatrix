@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from dev_cli.core.research.process import MAX_CONTAINERS
 from scripts.platform_processes import build_processes
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,15 +16,28 @@ def _compose() -> dict:
     return yaml.safe_load((ROOT / "docker/docker-compose.stack.yml").read_text())
 
 
-def test_normal_runtime_has_only_three_possible_container_identities() -> None:
+def test_runtime_keeps_three_running_slots_with_optional_research_service() -> None:
     services = _compose()["services"]
-    assert set(services) == {"postgres", "application", "workers", "bootstrap"}
+    assert set(services) == {"postgres", "application", "workers", "bootstrap", "research"}
     assert services["workers"]["profiles"] == ["workers"]
     assert services["bootstrap"]["profiles"] == ["maintenance"]
+    assert services["research"]["profiles"] == ["research"]
+    always_on = {name for name, service in services.items() if "profiles" not in service}
+    assert always_on == {"postgres", "application"}
+    assert MAX_CONTAINERS == 3
+    assert len(always_on | {"workers"}) == MAX_CONTAINERS
+    assert len(always_on | {"research"}) == MAX_CONTAINERS
+    assert len(always_on | {"workers", "research"}) > MAX_CONTAINERS
+    research = services["research"]
+    assert research["image"] == services["application"]["image"]
+    assert research["network_mode"] == "none"
+    assert research["read_only"] is True
+    assert not {"ports", "volumes", "depends_on"} & research.keys()
+    assert not any("DATABASE_URL" in key or "PASSWORD" in key for key in research["environment"])
     assert "profiles" not in services["application"]
     for name in ("application", "workers"):
         service = services[name]
-        assert "bootstrap" not in service.get("depends_on", {})
+        assert not {"bootstrap", "research"} & service.get("depends_on", {}).keys()
         assert service["init"] is True
         assert service["stop_grace_period"] == "60s"
         assert service["healthcheck"]["test"][-1].endswith("/health')")
@@ -87,6 +101,7 @@ def test_declared_image_inventory_has_one_runtime_artifact_and_no_orphan_dockerf
         services["application"]["image"]
         == services["workers"]["image"]
         == services["bootstrap"]["image"]
+        == services["research"]["image"]
     )
 
 

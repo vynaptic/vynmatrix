@@ -11,6 +11,24 @@ from dev_cli.core.database_backup import DatabaseBackup
 from dev_cli.core.database_lifecycle import PlatformLifecycle
 
 
+@pytest.fixture(autouse=True)
+def isolated_research_guard(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        PlatformLifecycle,
+        "_new_research_maintenance",
+        lambda _self: SimpleNamespace(
+            begin=lambda: None,
+            complete=lambda: None,
+            abort=lambda: None,
+            after_restore=lambda: None,
+            previous=None,
+            stack_was_active=False,
+        ),
+    )
+
+
 def lifecycle(tmp_path):
     return PlatformLifecycle(
         tmp_path,
@@ -105,3 +123,28 @@ def test_restore_passes_complete_archive_through_subprocess_stdin(
         return CompletedProcess(command, 0)
 
     DatabaseBackup(platform, run=run).restore(source)
+
+
+def test_failed_research_preflight_closes_and_removes_empty_archive(tmp_path, monkeypatch):
+    import os
+
+    platform = lifecycle(tmp_path)
+    original_open = os.open
+    descriptors = []
+
+    def opened(*args, **kwargs):
+        descriptor = original_open(*args, **kwargs)
+        descriptors.append(descriptor)
+        return descriptor
+
+    def refuse():
+        raise ValueError("research drain refused")
+
+    monkeypatch.setattr(os, "open", opened)
+    monkeypatch.setattr(platform, "begin_research_maintenance", refuse)
+    target = tmp_path / "archive.dump"
+    with pytest.raises(ValueError, match="drain refused"):
+        DatabaseBackup(platform).backup(target)
+    assert not target.exists()
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        os.fstat(descriptors[0])

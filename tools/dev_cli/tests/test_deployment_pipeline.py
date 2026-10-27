@@ -309,3 +309,71 @@ def test_an_unreadable_trading_state_is_unknown_rather_than_nothing(
     deployer.host_env = host_env
 
     assert deployer.trading_state() is None
+
+
+@pytest.mark.parametrize("provision_fails", [False, True])
+def test_research_fence_spans_snapshot_and_verified_upgrade_or_rollback(
+    tmp_path, monkeypatch, provision_fails
+):
+    from types import SimpleNamespace
+
+    events = []
+
+    class Lifecycle:
+        def begin_research_maintenance(self):
+            events.append("fence")
+
+        def stop_runtime(self):
+            events.append("stop")
+
+        def refence_research_maintenance(self):
+            events.append("refence")
+
+        def start_runtime(self):
+            events.append("start")
+
+        def complete_research_maintenance(self):
+            events.append("rotate_resume")
+
+        def abort_research_maintenance(self):
+            events.append("unlock")
+
+    deployer = pipeline.Deployer.__new__(pipeline.Deployer)
+    deployer.lifecycle = Lifecycle()
+    deployer.echo = lambda _message: None
+    deployer.snapshot_directory = tmp_path
+    deployer.previous_tag = "sha-old"
+    deployer.run = lambda *_args, **_kwargs: _Result()
+    deployer.start_database = lambda: events.append("database")
+    deployer._snapshot = lambda: (events.append("snapshot") or _archive(tmp_path))
+    deployer._open_record = lambda *_args: None
+    deployer._point_compose_at = lambda _tag: events.append("point")
+    deployer._verify_health = lambda: events.append("verified")
+    deployer._close = lambda *_args, **_kwargs: 1
+    deployer.trading_state = lambda: None
+    deployer._restore = lambda _snapshot: events.extend(["restore", "refence"])
+
+    def provision(_owner):
+        events.append("provision")
+        if provision_fails:
+            raise ValueError("failed migration")
+        return {"revision": "head", "owner_id": "owner"}
+
+    deployer._provision = provision
+    monkeypatch.setattr(artefact, "prune_generations", lambda *_args, **_kwargs: [])
+    plan = SimpleNamespace(
+        rebuild=False,
+        snapshot_reason=None,
+        mode=UPGRADE,
+        image_tag="sha-new",
+        deployed={"image_tag": "sha-old"},
+    )
+    if provision_fails:
+        with pytest.raises(ValueError, match="failed migration"):
+            deployer.deploy(plan, {})
+        assert events.index("restore") < events.index("verified")
+        assert events[-1] == "unlock"
+    else:
+        deployer.deploy(plan, {})
+    assert events.index("fence") < events.index("snapshot") < events.index("provision")
+    assert events.index("verified") < events.index("rotate_resume")

@@ -47,13 +47,16 @@ def test_stop_drains_runtime_before_database(monkeypatch) -> None:
         def stop_runtime(self):
             calls.append("drain")
 
+        def abort_research_maintenance(self):
+            calls.append("release_lock")
+
         def command(self, *args):
             calls.append(args)
 
     monkeypatch.setattr(db_module, "_lifecycle", Lifecycle)
     result = CliRunner().invoke(db_module.db, ["stop"])
     assert result.exit_code == 0, result.output
-    assert calls == ["drain", ("stop", "--timeout", "60", "postgres")]
+    assert calls == ["drain", "release_lock", ("stop", "--timeout", "60", "postgres")]
 
 
 def test_retired_destructive_and_extra_container_commands_are_absent() -> None:

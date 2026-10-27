@@ -1,4 +1,4 @@
-"""Create or explicitly rotate six runtime logins without repairing installed authority."""
+"""Create or explicitly rotate service logins without repairing installed authority."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ RUNTIME_ROLES = (
     ("vm_feedback_login", "vm_feedback"),
     ("vm_market_data_login", "vm_market_data"),
     ("vm_indicator_login", "vm_indicator"),
+    ("vm_research_login", "vm_research"),
 )
 PASSWORD_ENV = {login: f"{group.upper()}_DB_PASSWORD" for login, group in RUNTIME_ROLES}
 _ELEVATED = ("rolsuper", "rolcreatedb", "rolcreaterole", "rolreplication", "rolbypassrls")

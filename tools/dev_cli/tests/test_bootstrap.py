@@ -13,7 +13,15 @@ def environment():
         "EXECUTION_ENGINE_ALLOW_LIVE": "false",
         **{
             f"VM_{role}_DB_PASSWORD": f"unit_{role}_pass"
-            for role in ("BACKEND", "SCORING", "EXECUTION", "FEEDBACK", "MARKET_DATA", "INDICATOR")
+            for role in (
+                "BACKEND",
+                "SCORING",
+                "EXECUTION",
+                "FEEDBACK",
+                "MARKET_DATA",
+                "INDICATOR",
+                "RESEARCH",
+            )
         },
     }
 
@@ -41,7 +49,7 @@ def test_distinct_explicit_target_and_passwords_are_retained():
     settings = BootstrapSettings.parse(environment())
     assert settings.migration.username == "unit_migrate"
     assert settings.migration.database == "unit_database"
-    assert len(settings.passwords) == 6
+    assert len(settings.passwords) == 7
     assert "unit_pass" not in repr(settings)
 
 

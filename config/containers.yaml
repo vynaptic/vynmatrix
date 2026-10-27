@@ -1,5 +1,6 @@
 # One application artifact; PostgreSQL is the only other runtime image.
-# Compose selects process groups; packaging never grants strategy activation.
+# Compose selects process groups and the isolated research slot from this same
+# artifact; packaging never grants strategy activation.
 services:
 - name: platform
   app: platform_runtime

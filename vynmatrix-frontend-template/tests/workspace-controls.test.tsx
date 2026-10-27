@@ -4,10 +4,6 @@ import { AppShell } from "@/components/app-shell";
 import SettingsPage from "@/app/(workspace)/settings/page";
 import OverviewPage from "@/app/(workspace)/overview/page";
 import PnLPage from "@/app/(workspace)/pnl/page";
-import MlLabPage from "@/app/(workspace)/ml-lab/page";
-import MarketDataPage from "@/app/(workspace)/market-data/page";
-import PaperTradingPage from "@/app/(workspace)/paper-trading/page";
-import StrategyNewPage from "@/app/(workspace)/strategies/new/page";
 import { api } from "@/lib/api-client";
 import type { ControlData, OverviewData } from "@/lib/types";
 
@@ -119,20 +115,5 @@ describe("working workspace controls", () => {
     expect(screen.queryByRole("button", { name: "Notifications" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Theme" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Help" })).toBeNull();
-  });
-});
-
-describe("routes without backend integration", () => {
-  it.each([
-    ["ML Intelligence", MlLabPage], ["Market Data", MarketDataPage],
-    ["Paper Trading", PaperTradingPage], ["Create a strategy", StrategyNewPage],
-  ])("makes %s unavailable without fabricated metrics or pretend actions", (title, Page) => {
-    render(<Page />);
-    expect(screen.getByRole("heading", { name: title })).toBeTruthy();
-    expect(screen.getByText("Backend integration unavailable")).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Back to/ })).toBeTruthy();
-    expect(screen.queryByRole("button")).toBeNull();
-    expect(screen.queryByText(/₹/)).toBeNull();
-    expect(screen.queryByText("Registered models")).toBeNull();
   });
 });

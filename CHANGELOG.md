@@ -9,6 +9,15 @@ Git history.
 
 ### Added
 
+- Complete owner research pages: validated immutable CSV datasets, recorded-feed
+  browsing, durable return-model training and prediction, revisioned Python
+  strategy authoring with isolated historical backtests, and audited local
+  paper-account controls. Research results grant no strategy release authority.
+- `vmdev research worker` runs submitted strategies in a bounded, network-free
+  declared sandbox. Maintenance fences job admission and sandbox launch before
+  snapshots, migrations and restores; interrupted attempts require explicit retry.
+- Research capacity and cleanup are scoped to this installation's Compose
+  project, preserving its three-container limit while other projects run.
 - A standalone frontend for the owner UI, with currency-preserving monetary
   displays, explicit unavailable data, authenticated access, and frontend
   tests, lint, and build checks enforced by the required CI gate.
@@ -90,7 +99,7 @@ Git history.
   `external_ref`, which both PATCH routes require the caller to echo back.
 - `vmdev init`, `vmdev doctor` and `vmdev deploy`: one idempotent command
   installs or upgrades this deployment, and one generates the private `.env`
-  and owner profile with all fifteen secrets distinct. `vmdev init --update`
+  and owner profile with all secrets distinct. `vmdev init --update`
   adds configuration keys that appeared upstream without touching an existing
   value; `vmdev deploy --plan` prints the image, migrations, configuration keys
   and snapshot a run would use; `--start-only` brings a stopped stack back up.

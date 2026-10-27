@@ -17,6 +17,9 @@ setup(
         # pandas is an optional, guarded import (BacktestSignalEmitter frame
         # export); it is deliberately NOT a mandatory runtime dependency.
     ],
+    extras_require={
+        "research": ["numpy>=2.4.0,<3.0.0"],
+    },
     zip_safe=False,
     classifiers=[
         "Development Status :: 3 - Alpha",

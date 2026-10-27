@@ -67,6 +67,17 @@ export interface OverviewData {
   }>;
 }
 
+export interface BindingReadiness {
+  ready: boolean;
+  checks: Array<{
+    key: string;
+    state: "ok" | "warn" | "blocked" | "unknown";
+    label: string;
+    detail: string;
+    at: string | null;
+  }>;
+}
+
 export interface StrategiesData {
   as_of: string;
   strategies: Array<{
@@ -86,6 +97,7 @@ export interface StrategiesData {
       autopilot: boolean;
       entries_enabled: boolean;
       exits_enabled: boolean;
+      readiness?: BindingReadiness | null;
     }>;
     last_signal: {
       at: string | null;

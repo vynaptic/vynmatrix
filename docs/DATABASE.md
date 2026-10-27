@@ -115,7 +115,7 @@ cannot change after relevant activity. Never place a secret in a command line.
 
 ## Existing databases, migrations, and rollback
 
-The current linear Alembic head is 0111_adverse_news_gate_storage. Verify the
+The current linear Alembic head is 0114_research_workflows. Verify the
 revision from scripts/db/alembic/versions rather than copying a transient
 command result. Revisions 0099 through 0104 introduce single-owner controls,
 safe reference registration, control-plane guards, commercial-tenancy removal,
@@ -139,6 +139,16 @@ deduplication keys, policy snapshots and breach context stay unreadable.
 list as every instrument in its asset_classes_allowed rather than every
 instrument; its downgrade restores the 0077 rule and refuses while two active
 bindings on one account rely on that separation.
+
+0113 adds owner-scoped research import receipts, immutable datasets and bars.
+Freezing binds the original bytes, normalized bars, metadata, validation and
+supersession lineage; imports never write runtime prices. 0114 adds immutable
+draft revisions, durable jobs and fenced attempts, registered finite-JSON model
+versions, and a maintenance generation. `vm_research_login` has the narrow
+research grants and cannot change trading authority or the maintenance fence.
+Both migrations lock admission before checking retained evidence on downgrade
+and refuse to discard populated research tables. Preserve the matched snapshot
+instead of deleting evidence to force a downgrade.
 
 For an existing database, configure its actual maintenance authority and use:
 

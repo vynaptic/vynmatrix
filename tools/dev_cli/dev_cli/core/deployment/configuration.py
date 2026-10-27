@@ -25,7 +25,7 @@ DEFAULT_PORT = 5432
 CONTAINER_HOST = "postgres"
 _TOKEN_BYTES = 32
 
-#: The maintenance password plus the six runtime role passwords.
+#: The maintenance password plus the dedicated service-role passwords.
 PASSWORD_KEYS: tuple[str, ...] = (
     "DB_PASSWORD",
     "VM_BACKEND_DB_PASSWORD",
@@ -34,6 +34,7 @@ PASSWORD_KEYS: tuple[str, ...] = (
     "VM_FEEDBACK_DB_PASSWORD",
     "VM_MARKET_DATA_DB_PASSWORD",
     "VM_INDICATOR_DB_PASSWORD",
+    "VM_RESEARCH_DB_PASSWORD",
 )
 #: Service and admin keys. Every one of them fails closed when left empty.
 API_KEY_KEYS: tuple[str, ...] = (
@@ -56,6 +57,7 @@ ROLE_URLS: dict[str, tuple[str, str]] = {
     "FEEDBACK_DATABASE_URL": ("vm_feedback_login", "VM_FEEDBACK_DB_PASSWORD"),
     "MARKET_DATA_DATABASE_URL": ("vm_market_data_login", "VM_MARKET_DATA_DB_PASSWORD"),
     "INDICATOR_DATABASE_URL": ("vm_indicator_login", "VM_INDICATOR_DB_PASSWORD"),
+    "RESEARCH_DATABASE_URL": ("vm_research_login", "VM_RESEARCH_DB_PASSWORD"),
 }
 
 PAPER_EQUITY_KEY = "VM_PAPER_ACCOUNT_INITIAL_EQUITY"
@@ -94,7 +96,7 @@ def parse_equity(value: str) -> Decimal:
 
 
 def generate_secrets() -> dict[str, str]:
-    """Fifteen distinct secrets: fourteen URL-safe tokens and one Fernet key."""
+    """Distinct URL-safe service tokens and one Fernet key."""
     from cryptography.fernet import Fernet  # noqa: PLC0415
 
     values = {key: secrets.token_urlsafe(_TOKEN_BYTES) for key in (*PASSWORD_KEYS, *API_KEY_KEYS)}

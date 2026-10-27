@@ -25,13 +25,17 @@ class _LazyCLI(click.Group):
     """Load the validation-only strategy command only when it is invoked."""
 
     def list_commands(self, ctx: click.Context) -> list[str]:
-        return sorted({*super().list_commands(ctx), "strategy"})
+        return sorted({*super().list_commands(ctx), "strategy", "research"})
 
     def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
         if cmd_name == "strategy":
             from dev_cli.commands.strategy import strategy  # noqa: PLC0415
 
             return strategy
+        if cmd_name == "research":
+            from dev_cli.commands.research import research  # noqa: PLC0415
+
+            return research
         return super().get_command(ctx, cmd_name)
 
 

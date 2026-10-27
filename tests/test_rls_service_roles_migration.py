@@ -405,7 +405,8 @@ def test_local_stack_limits_encrypted_key_ring_to_application_group() -> None:
     assert "SECRETS_MASTER_KEYS" not in services["workers"]["environment"]
 
 
-def test_local_role_plan_requires_six_isolated_groups_without_repair() -> None:
+@pytest.mark.parametrize("service_group", ["vm_backend", "vm_research"])
+def test_local_role_plan_requires_seven_isolated_groups_without_repair(service_group: str) -> None:
     from dev_cli.core.runtime_roles import RuntimeRoleError, plan_runtime_roles
 
     expected_pairs = {
@@ -415,6 +416,7 @@ def test_local_role_plan_requires_six_isolated_groups_without_repair() -> None:
         "vm_feedback_login": "vm_feedback",
         "vm_market_data_login": "vm_market_data",
         "vm_indicator_login": "vm_indicator",
+        "vm_research_login": "vm_research",
     }
 
     catalog = {
@@ -434,10 +436,10 @@ def test_local_role_plan_requires_six_isolated_groups_without_repair() -> None:
     assert plan.create == tuple(expected_pairs)
     assert plan.authenticate == ()
     assert plan.rotate == ()
-    catalog["vm_backend"]["memberships"] = [
+    catalog[service_group]["memberships"] = [
         {"role": "vm_execution", "inherit": True, "set": True, "admin": False}
     ]
-    with pytest.raises(RuntimeRoleError, match="Service group vm_backend"):
+    with pytest.raises(RuntimeRoleError, match=f"Service group {service_group}"):
         plan_runtime_roles(catalog, rotate=False)
 
 

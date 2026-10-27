@@ -166,6 +166,9 @@ from .options_templates import (
 from .provenance import (
     DecisionContext,
 )
+from .research_authoring import ResearchDraft, ResearchDraftRevision
+from .research_data import ResearchBar, ResearchDataset, ResearchImport
+from .research_jobs import ResearchControl, ResearchJob, ResearchJobAttempt, ResearchModelVersion
 
 # ---------------------------------------------------------------------------
 # Section J — Risk, Mandates, Audit & Notifications (extracted to .risk_audit)
@@ -210,6 +213,15 @@ from .strategy_panels import (
 )
 
 __all__ = [
+    "ResearchBar",
+    "ResearchDataset",
+    "ResearchImport",
+    "ResearchDraft",
+    "ResearchDraftRevision",
+    "ResearchControl",
+    "ResearchJob",
+    "ResearchJobAttempt",
+    "ResearchModelVersion",
     "AccountExecutionGeneration",
     # Shared infrastructure
     "ArrayType",

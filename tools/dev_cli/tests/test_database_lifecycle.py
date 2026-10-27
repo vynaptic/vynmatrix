@@ -9,6 +9,24 @@ import pytest
 from dev_cli.core.database_lifecycle import PlatformLifecycle
 
 
+@pytest.fixture(autouse=True)
+def isolated_research_guard(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        PlatformLifecycle,
+        "_new_research_maintenance",
+        lambda _self: SimpleNamespace(
+            begin=lambda: None,
+            complete=lambda: None,
+            abort=lambda: None,
+            after_restore=lambda: None,
+            previous=None,
+            stack_was_active=False,
+        ),
+    )
+
+
 def configured() -> dict[str, str]:
     return {
         "DB_PASSWORD": "unit-only-not-a-deployment-credential",
@@ -52,9 +70,9 @@ def test_bootstrap_stops_and_verifies_before_one_shot_then_starts_groups(tmp_pat
         else command[command.index(str(tmp_path / "docker/docker-compose.stack.yml")) + 1 :]
         for command, _ in calls
     ]
-    assert tails[0] == ["stop", "--timeout", "60", "workers", "application"]
-    assert tails[1] == ["ps", "--status", "running", "--services"]
-    assert tails[2] == ["up", "-d", "--wait", "postgres"]
+    assert tails[0] == ["up", "-d", "--wait", "postgres"]
+    assert tails[1] == ["stop", "--timeout", "60", "workers", "application"]
+    assert tails[2] == ["ps", "--status", "running", "--services"]
     assert tails[3] == ["run", "--rm", "--no-deps", "-T", "bootstrap"]
     assert calls[3][1]["input"] == '{"profile":{}}'
     assert tails[4] == ["up", "-d", "--wait", "application", "workers"]
@@ -144,3 +162,50 @@ def test_commands_that_create_no_container_create_no_directory(
     PlatformLifecycle(tmp_path, configured(), run=run).command(subcommand)
 
     assert not (tmp_path / ".artifacts").exists()
+
+
+def test_research_fence_precedes_stop_and_failed_stage_keeps_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events = []
+
+    class Guard:
+        def begin(self):
+            events.append("fence_and_drain")
+
+        def abort(self):
+            events.append("unlock_keep_fence")
+
+    lifecycle = PlatformLifecycle(
+        tmp_path,
+        configured(),
+        run=lambda command, **_kwargs: (
+            events.append("compose") or CompletedProcess(command, 1, stdout="", stderr="")
+        ),
+    )
+    monkeypatch.setattr(lifecycle, "_new_research_maintenance", Guard)
+    with pytest.raises(RuntimeError):
+        lifecycle.stop_runtime()
+    assert events == ["fence_and_drain", "compose", "unlock_keep_fence"]
+
+
+@pytest.mark.parametrize(
+    ("maintenance", "active", "expected"),
+    [(False, True, "resume"), (False, False, "fenced"), (True, True, "fenced")],
+)
+def test_standalone_backup_resumes_only_its_previously_active_stack(
+    tmp_path, maintenance, active, expected
+):
+    from types import SimpleNamespace
+
+    events = []
+    lifecycle = PlatformLifecycle(tmp_path, configured())
+    lifecycle._research = SimpleNamespace(
+        previous={"maintenance": maintenance},
+        stack_was_active=active,
+        complete=lambda: events.append("resume"),
+        abort=lambda: events.append("fenced"),
+    )
+    lifecycle.finish_standalone_backup()
+    assert events == [expected]
+    assert lifecycle._research is None

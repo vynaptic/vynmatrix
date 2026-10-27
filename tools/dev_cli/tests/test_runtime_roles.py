@@ -32,12 +32,12 @@ def _catalog():
     return catalog
 
 
-def test_existing_six_roles_are_verified_without_password_replacement():
+def test_all_service_roles_are_verified_without_password_replacement():
     from dev_cli.core.runtime_roles import plan_runtime_roles
 
     plan = plan_runtime_roles(_catalog(), rotate=False)
     assert plan.create == ()
-    assert len(plan.authenticate) == 6
+    assert len(plan.authenticate) == 7
     assert plan.rotate == ()
 
 
@@ -48,7 +48,7 @@ def test_missing_roles_are_created_and_existing_roles_preserved():
     del catalog["vm_execution_login"]
     plan = plan_runtime_roles(catalog, rotate=False)
     assert plan.create == ("vm_execution_login",)
-    assert len(plan.authenticate) == 5
+    assert len(plan.authenticate) == 6
 
 
 @pytest.mark.parametrize(
@@ -77,7 +77,7 @@ def test_rotation_is_explicit_and_does_not_repair_invalid_groups():
     from dev_cli.core.runtime_roles import RuntimeRoleError, plan_runtime_roles
 
     plan = plan_runtime_roles(_catalog(), rotate=True)
-    assert len(plan.rotate) == 6
+    assert len(plan.rotate) == 7
     assert plan.authenticate == ()
     catalog = _catalog()
     catalog["vm_backend"]["rolsuper"] = True
@@ -143,8 +143,8 @@ def test_provisioning_reauthenticates_existing_passwords_and_performs_no_ddl(pro
         "postgresql://migration:fixture@localhost/test",
         _passwords(),
     )
-    assert result == {"created": 0, "verified": 6, "rotated": 0}
-    assert events.count("authenticate") == 7
+    assert result == {"created": 0, "verified": 7, "rotated": 0}
+    assert events.count("authenticate") == 8
     assert not any(isinstance(event, tuple) for event in events)
     assert events[-1] == "commit"
 
@@ -207,10 +207,10 @@ def test_explicit_rotation_changes_passwords_in_one_transaction(provisioning):
         _passwords(),
         rotate=True,
     )
-    assert result == {"created": 0, "verified": 0, "rotated": 6}
+    assert result == {"created": 0, "verified": 0, "rotated": 7}
     assert events.count("authenticate") == 1
     assert (
-        len([event for event in events if isinstance(event, tuple) and event[0] == "rotate"]) == 6
+        len([event for event in events if isinstance(event, tuple) and event[0] == "rotate"]) == 7
     )
     assert events[-1] == "commit"
 

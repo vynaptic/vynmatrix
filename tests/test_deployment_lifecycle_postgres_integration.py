@@ -34,7 +34,7 @@ from lib_application.db.session import create_engine_for_env, dispose_engine, ge
 pytestmark = pytest.mark.integration
 _ROOT = Path(__file__).resolve().parents[1]
 _PREFIX = "deployment_lifecycle_test"
-_HEAD = "0112_sec_filing_gate_storage"
+_HEAD = "0114_research_workflows"
 
 
 def _admin_sql(url: str, statement: sql.Composable) -> None:

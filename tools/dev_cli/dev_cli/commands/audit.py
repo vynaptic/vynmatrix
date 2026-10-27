@@ -1397,7 +1397,7 @@ def check_broker_capability_catalogue(root: Path, report: AuditReport) -> None:
 FIRST_PARTY_IMPORT_RE = re.compile(r"^\s*(?:from|import)\s+(lib_[a-z0-9_]+)", re.MULTILINE)
 #: Quoted first-party entries inside ``install_requires`` (both spellings:
 #: pip normalizes ``lib-common`` and ``lib_common`` identically per PEP 503).
-SETUP_FIRST_PARTY_RE = re.compile(r"\"(lib[-_][a-z0-9_]+)\s*[\">=<~!]")
+SETUP_FIRST_PARTY_RE = re.compile(r"\"(lib[-_][a-z0-9_]+)(?:\[[a-zA-Z0-9_, .-]+\])?\s*[\">=<~!]")
 _FIRST_PARTY_SCAN_EXCLUDES = ("tests", "build", "__pycache__")
 
 

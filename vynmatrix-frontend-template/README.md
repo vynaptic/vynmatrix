@@ -1,8 +1,8 @@
 # Vynmatrix frontend
 
 Standalone Next.js owner UI for the existing backend. The supported pages read
-recorded backend data: Overview, Strategies, Profit & Loss, Settings, and Activity.
-Settings currently displays configuration; it does not change trading authority.
+recorded backend data: Overview, Strategies, Profit & Loss, Settings, Activity,
+Market Data, ML Lab, New Strategy and Paper Trading.
 The backend continues to enforce ownership, releases, execution modes, and risk.
 
 ## Run locally
@@ -35,10 +35,33 @@ is not installed or served by the backend's current deployment workflow.
 - Off, Close only, Trading, and Custom remain distinct binding modes.
 - The connectivity indicator reports the last API request. It does not certify
   database or worker health. Execution context comes from backend safety facts.
-- ML Lab, Paper Trading, Market Data, and Strategy New show an unavailable
-  notice until their backend integration exists.
+- Market Data validates CSV imports into retained receipts, freezes immutable
+  datasets, browses recorded feeds and exports exact stored data. CSV columns
+  are `ts,open,high,low,close,volume`; optional `bar_open,bar_close` must appear
+  together. Supply the actual instrument, source, provenance, quote currency,
+  timeframe, timestamp semantics and adjustment policy. Eligibility refusals
+  remain visible; an imported dataset does not modify runtime market data.
+- ML Lab trains a real L2 return regression on a frozen dataset. It uses causal
+  OHLCV features, chronological train/validation/test splits with purge and
+  embargo, at least 1,000 usable observations and 200 test observations. Inspect
+  forecast metrics against both baselines, register a successful model, download
+  finite JSON and run compatible recorded-data predictions after its cutoff.
+- New Strategy saves immutable Python/config revisions, validates canonical
+  `PureSignalStrategy` implementations and runs historical backtests through the
+  canonical engine. Select an optional registered model with the model template.
+  The initial simulator supports funded long-only spot crypto, cash equities
+  and ETFs in their recorded quote currency. Costs and terminal exposure remain
+  explicit; research success does not release a strategy for runtime execution.
+- Research jobs require the [host supervisor and combined runtime](../docs/DEPLOYMENT.md#supported-topology).
+  They retain frozen inputs, lineage, results and failed attempts. Cancellation
+  stops the exact sandbox; retry creates a new attempt. Page refreshes preserve
+  jobs and revisions. A stopped supervisor leaves queued jobs visibly pending.
+- Paper Trading creates local paper accounts and shows recorded balances,
+  positions, fills and binding readiness. Confirmed expected-value changes use
+  existing release, overlap and risk gates. Off does not liquidate positions;
+  Close only permits exits. There is no direct order or account-reset action.
 - Strategy search filters the recorded catalogue. Page search supports Ctrl/Cmd+K;
-  Settings section links expose read-only account, binding, and risk data.
+  Settings section links expose account, binding, and risk controls.
 - P&L period controls select the daily equity history window. Equity shows its
   recorded observation time; realized P&L is labeled cumulative separately.
 

@@ -11,6 +11,8 @@ setup(
     python_requires=">=3.11",
     install_requires=[
         "lib-common>=0.1.0",
+        "lib-data>=0.1.0",
+        "lib-strategy[research]>=0.1.0",
         "lib-application>=0.1.0",
         "lib-infrastructure>=0.1.0",
         "fastapi>=0.140.0,<1.0.0",

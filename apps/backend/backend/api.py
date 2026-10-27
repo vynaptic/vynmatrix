@@ -61,6 +61,7 @@ from lib_common.config_validation import BrokerType, ExecutionMode, normalize_br
 from lib_common.env_utils import parse_bool_env
 from lib_common.logging import get_logger
 
+from .research_api import register_research
 from .ui_api import register_ui
 
 logger = get_logger(__name__)
@@ -612,6 +613,12 @@ def create_app(  # noqa: PLR0915
         require_admin=_require_admin,
     )
     register_ui(app, session_factory=session_factory, require_admin=_require_admin)
+    register_research(
+        app,
+        session_factory=session_factory,
+        require_admin=_require_admin,
+        secrets_provider=secrets_provider,
+    )
 
     @app.get("/bindings", dependencies=[Depends(_require_admin)])
     def list_bindings() -> list[BindingOut]:
