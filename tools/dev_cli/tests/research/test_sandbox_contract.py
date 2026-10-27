@@ -28,8 +28,17 @@ def inspection():
         "Config": {
             "User": "vmuser",
             "Env": [
+                "PATH=/opt/service/bin:/opt/runtime/bin:/usr/local/bin:/usr/bin:/bin",
+                "LANG=C.UTF-8",
+                "GPG_KEY=public-python-release-key",
+                "PYTHON_VERSION=3.11.13",
+                "PYTHON_SHA256=" + "c" * 64,
+                "PYTHONDONTWRITEBYTECODE=1",
+                "PYTHONUNBUFFERED=1",
+                "PYTHONPATH=/opt/service/lib/python3.11/site-packages:/app",
                 "EXECUTION_MODE=paper",
                 "EXECUTION_ENGINE_ALLOW_LIVE=false",
+                "RUN_MODE=paper",
                 "OPENBLAS_NUM_THREADS=1",
                 "OMP_NUM_THREADS=1",
                 "MKL_NUM_THREADS=1",
@@ -103,11 +112,18 @@ def test_weakened_isolation_is_refused(field, value):
         module().verify_container(actual, spec())
 
 
-def test_credentials_and_another_job_container_are_refused():
+@pytest.mark.parametrize(
+    "name",
+    ["BACKEND_ADMIN_API_KEY", "RESEARCH_DATABASE_URL", "PYTHON_SHA256_SECRET", "PYTHON_UNKNOWN"],
+)
+def test_unapproved_environment_names_are_refused(name):
     actual = inspection()
-    actual["Config"]["Env"].append("BACKEND_ADMIN_API_KEY=not-a-real-key")
+    actual["Config"]["Env"].append(f"{name}=forbidden-test-value")
     with pytest.raises(ValueError, match="environment"):
         module().verify_container(actual, spec())
+
+
+def test_another_job_container_is_refused():
     actual = inspection()
     actual["Config"]["Labels"]["com.vynmatrix.research.job"] = GENERATION
     with pytest.raises(ValueError, match="identity"):

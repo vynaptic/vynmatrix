@@ -44,6 +44,7 @@ _ENVIRONMENT = frozenset(
         "PATH",
         "PYTHONPATH",
         "PYTHON_VERSION",
+        "PYTHON_SHA256",  # Public source checksum inherited from the pinned Python base image.
         "PYTHON_PIP_VERSION",
         "PYTHON_SETUPTOOLS_VERSION",
         "LANG",
