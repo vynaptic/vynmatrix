@@ -125,7 +125,7 @@ describe("backend-shaped monetary page responses", () => {
     render(<OverviewPage />);
     await screen.findByRole("heading", { name: /Owner/ });
 
-    const strategies = metric("Active strategies");
+    const strategies = metric("Active bindings");
     expect(strategies.querySelector(".metric-value")?.textContent).toBe("Unavailable");
     expect(strategies.querySelector(".metric-change")?.textContent).toBe("Bindings unavailable");
   });

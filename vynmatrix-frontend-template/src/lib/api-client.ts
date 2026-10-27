@@ -91,7 +91,16 @@ async function apiRequest<T>(
 
   if (!response.ok) {
     if (response.status === 401 && requestKey && requestKey === getAdminKey()) clearAdminKey();
-    const error = await response.text().catch(() => "Unknown error");
+    let error = `Request failed (${response.status})`;
+    const raw = await response.text().catch(() => "");
+    try {
+      const body: unknown = JSON.parse(raw);
+      if (body && typeof body === "object" && "detail" in body && typeof body.detail === "string") {
+        error = body.detail;
+      }
+    } catch {
+      if (raw.trim() && !raw.trimStart().startsWith("<")) error = raw;
+    }
     throw new ApiError(response.status, error);
   }
 
