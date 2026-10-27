@@ -948,3 +948,148 @@ def test_verified_builtin_daemon_seccomp_allows_declared_launch(monkeypatch):
     monkeypatch.setattr(process.subprocess, "Popen", lambda *_args, **_kwargs: child)
     assert docker.start(["docker", "compose", "run", "research"]) is child
     assert calls == [["info", "--format", "{{json .SecurityOptions}}"]]
+
+
+def inventory_row(identity, service, *, project="vynmatrix", job=False):
+    labels = {"com.docker.compose.service": service}
+    if project is not None:
+        labels["com.docker.compose.project"] = project
+    if job:
+        labels.update(
+            {"com.vynmatrix.research.job": JOB, "com.vynmatrix.research.generation": GENERATION}
+        )
+    return {
+        "Id": identity * 64,
+        "Image": IMAGE,
+        "Name": "/" + SPEC.container_name if job else "/unit-" + identity,
+        "Config": {
+            "Labels": labels,
+            "Env": ["PLATFORM_APPLICATION_GROUP=all"],
+            "Cmd": ["python", "-m", "scripts.run_platform", "all"],
+        },
+    }
+
+
+def inventory_backend(monkeypatch, rows, *, ignore_filters=False):
+    backend, calls, inspected, removed = module("process").DockerBackend(), [], [], []
+
+    def run(arguments):
+        assert arguments[0] == "ps", "Only mocked read-only inventory is authorized"
+        calls.append(arguments)
+        selected = list(rows)
+        if not ignore_filters:
+            for index, argument in enumerate(arguments):
+                if argument != "--filter":
+                    continue
+                filter_value = arguments[index + 1]
+                assert filter_value.startswith("label=")
+                key, separator, value = filter_value.removeprefix("label=").partition("=")
+                selected = [
+                    row
+                    for row in selected
+                    if key in row["Config"]["Labels"]
+                    and (not separator or row["Config"]["Labels"][key] == value)
+                ]
+        return SimpleNamespace(
+            returncode=0, stdout="\n".join(row["Id"] for row in selected).encode(), stderr=b""
+        )
+
+    def inspect(identity):
+        inspected.append(identity)
+        return next((row for row in rows if row["Id"] == identity), None)
+
+    def remove(identity):
+        removed.append(identity)
+        rows[:] = [row for row in rows if row["Id"] != identity]
+
+    monkeypatch.setattr(backend, "_run", run)
+    monkeypatch.setattr(backend, "inspect", inspect)
+    monkeypatch.setattr(backend, "remove", remove)
+    return backend, calls, inspected, removed
+
+
+def test_other_projects_do_not_consume_declared_installation_capacity(monkeypatch):
+    owned = [inventory_row("0", "postgres"), inventory_row("1", "application")]
+    foreign = [
+        inventory_row(str(index), "parallel-work", project="another-project")
+        for index in range(2, 6)
+    ]
+    backend, calls, inspected, removed = inventory_backend(monkeypatch, [*owned, *foreign])
+    module("worker").verify_capacity(backend, IMAGE)
+    assert set(inspected) == {row["Id"] for row in owned}
+    assert "label=com.docker.compose.project=vynmatrix" in calls[0]
+    assert removed == []
+
+
+def test_more_than_three_own_project_containers_remains_refused(monkeypatch):
+    rows = [
+        inventory_row(str(index), service)
+        for index, service in enumerate(("postgres", "application", "research", "workers"))
+    ]
+    backend, _calls, inspected, removed = inventory_backend(monkeypatch, rows)
+    with pytest.raises(ValueError, match="three-container"):
+        backend.running()
+    assert inspected == []
+    assert removed == []
+
+
+@pytest.mark.parametrize("service", ["unrecognized-service", None])
+def test_unknown_or_unlabelled_own_service_cannot_grant_claim_capacity(monkeypatch, service):
+    rows = [inventory_row("0", "postgres"), inventory_row("1", service)]
+    backend, _calls, _inspected, removed = inventory_backend(monkeypatch, rows)
+    with pytest.raises(ValueError, match="combined"):
+        module("worker").verify_capacity(backend, IMAGE)
+    assert removed == []
+
+
+def test_unlabelled_source_image_cannot_supply_application_claim_authority(monkeypatch):
+    rows = [inventory_row("0", "postgres"), inventory_row("1", "application", project=None)]
+    backend, _calls, inspected, removed = inventory_backend(monkeypatch, rows)
+    with pytest.raises(ValueError, match="combined"):
+        module("worker").verify_capacity(backend, IMAGE)
+    assert inspected == [rows[0]["Id"]]
+    assert removed == []
+
+
+@pytest.mark.parametrize("inventory", ["running", "sandboxes"])
+@pytest.mark.parametrize("project", ["another-project", None])
+def test_inventory_rechecks_project_if_docker_ignores_filters(monkeypatch, inventory, project):
+    backend, _calls, _inspected, removed = inventory_backend(
+        monkeypatch,
+        [inventory_row("2", "research", project=project, job=True)],
+        ignore_filters=True,
+    )
+    with pytest.raises(ValueError, match="project"):
+        getattr(backend, inventory)()
+    assert removed == []
+
+
+def test_foreign_research_labels_never_authorize_reconciliation_cleanup(monkeypatch):
+    worker = module("worker")
+    foreign = inventory_row("2", "research", project="another-project", job=True)
+    backend, calls, inspected, removed = inventory_backend(monkeypatch, [foreign])
+    monkeypatch.setattr(worker.research_jobs, "reconcile_expired_attempts", lambda _session: [])
+    lookup = []
+
+    def scalar(_statement):
+        lookup.append(True)
+        return SimpleNamespace(status="interrupted", bundle_hash="b" * 64, generation=GENERATION)
+
+    session = SimpleNamespace(scalar=scalar)
+    store = worker.ResearchStore(None, worker_id=JOB, image_hash=IMAGE, bundle_hash="b" * 64)
+    monkeypatch.setattr(store, "transaction", lambda operation: operation(session, "owner"))
+    store.reconcile(backend)
+    assert "label=com.docker.compose.project=vynmatrix" in calls[0]
+    assert lookup == []
+    assert inspected == []
+    assert removed == []
+
+
+@pytest.mark.parametrize("service", ["application", "unrecognized-service", None])
+def test_research_job_labels_do_not_authorize_another_own_service(monkeypatch, service):
+    backend, _calls, _inspected, removed = inventory_backend(
+        monkeypatch, [inventory_row("2", service, job=True)]
+    )
+    with pytest.raises(ValueError, match="service"):
+        backend.sandboxes()
+    assert removed == []

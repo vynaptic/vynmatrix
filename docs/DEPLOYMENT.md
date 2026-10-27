@@ -93,7 +93,9 @@ the installation and use the explicit [DATABASE.md](DATABASE.md) restore path.
 | Research | PostgreSQL, one all application group, at most one research sandbox | Isolated historical jobs |
 | Bootstrap maintenance | PostgreSQL plus the declared bootstrap job while application groups are stopped | Fresh install or controlled bootstrap repeat |
 
-The limit is three running containers including PostgreSQL. The bootstrap job
+The limit is three running containers in the `vynmatrix` Compose project,
+including PostgreSQL. Capacity checks and research cleanup use that project
+identity, so separate projects can continue their own work. The bootstrap job
 uses a vacated application slot and exits before runtime groups restart. Bounded
 jobs, diagnostics, and administrative actions run with compose exec in an
 existing group; they do not justify another container.

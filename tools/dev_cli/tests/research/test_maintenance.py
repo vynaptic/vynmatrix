@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -66,6 +67,8 @@ class Docker:
                     "Labels": {
                         LABEL_JOB: str(uuid4()) if unknown else JOB,
                         LABEL_GENERATION: GENERATION,
+                        "com.docker.compose.project": "vynmatrix",
+                        "com.docker.compose.service": "research",
                     }
                 },
             }
@@ -188,3 +191,69 @@ def test_session_barrier_orders_launch_before_control_and_releases_reverse(monke
         ("release", "vynmatrix.research.control"),
         ("release", "vynmatrix.research.launch"),
     ]
+
+
+def test_maintenance_drains_only_its_project_despite_external_research_labels(monkeypatch) -> None:
+    from dev_cli.core.research.process import DockerBackend
+
+    own_sandbox = Docker().rows[0]
+    base = [
+        {
+            "Id": str(index) * 64,
+            "Image": IMAGE,
+            "Config": {
+                "Labels": {
+                    "com.docker.compose.project": "vynmatrix",
+                    "com.docker.compose.service": service,
+                }
+            },
+        }
+        for index, service in enumerate(("postgres", "application"))
+    ]
+    foreign = [
+        {
+            "Id": str(index) * 64,
+            "Image": IMAGE,
+            "Config": {
+                "Labels": {
+                    "com.docker.compose.project": "another-project",
+                    "com.docker.compose.service": "research",
+                    LABEL_JOB: JOB,
+                    LABEL_GENERATION: GENERATION,
+                }
+            },
+        }
+        for index in range(2, 6)
+    ]
+    rows, removed = [*base, own_sandbox, *foreign], []
+    docker = DockerBackend()
+
+    def run(arguments):
+        assert arguments[0] == "ps", "Only mocked read-only inventory is authorized"
+        selected = rows
+        if "label=com.docker.compose.project=vynmatrix" in arguments:
+            selected = [
+                row
+                for row in rows
+                if row["Config"]["Labels"]["com.docker.compose.project"] == "vynmatrix"
+            ]
+        return SimpleNamespace(
+            returncode=0, stdout="\n".join(row["Id"] for row in selected).encode(), stderr=b""
+        )
+
+    def remove(identity):
+        removed.append(identity)
+        rows[:] = [row for row in rows if row["Id"] != identity]
+
+    monkeypatch.setattr(docker, "_run", run)
+    monkeypatch.setattr(
+        docker,
+        "inspect",
+        lambda identity: next((row for row in rows if row["Id"] == identity), None),
+    )
+    monkeypatch.setattr(docker, "remove", remove)
+    store = Store()
+    guard(store, docker).begin()
+    assert removed == [CONTAINER]
+    assert all(row in rows for row in foreign)
+    assert store.interrupted

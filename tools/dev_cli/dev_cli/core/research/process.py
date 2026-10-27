@@ -29,6 +29,9 @@ from .sandbox import (
 
 MAX_CONTAINERS = 3
 MAX_ORPHANS = 100
+_COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
+_COMPOSE_PROJECT = "vynmatrix"
+_PROJECT_FILTER = f"label={_COMPOSE_PROJECT_LABEL}={_COMPOSE_PROJECT}"
 
 
 def _refuse(message: str) -> None:
@@ -48,6 +51,13 @@ def encode_message(value: dict[str, Any]) -> bytes:
 def _nonfinite(_value: str) -> None:
     msg = "Research protocol requires finite JSON"
     raise ValueError(msg)
+
+
+def _verify_project(actual: dict[str, Any]) -> None:
+    labels = actual.get("Config", {}).get("Labels") or {}
+    if labels.get(_COMPOSE_PROJECT_LABEL) != _COMPOSE_PROJECT:
+        msg = "Docker inventory returned a container outside the declared Compose project"
+        raise ValueError(msg)
 
 
 class DockerBackend:
@@ -72,7 +82,7 @@ class DockerBackend:
         return value[0]
 
     def running(self) -> list[dict[str, Any]]:
-        response = self._run(["ps", "--quiet", "--no-trunc"])
+        response = self._run(["ps", "--quiet", "--no-trunc", "--filter", _PROJECT_FILTER])
         if response.returncode:
             msg = "Docker capacity inspection unavailable"
             raise ValueError(msg)
@@ -84,13 +94,23 @@ class DockerBackend:
         for container_id in ids:
             actual = self.inspect(container_id)
             if actual is not None:
+                _verify_project(actual)
                 rows.append(actual)
         return rows
 
     def sandboxes(self) -> list[dict[str, Any]]:
-        """Include exited sandboxes, whose reserved name would block a retry."""
+        """Include this project's exited sandboxes, whose names would block retries."""
         response = self._run(
-            ["ps", "--all", "--quiet", "--no-trunc", "--filter", f"label={LABEL_JOB}"]
+            [
+                "ps",
+                "--all",
+                "--quiet",
+                "--no-trunc",
+                "--filter",
+                _PROJECT_FILTER,
+                "--filter",
+                f"label={LABEL_JOB}",
+            ]
         )
         if response.returncode:
             msg = "Docker research reconciliation inspection unavailable"
@@ -103,6 +123,12 @@ class DockerBackend:
         for container_id in ids:
             actual = self.inspect(container_id)
             if actual is not None:
+                _verify_project(actual)
+                if (actual.get("Config", {}).get("Labels") or {}).get(
+                    "com.docker.compose.service"
+                ) != "research":
+                    msg = "Docker research inventory returned a container from another service"
+                    raise ValueError(msg)
                 result.append(actual)
         return result
 

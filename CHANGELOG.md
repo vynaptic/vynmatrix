@@ -16,6 +16,8 @@ Git history.
 - `vmdev research worker` runs submitted strategies in a bounded, network-free
   declared sandbox. Maintenance fences job admission and sandbox launch before
   snapshots, migrations and restores; interrupted attempts require explicit retry.
+- Research capacity and cleanup are scoped to this installation's Compose
+  project, preserving its three-container limit while other projects run.
 - A standalone frontend for the owner UI, with currency-preserving monetary
   displays, explicit unavailable data, authenticated access, and frontend
   tests, lint, and build checks enforced by the required CI gate.
