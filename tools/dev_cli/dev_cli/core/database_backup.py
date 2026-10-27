@@ -73,8 +73,10 @@ class DatabaseBackup:
         """Create a new owner-only custom archive, including grants and durable history."""
         descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         completed = False
+        owned_fence = False
         try:
             with os.fdopen(descriptor, "wb") as stream:
+                owned_fence = self.lifecycle.begin_research_maintenance()
                 result = self.run(
                     self._command("pg_dump", "--format=custom"),
                     cwd=self.lifecycle.root,
@@ -85,42 +87,52 @@ class DatabaseBackup:
                 )
             _require_backup_success(result.returncode)
             completed = True
+            if owned_fence:
+                self.lifecycle.finish_standalone_backup()
         finally:
             if not completed:
                 target.unlink(missing_ok=True)
+                if owned_fence:
+                    self.lifecycle.abort_research_maintenance()
 
     def restore(self, source: Path) -> None:
         """Replace only the explicit target in one transaction, keeping runtime stopped."""
-        # pg_restore inherits the OS descriptor, so validation must not read ahead
-        # into a Python buffer whose seek would leave that descriptor advanced.
-        with source.open("rb", buffering=0) as stream:
-            if stream.read(5) != b"PGDMP":
-                msg = "Restore requires a PostgreSQL custom archive"
-                raise ValueError(msg)
-            stream.seek(0)
-            self.lifecycle.stop_runtime()
-            result = self.run(
-                self._command(
-                    "pg_restore",
-                    "--exit-on-error",
-                    "--single-transaction",
-                    "--clean",
-                    "--if-exists",
-                    "--no-owner",
-                ),
-                cwd=self.lifecycle.root,
-                env=self.env,
-                stdin=stream,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-        if result.returncode:
-            msg = (
-                "PostgreSQL restore failed and its transaction was rolled back; "
-                "runtime remains stopped"
-            )
-            raise RuntimeError(msg)
+        # Validate the exact archive before any runtime or database mutation.
+        owned_fence = False
+        try:
+            with source.open("rb", buffering=0) as stream:
+                if stream.read(5) != b"PGDMP":
+                    msg = "Restore requires a PostgreSQL custom archive"
+                    raise ValueError(msg)
+                stream.seek(0)
+                owned_fence = self.lifecycle.begin_research_maintenance()
+                self.lifecycle.stop_runtime()
+                result = self.run(
+                    self._command(
+                        "pg_restore",
+                        "--exit-on-error",
+                        "--single-transaction",
+                        "--clean",
+                        "--if-exists",
+                        "--no-owner",
+                    ),
+                    cwd=self.lifecycle.root,
+                    env=self.env,
+                    stdin=stream,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+            if result.returncode:
+                msg = (
+                    "PostgreSQL restore failed and its transaction was rolled back; "
+                    "runtime remains stopped"
+                )
+                raise RuntimeError(msg)
+            self.lifecycle.refence_research_maintenance()
+        finally:
+            if owned_fence:
+                self.lifecycle.abort_research_maintenance()
 
     def connect(self) -> None:
         """Open an explicitly privileged maintenance console in an existing slot."""

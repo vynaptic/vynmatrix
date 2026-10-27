@@ -31,6 +31,7 @@ class PlatformLifecycle:
         self.root = root
         self.env = dict(environment)
         self.run = run
+        self._research: Any = None
         if (
             self.env.get("EXECUTION_MODE", "paper") != "paper"
             or self.env.get("EXECUTION_ENGINE_ALLOW_LIVE", "false").lower() != "false"
@@ -101,23 +102,80 @@ class PlatformLifecycle:
         for relative in CREATED_BIND_SOURCES:
             (self.root / relative).mkdir(exist_ok=True)
 
+    def _new_research_maintenance(self) -> Any:
+        from dev_cli.core.research.maintenance import (  # noqa: PLC0415
+            MaintenanceStore,
+            ResearchMaintenance,
+        )
+
+        return ResearchMaintenance(store=MaintenanceStore(self.env))
+
+    def begin_research_maintenance(self) -> bool:
+        """Return ownership so nested backup/restore cannot release an outer fence."""
+        if self._research is not None:
+            return False
+        guard = self._new_research_maintenance()
+        guard.begin()
+        self._research = guard
+        return True
+
+    def refence_research_maintenance(self) -> None:
+        if self._research is not None:
+            self._research.after_restore()
+
+    def complete_research_maintenance(self) -> None:
+        guard, self._research = self._research, None
+        if guard is not None:
+            guard.complete()
+
+    def abort_research_maintenance(self) -> None:
+        guard, self._research = self._research, None
+        if guard is not None:
+            guard.abort()
+
+    def finish_standalone_backup(self) -> None:
+        guard = self._research
+        if guard is not None and (
+            guard.previous is None or (not guard.previous["maintenance"] and guard.stack_was_active)
+        ):
+            self.complete_research_maintenance()
+        else:
+            self.abort_research_maintenance()
+
     def stop_runtime(self) -> None:
-        self.command("stop", "--timeout", "60", "workers", "application")
-        running = set(self.command("ps", "--status", "running", "--services").split())
-        if running - {"postgres"}:
-            msg = (
-                "Unexpected running services remain; "
-                "stop or explicitly retire them before maintenance"
-            )
-            raise ValueError(msg)
+        self.begin_research_maintenance()
+        succeeded = False
+        try:
+            self.command("stop", "--timeout", "60", "workers", "application")
+            running = set(self.command("ps", "--status", "running", "--services").split())
+            if running - {"postgres"}:
+                msg = (
+                    "Unexpected running services remain; "
+                    "stop or explicitly retire them before maintenance"
+                )
+                raise ValueError(msg)
+            succeeded = True
+        finally:
+            if not succeeded:
+                self.abort_research_maintenance()
 
     def start_runtime(self) -> None:
         services = ["application", "workers"] if self.group == "application" else ["application"]
         self.command("up", "-d", "--wait", *services)
 
     def bootstrap(self, owner_input: str, *, start_runtime: bool) -> None:
-        self.stop_runtime()
-        self.command("up", "-d", "--wait", "postgres")
-        self.command("run", "--rm", "--no-deps", "-T", "bootstrap", input_text=owner_input)
-        if start_runtime:
-            self.start_runtime()
+        succeeded = False
+        try:
+            self.command("up", "-d", "--wait", "postgres")
+            self.stop_runtime()
+            self.command("run", "--rm", "--no-deps", "-T", "bootstrap", input_text=owner_input)
+            self.refence_research_maintenance()
+            if start_runtime:
+                self.start_runtime()
+                self.complete_research_maintenance()
+            else:
+                self.abort_research_maintenance()
+            succeeded = True
+        finally:
+            if not succeeded:
+                self.abort_research_maintenance()

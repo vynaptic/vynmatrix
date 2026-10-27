@@ -68,7 +68,7 @@ export function subscribeAuthentication(onChange: () => void): () => void {
 /**
  * Fetch wrapper with admin key authentication
  */
-async function apiRequest<T>(
+export async function apiRequest<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {

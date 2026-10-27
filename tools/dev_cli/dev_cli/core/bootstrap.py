@@ -99,7 +99,7 @@ class BootstrapSettings:
         if len(set(passwords.values())) != len(PASSWORD_ENV) or (
             set(passwords.values()) & {admin.password, migration.password}
         ):
-            msg = "Six runtime passwords must be distinct from each other and maintenance passwords"
+            msg = "Service passwords must be distinct from each other and maintenance passwords"
             raise ValueError(msg)
         return cls(admin, migration, passwords)
 

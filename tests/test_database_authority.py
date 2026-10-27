@@ -68,6 +68,24 @@ def test_backend_role_accepts_only_dedicated_login(monkeypatch):
     authority.require_backend_database_role(object())
 
 
+def test_research_role_membership_cannot_be_used_as_maintenance_authority(monkeypatch):
+    from lib_application.services import database_authority as authority
+
+    facts = _backend_facts() | {
+        "actor": "vm_maintenance",
+        "login": "vm_maintenance",
+        "memberships": ["vm_research"],
+        "effective_memberships": ["vm_research"],
+        "service_roles": ["vm_research"],
+        "membership_edges": [
+            {"member": "vm_maintenance", "role": "vm_research", "inherit": True, "set": True}
+        ],
+    }
+    monkeypatch.setattr(authority, "_facts", lambda session: facts)
+    with pytest.raises(authority.DatabaseAuthorityError):
+        authority.require_maintenance_database_role(object())
+
+
 def test_maintenance_requires_explicit_table_and_schema_owner(monkeypatch):
     from lib_application.services import database_authority as authority
 

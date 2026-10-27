@@ -163,6 +163,7 @@ apps:
       retains the vm_backend database role (see config/containers.yaml).
     dependencies:
     - lib_common
+    - lib_data
     - lib_strategy
     - lib_application
     - lib_infrastructure

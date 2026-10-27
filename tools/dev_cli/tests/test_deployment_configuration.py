@@ -13,12 +13,12 @@ from dev_cli.core.deployment import checks, configuration, environment
 _RESERVED = "p@ss:w/rd?#[]&=+ x"
 
 
-def test_fifteen_distinct_secrets_are_generated() -> None:
+def test_distinct_service_secrets_are_generated() -> None:
     generated = configuration.generate_secrets()
 
     assert set(generated) == set(configuration.SECRET_KEYS)
-    assert len(configuration.SECRET_KEYS) == 15
-    assert len(set(generated.values())) == 15
+    assert len(configuration.SECRET_KEYS) == 16
+    assert len(set(generated.values())) == 16
     assert all(len(value) >= 32 for value in generated.values())
     # The ring is a Fernet key, which is what the secrets backend accepts.
     from cryptography.fernet import Fernet

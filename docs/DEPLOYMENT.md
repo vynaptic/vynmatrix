@@ -90,12 +90,29 @@ the installation and use the explicit [DATABASE.md](DATABASE.md) restore path.
 | --- | ---: | --- |
 | Split | PostgreSQL, application, workers | Default local runtime |
 | Combined | PostgreSQL, one all application group | Compact local runtime |
+| Research | PostgreSQL, one all application group, at most one research sandbox | Isolated historical jobs |
 | Bootstrap maintenance | PostgreSQL plus the declared bootstrap job while application groups are stopped | Fresh install or controlled bootstrap repeat |
 
 The limit is three running containers including PostgreSQL. The bootstrap job
 uses a vacated application slot and exits before runtime groups restart. Bounded
 jobs, diagnostics, and administrative actions run with compose exec in an
 existing group; they do not justify another container.
+
+Research requires the combined layout (`PLATFORM_APPLICATION_GROUP=all`, empty
+`COMPOSE_PROFILES`) and the same stamped platform image for application and
+sandbox. After an authorized supported upgrade, run `vmdev research worker` in
+the prepared host tooling environment; `--once` processes at most one job.
+It freezes its trusted code and dependency fingerprints under
+`.artifacts/research/bundles/`. Attempt diagnostics remain private under
+`.artifacts/research/attempts/`. Stop the foreground supervisor with Ctrl+C.
+Do not start the `research` Compose profile manually: the supervisor verifies
+capacity, image identity and containment before sending submitted source.
+
+The sandbox has no network, host mounts, credentials or Docker socket. It runs
+as a non-root user with a read-only filesystem, a 64 MiB temporary filesystem,
+one CPU, 1 GiB memory, 32 processes and a five-minute wall limit. Builtin seccomp
+and `no-new-privileges` are required. The backend only enqueues durable jobs;
+the host supervisor alone controls sandbox lifecycle.
 
 An authenticated IBKR gateway is an external dependency. If an owner approves a
 gateway container, it must use the combined application layout and consumes the
@@ -121,6 +138,12 @@ it together with the build, snapshot, record and verification stages. Both stop
 application groups, verify the maintenance window, run the declared job, remove
 it, and start only selected groups. The full database, role, migration, repeat,
 backup, and restore contract is in [DATABASE.md](DATABASE.md).
+
+These maintenance paths fence research writes and launches, stop and verify
+recorded sandboxes, and retain interrupted attempts before snapshot or DDL.
+Finishing maintenance changes the generation so restored or delayed workers
+cannot publish old results. A refused drain leaves maintenance fenced for
+inspection; resuming does not retry an interrupted job.
 
 The application and workers groups each run a supervisor that starts and stops
 their child processes together. Startup waits for PostgreSQL and selected child

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect, useRef } from "react";
 import {
-  Activity, Blocks, ChevronDown, Command, LayoutDashboard, Menu,
+  Activity, Blocks, ChevronDown, Command, Database, FlaskConical, LayoutDashboard, Menu, Play, Code,
   Search, Settings2, ShieldCheck, TrendingUp, X,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -15,6 +15,10 @@ import type { OverviewData } from "@/lib/types";
 const primaryNavigation = [
   { label: "Overview", href: "/overview", icon: LayoutDashboard },
   { label: "Strategy Lab", href: "/strategies", icon: Blocks },
+  { label: "New Strategy", href: "/strategies/new", icon: Code },
+  { label: "Market Data", href: "/market-data", icon: Database },
+  { label: "ML Intelligence", href: "/ml-lab", icon: FlaskConical },
+  { label: "Paper Trading", href: "/paper-trading", icon: Play },
   { label: "Profit & Loss", href: "/pnl", icon: TrendingUp },
 ];
 const platformNavigation = [
@@ -67,7 +71,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, []);
 
   function navLink(item: (typeof primaryNavigation)[number] | (typeof platformNavigation)[number]) {
-    const active = pathname === item.href || (item.href !== "/overview" && pathname.startsWith(`${item.href}/`));
+    const active = pathname === item.href;
     const Icon = item.icon;
     return (
       <Link key={item.href} className={`nav-link ${active ? "active" : ""}`} href={item.href} onClick={() => setMobileOpen(false)}>
@@ -134,6 +138,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 
 function getCurrentLabel(pathname: string) {
+  if (pathname.startsWith("/strategies/new")) return "New Strategy";
   if (pathname.startsWith("/strategies")) return "Strategy Lab";
   if (pathname.startsWith("/pnl")) return "Profit & Loss";
   if (pathname.startsWith("/activity")) return "Audit & Feedback";

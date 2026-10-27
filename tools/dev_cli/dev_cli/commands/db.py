@@ -282,6 +282,7 @@ def migrate() -> None:
     from dev_cli.commands.user import _database_session  # noqa: PLC0415
     from dev_cli.core.bootstrap import migrate as apply_migrations  # noqa: PLC0415
 
+    lifecycle = None
     try:
         lifecycle = _lifecycle()
         lifecycle.stop_runtime()
@@ -292,12 +293,16 @@ def migrate() -> None:
             )
             head = apply_migrations(session.connection(), PROJECT_ROOT)
             session.commit()
+        lifecycle.refence_research_maintenance()
         _output({"revision": head, "runtime": "stopped"})
     except (ValueError, RuntimeError) as exc:
         raise click.ClickException(str(exc)) from exc
     except SQLAlchemyError as exc:
         msg = "Migration failed; preserve the database and inspect the failing revision"
         raise click.ClickException(msg) from exc
+    finally:
+        if lifecycle is not None:
+            lifecycle.abort_research_maintenance()
 
 
 @db.command()
@@ -315,6 +320,7 @@ def stop() -> None:
     try:
         lifecycle = _lifecycle()
         lifecycle.stop_runtime()
+        lifecycle.abort_research_maintenance()
         lifecycle.command("stop", "--timeout", "60", "postgres")
     except (ValueError, RuntimeError) as exc:
         raise click.ClickException(str(exc)) from exc

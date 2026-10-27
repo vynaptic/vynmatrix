@@ -54,6 +54,7 @@ The declared launcher maps one least-privilege database URL into each child:
 | Feedback | FEEDBACK_DATABASE_URL | 8002 |
 | Primary market data and selected calendar/FX workers | MARKET_DATA_DATABASE_URL | 8003, 8004–8008 |
 | Indicator runner | INDICATOR_DATABASE_URL | 8080 |
+| Host research supervisor | RESEARCH_DATABASE_URL | None |
 | Platform supervisor | No database connection | 8090 |
 
 Only backend and PostgreSQL have declared loopback host listeners. Internal
@@ -63,6 +64,9 @@ owns container layout and lifecycle.
 Runtime groups must not receive generic DATABASE_URL, DB_USER, DB_PASSWORD,
 ADMIN_DATABASE_URL, MIGRATION_DATABASE_URL, or PostgreSQL administrator
 credentials. Maintenance URLs are for the explicit database lifecycle only.
+The host research supervisor receives only its dedicated research login through
+`RESEARCH_DATABASE_URL`; `VM_RESEARCH_DB_PASSWORD` is a maintenance provisioning
+input. The research sandbox receives neither database credentials nor API keys.
 Container maintenance utilities use postgres:5432; host-side maintenance and
 control-plane commands reach the same server on the published loopback listener
 and perform that rewrite themselves, so `.env` carries one spelling. An exported

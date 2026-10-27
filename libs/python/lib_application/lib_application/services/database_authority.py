@@ -9,7 +9,15 @@ from sqlalchemy import RowMapping, text
 from sqlalchemy.orm import Session
 
 _SERVICE_ROLES = frozenset(
-    {"vm_backend", "vm_scoring", "vm_execution", "vm_feedback", "vm_market_data", "vm_indicator"}
+    {
+        "vm_backend",
+        "vm_scoring",
+        "vm_execution",
+        "vm_feedback",
+        "vm_market_data",
+        "vm_indicator",
+        "vm_research",
+    }
 )
 
 
@@ -69,7 +77,7 @@ def _facts(session: Session) -> RowMapping | None:
           ARRAY(SELECT g.rolname FROM pg_catalog.pg_roles g JOIN assigned a ON a.roleid=g.oid)
             AS effective_memberships,
           ARRAY(SELECT g.rolname FROM pg_catalog.pg_roles g WHERE g.rolname IN
-            ('vm_backend','vm_scoring','vm_execution','vm_feedback','vm_market_data','vm_indicator')
+            ('vm_backend','vm_scoring','vm_execution','vm_feedback','vm_market_data','vm_indicator','vm_research')
             AND (g.oid=r.oid OR g.oid IN (SELECT roleid FROM assigned))) AS service_roles
         FROM pg_catalog.pg_roles r
         JOIN pg_catalog.pg_class c ON c.oid=pg_catalog.to_regclass('public.users')

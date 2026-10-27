@@ -321,6 +321,8 @@ class Deployer:
         self.start_database()
         self.lifecycle.start_runtime()
         self._verify_health()
+        self.lifecycle.begin_research_maintenance()
+        self.lifecycle.complete_research_maintenance()
 
     def deploy(self, plan: DeploymentPlan, owner: Mapping[str, Any]) -> dict[str, Any]:
         """Run every stage, rolling back what a late failure justifies."""
@@ -334,6 +336,7 @@ class Deployer:
                 self._build(plan)
             stage = "snapshot"
             self.start_database()
+            self.lifecycle.begin_research_maintenance()
             if plan.snapshot_reason is None:
                 snapshot = self._snapshot()
             stage = "record"
@@ -342,6 +345,7 @@ class Deployer:
             self.lifecycle.stop_runtime()
             stage = "provision"
             result = self._provision(owner)
+            self.lifecycle.refence_research_maintenance()
             stage = "account"
             if plan.mode == record.INSTALL:
                 self._create_paper_account(owner)
@@ -350,9 +354,13 @@ class Deployer:
             self.lifecycle.start_runtime()
             stage = "verify"
             self._verify_health()
+            self.lifecycle.complete_research_maintenance()
             deployment_id = self._close(plan, snapshot, deployment_id, record.SUCCEEDED)
         except (ValueError, RuntimeError, OSError) as exc:
-            self._recover(plan, stage, snapshot, deployment_id, exc)
+            try:
+                self._recover(plan, stage, snapshot, deployment_id, exc)
+            finally:
+                self.lifecycle.abort_research_maintenance()
             raise
         artefact.prune_generations(
             artefact.PLATFORM_REPOSITORY,
@@ -627,6 +635,8 @@ class Deployer:
             target = self._previous_tag(plan)
             self._point_compose_at(target)
             self.lifecycle.start_runtime()
+            self._verify_health()
+            self.lifecycle.complete_research_maintenance()
             self.echo(f"Rolled back to {artefact.PLATFORM_REPOSITORY}:{target}")
             self._close(plan, snapshot, deployment_id, record.ROLLED_BACK, failure_stage=stage)
         except (ValueError, RuntimeError, OSError) as rollback_error:

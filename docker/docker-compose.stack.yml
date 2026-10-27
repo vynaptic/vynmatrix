@@ -249,6 +249,7 @@ services:
       VM_FEEDBACK_DB_PASSWORD: ${VM_FEEDBACK_DB_PASSWORD:-}
       VM_MARKET_DATA_DB_PASSWORD: ${VM_MARKET_DATA_DB_PASSWORD:-}
       VM_INDICATOR_DB_PASSWORD: ${VM_INDICATOR_DB_PASSWORD:-}
+      VM_RESEARCH_DB_PASSWORD: ${VM_RESEARCH_DB_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -256,6 +257,44 @@ services:
     logging: *bounded-logging
     restart: "no"
     stop_grace_period: 60s
+    healthcheck:
+      disable: true
+
+  # One serial, isolated research slot beside PostgreSQL and the combined app.
+  # No common environment/mount anchors: editor code receives no authority.
+  research:
+    image: vynmatrix/platform:${VM_DEPLOY_IMAGE_TAG:?Set by vmdev deploy; Compose never resolves a moving tag}
+    profiles: ["research"]
+    init: true
+    restart: "no"
+    user: vmuser
+    entrypoint: []
+    working_dir: /tmp
+    command: ["/opt/service/bin/python", "-I", "-B", "/app/tools/dev_cli/dev_cli/core/research/sandbox_entry.py"]
+    network_mode: none
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 1g
+    cpus: 1.0
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    ulimits:
+      core: 0
+      nofile: 128
+    environment:
+      EXECUTION_MODE: paper
+      EXECUTION_ENGINE_ALLOW_LIVE: "false"
+      RUN_MODE: paper
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      PYTHONHASHSEED: "0"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    logging:
+      driver: none
     healthcheck:
       disable: true
 

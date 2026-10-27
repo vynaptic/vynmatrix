@@ -655,6 +655,16 @@ def test_first_party_dependency_contract_passes_when_declared(fake_repo: Path) -
     assert not findings, [f.message for f in findings]
 
 
+def test_first_party_dependency_contract_accepts_required_extras(fake_repo: Path) -> None:
+    _write_first_party_component(fake_repo, declare_setup=True, declare_build=True)
+    setup_path = fake_repo / "libs/python/lib_foo/setup.py"
+    setup_path.write_text(setup_path.read_text().replace("lib-bar>=", "lib-bar[research]>="))
+    _git_add_all(fake_repo)
+    report = audit_module.run_audit(staged=False, root=fake_repo)
+    findings = [f for f in report.findings if f.rule == "first-party-dependency-contract"]
+    assert not findings, [f.message for f in findings]
+
+
 def test_default_audit_checks_repository_files_in_a_linked_worktree(fake_repo, monkeypatch):
     import subprocess
 

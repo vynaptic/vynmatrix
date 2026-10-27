@@ -1057,11 +1057,17 @@ def _latest_deployment(session: Session) -> dict[str, Any] | None:
 
 
 def fills(
-    session: Session, owner_id: str, *, limit: int, before: tuple[datetime, int] | None
+    session: Session,
+    owner_id: str,
+    *,
+    limit: int,
+    before: tuple[datetime, int] | None,
+    account_ids: set[int] | None = None,
 ) -> dict[str, Any]:
     """Fills blotter, newest first, keyset-paginated on (fill time, execution id)."""
-    account_ids = [int(account.account_id) for account in _accounts(session, owner_id)]
-    rows = _fill_rows(session, account_ids, limit=limit + 1, before=before)
+    owned_ids = {int(account.account_id) for account in _accounts(session, owner_id)}
+    selected_ids = owned_ids if account_ids is None else owned_ids & account_ids
+    rows = _fill_rows(session, sorted(selected_ids), limit=limit + 1, before=before)
     page = rows[:limit]
     next_before = page[-1]["cursor"] if len(rows) > limit and page else None
     return {

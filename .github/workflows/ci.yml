@@ -199,6 +199,7 @@ jobs:
       VM_FEEDBACK_DB_PASSWORD: vm_feedback_ci
       VM_MARKET_DATA_DB_PASSWORD: vm_market_data_ci
       VM_INDICATOR_DB_PASSWORD: vm_indicator_ci
+      VM_RESEARCH_DB_PASSWORD: vm_research_ci
       EXECUTION_MODE: paper
       EXECUTION_ENGINE_ALLOW_LIVE: 'false'
     steps:
@@ -240,6 +241,13 @@ jobs:
           ADMIN_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/postgres
           MIGRATION_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/vm_trading
         run: sh docker/provision-runtime-roles.sh
+      - name: Verify immutable research data and fenced workflows
+        env:
+          RESEARCH_TEST_DATABASE_URL: postgresql://trader:vm_trading_secure_2024@localhost:5432/vm_trading
+        run: >-
+          pytest -v -m integration
+          tests/test_research_data_postgres_integration.py
+          tests/test_research_workflows_postgres_integration.py
       # Serial execution preserves the empty-owner precondition. These fixtures
       # roll back their writes or delete their exact temporary owner in finally.
       - name: Verify owner and catalogue PostgreSQL authority

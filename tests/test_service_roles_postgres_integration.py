@@ -22,8 +22,20 @@ _ROLE_PASSWORD_ENV = {
     "vm_feedback_login": "VM_FEEDBACK_DB_PASSWORD",
     "vm_market_data_login": "VM_MARKET_DATA_DB_PASSWORD",
     "vm_indicator_login": "VM_INDICATOR_DB_PASSWORD",
+    "vm_research_login": "VM_RESEARCH_DB_PASSWORD",
 }
 _PRIVILEGE_EXPECTATIONS = {
+    "vm_research_login": (
+        ("research_datasets", "SELECT", True),
+        ("research_model_versions", "SELECT", True),
+        ("research_control", "UPDATE", False),
+        ("orders", "SELECT", False),
+        ("orders", "INSERT", False),
+        ("prices", "SELECT", False),
+        ("prices", "INSERT", False),
+        ("user_strategy_bindings", "SELECT", False),
+        ("broker_credentials", "SELECT", False),
+    ),
     "vm_backend_login": (
         ("broker_credentials", "UPDATE", True),
         ("strategies", "INSERT", False),
@@ -482,7 +494,8 @@ _UI_COLUMN_EXPECTATIONS = (
     ("order_intents", "payload", False),
     ("canonical_signals", "features", False),
     ("execution_metrics", "metadata", False),
-    ("prices", "close", False),
+    # Revision 0113 adds recorded OHLCV reads for research snapshots.
+    ("prices", "close", True),
     # Revision 0109: the readiness checklist's status columns, and nothing else.
     ("strategy_runtime_states", "last_source_ts", True),
     ("strategy_runtime_states", "state_payload", False),
